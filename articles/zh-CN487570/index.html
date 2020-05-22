@@ -1,0 +1,541 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💥 🙍🏾 👩🏿‍🤝‍👩🏻 Redis最佳做法，第2部分 👳 🈵 📞</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Redis实验室的Redis最佳实践翻译周期的第二部分，讨论了交互模式和数据存储模式。
+ 第一部分在这里。
+ 
+ 互动模式
+ Redis不仅可以充当传统的DBMS，还可以使用其结构和命令在微服务或进程之间交换消息。Redis客户端的广泛使用，服务器和协议的速度和效率以及内置的经典结构使您可以创建自己...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Redis最佳做法，第2部分</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/487570/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Redis实验室的Redis最佳实践翻译周期的第二部分，讨论了交互模式和数据存储模式。</font></font><div style="text-align:center;"><img src="https://habrastorage.org/webt/hr/6y/f5/hr6yf5w1hp0fh-i5vfa0p1pxeuy.png" width="15%"></div><a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第一部分在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这里</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">互动模式</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redis不仅可以充当传统的DBMS，还可以使用其结构和命令在微服务或进程之间交换消息。</font><font style="vertical-align: inherit;">Redis客户端的广泛使用，服务器和协议的速度和效率以及内置的经典结构使您可以创建自己的工作流程和事件机制。</font><font style="vertical-align: inherit;">在本章中，我们将介绍以下主题：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">事件队列；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用Redlock阻止；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pub / Sub;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分布式事件。</font></font></li>
+</ul><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">事件队列</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redis中的列表是有序行列表，与您可能熟悉的链接列表非常相似。将值添加到列表（推送）和从列表中删除值（弹出）是非常轻量级的操作。可以想象，这是管理队列的一个很好的结构：将元素添加到开头并从末尾读取它们（FIFO）。 Redis还提供了其他功能，使此模式更加有效，可靠和易于使用。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+列表具有命令的子集，可让您执行“阻止”行为。</font><font style="vertical-align: inherit;">术语“阻止”是指仅与一个客户端的连接。</font><font style="vertical-align: inherit;">实际上，这些命令不允许客户端执行任何操作，直到值出现在列表中或超时到期为止。</font><font style="vertical-align: inherit;">这样就无需轮询Redis，而是等待结果。</font><font style="vertical-align: inherit;">由于客户端无法在期望值的同时做任何事情，因此我们需要两个开放的客户端来说明这一点：</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">客户1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">客户2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1个</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[期望值]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q hello<font></font>
+(integer) 1</code></pre></td>
+<td><pre><code class="plaintext hljs">1) "my-q"<font></font>
+2) "hello"</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[客户端已解锁，准备接受命令]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[期望值]</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在此示例中，在步骤1中，我们看到被阻止的客户端不会立即返回任何内容，因为它不包含任何内容。</font><font style="vertical-align: inherit;">最后一个参数是等待时间。</font><font style="vertical-align: inherit;">这里0表示永恒的期望。</font><font style="vertical-align: inherit;">在第二行中</font><font style="vertical-align: inherit;">，</font><font style="vertical-align: inherit;">在</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">my-q中</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">输入一个值，并且第一个客户端立即退出阻塞状态。</font><font style="vertical-align: inherit;">第三行，再次调用BRPOP（您可以在应用程序中循环执行此操作），并且客户端也等待下一个值。</font><font style="vertical-align: inherit;">通过按“ Ctrl + C”，您可以解除锁定并退出客户端。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们反转示例，看看BRPOP如何与非空列表一起工作：</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">客户1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">客户2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1个</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q hello<font></font>
+(integer) 1</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q hej<font></font>
+(integer) 2</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q bonjour<font></font>
+(integer) 3</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0<font></font>
+1) "my-q"<font></font>
+2) "hello"</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0<font></font>
+1) "my-q"<font></font>
+2) "hej"</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">6</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0<font></font>
+1) "my-q"<font></font>
+2) "bonjour"</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">7</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[期望值]</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在步骤1-3中，我们将3个值添加到列表中，然后看到答案在增长，表明列表中元素的数量。尽管调用了BRPOP，第4步仍会立即返回该值。这是因为仅当队列中没有值时才会发生阻塞行为。我们可以在步骤5-6中看到相同的即时响应，因为这是针对队列中的每个项目完成的。在步骤7中，BRPOP在队列中找不到任何内容，并阻塞了客户端，直到添加了某些内容为止。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+队列通常代表一些需要在另一个流程（工作人员）中完成的工作。</font><font style="vertical-align: inherit;">在这种类型的工作负载中，重要的是，如果工作人员在执行过程中由于某种原因摔倒，工作也不会消失。</font><font style="vertical-align: inherit;">Redis支持这种类型的队列。</font><font style="vertical-align: inherit;">为此，请使用BRPOPLPUSH命令而不是BRPOP。</font><font style="vertical-align: inherit;">她希望在一个列表中有一个值，一旦它出现在其中，就将其放在另一个列表中。</font><font style="vertical-align: inherit;">这是原子完成的，因此两个工人不可能更改相同的值。</font><font style="vertical-align: inherit;">让我们看看它是如何工作的：</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">客户1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">客户2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1个</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; LINDEX worker-q 0<font></font>
+(nil)</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[如果结果不为零，则以某种方式对其进行处理，然后转到步骤4]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; LREM worker-q -1 [   1]<font></font>
+(integer) 1</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[返回步骤1]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOPLPUSH my-q worker-q 0</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[期望值]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q hello</code></pre></td>
+<td><pre><code class="plaintext hljs">"hello"</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[客户端已解锁，准备接受命令]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">6</font></font></td>
+<td></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[打招呼]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">7</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; LREM worker-q -1 hello<font></font>
+(integer) 1</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">8</font></font></td>
+<td></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[返回步骤1]</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在步骤1-2中，我们什么也不做，因为</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-q为</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">空。如果返回了某些内容，则我们将其处理并删除，然后再次返回到步骤1，以检查是否有任何内容进入队列。因此，我们首先清除工作人员的队列并执行现有工作。在第4步中，我们等到该值出现在</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">my-q中</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，然后将其原子地转移到</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-q</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。然后，我们以某种方式处理</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ hello”</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，之后将其从</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-q中</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">删除</font><font style="vertical-align: inherit;">并返回到步骤1。如果该过程在步骤6中终止，则该值仍保留在</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-q中</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。重新启动过程后，我们将立即删除在步骤7中未删除的所有内容。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这种模式极大地减少了失业的可能性，但前提是工人在步骤2和3或5和6之间死亡，这是不可能的，但是</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最佳实践</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">将在工人的逻辑中考虑到这一点。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">重锁锁定</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有时在系统中，有必要阻塞一些资源。</font><font style="vertical-align: inherit;">为了应用在竞争环境中无法解决的重要更改，这可能是必需的。</font><font style="vertical-align: inherit;">封锁目标：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">只允许一名工人捕获资源；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">能够可靠地释放锁定对象；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">不要紧锁资源（一定时间后必须解锁）。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redis具有一个简单的基于密钥的数据模型，并且每个分片都是单线程的，而且运行速度相当快，因此它是实现阻塞的一个不错的选择。使用Redis的优秀锁实现称为Redlock。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redlock客户端几乎适用于每种语言，但是，重要的是要了解Redlock的工作方式，以便安全有效地使用它。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，您需要了解Redlock旨在在至少3台具有独立Redis实例的计算机上运行。这消除了锁定机制中的单点故障，后者可能导致所有资源的死锁。要理解的另一点是，尽管机器上的时钟不应100％同步，但它们应以相同的方式工作-时间以相同的速度移动：机器上的时间为一秒，机器B上的时间为一秒。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用Redlock设置锁定对象首先需要获得毫秒精度的时间戳。您还必须提前指出阻塞时间。然后，通过将密钥设置为随机值（仅当此密钥尚不存在时）并设置密钥的超时时间来设置阻止对象。对于每个独立实例重复此操作。如果实例掉落，则将立即跳过该实例。如果在超时到期之前已在大多数实例上成功安装了锁定对象，则将其视为已捕获。安装或更新锁定对象的时间是达到锁定状态所花费的时间，减去预定义的锁定时间。如果发生错误或超时，请解锁所有实例，然后重试。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要释放锁对象，最好使用Lua脚本，该脚本将检查预期的随机值是否在键集中。</font><font style="vertical-align: inherit;">如果存在，则可以将其删除，否则最好保留密钥，因为这些密钥可能是较新的锁定对象。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">if redis.call("get",KEYS[1]) == ARGV[1] then<font></font>
+    return redis.call("del",KEYS[1])<font></font>
+else<font></font>
+    return 0<font></font>
+end</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redlock进程提供了良好的保证，并且没有单点故障，因此您可以完全确定将分配单个锁对象，并且不会发生互锁。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">酒馆/酒馆</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+除了数据存储，Redis还可以用作Pub / Sub平台（发布者/订阅者）。</font><font style="vertical-align: inherit;">在这种模式下，发布者可以向任何数量的频道订阅者发布消息。</font><font style="vertical-align: inherit;">这些是基于“即发即弃”原理的消息，也就是说，如果释放了消息并且订户不存在，则消息将消失而无法恢复。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+订阅频道后，客户端进入订户模式，无法再调用命令-它变为只读状态。</font><font style="vertical-align: inherit;">发布者没有这样的限制。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以订阅多个频道。</font><font style="vertical-align: inherit;">我们首先使用SUBSCRIBE命令订阅两个天气和体育频道：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; SUBSCRIBE weather sports<font></font>
+Reading messages... (press Ctrl-C to quit)<font></font>
+1) "subscribe"<font></font>
+2) "weather"<font></font>
+3) (integer) 1<font></font>
+1) "subscribe"<font></font>
+2) "sports"<font></font>
+3) (integer) 2</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在一个单独的客户端（例如，另一个终端窗口）中，我们可以使用PUBLISH命令在以下任一通道中发布消息：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PUBLISH sports oilers/7:leafs/1<font></font>
+(integer) 1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第一个参数是通道的名称，第二个参数是消息。</font><font style="vertical-align: inherit;">该消息可以是任何消息，在这种情况下，它是游戏中的一个已编码帐户。</font><font style="vertical-align: inherit;">该命令返回将向其传递消息的客户端的数量。</font><font style="vertical-align: inherit;">在订户客户端中，我们立即看到以下消息：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">1) "message"<font></font>
+2) "sports"<font></font>
+3) "oilers/7:leafs/1"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+响应包含三个元素：这是一条消息的指示，订阅频道，实际上是一条消息。</font><font style="vertical-align: inherit;">客户端在收到后立即返回到收听频道。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+返回发布者，我们可能会发布另一条消息：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PUBLISH weather snow/-4c<font></font>
+(integer) 1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在订户中，我们将看到相同的格式，但消息的通道不同：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">1) "message"<font></font>
+2) "weather"<font></font>
+3) "snow/-4c"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们向没有订阅者的频道发布消息：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PUBLISH currency CADUSD/0.787<font></font>
+(integer) 0</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于没有人收听</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">货币</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通道</font><font style="vertical-align: inherit;">，因此答案将为0。此消息已发送，以后订阅此通道的客户将不会收到有关此消息的通知-该消息已被发送并被忘记。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+除了订阅单个频道外，Redis还允许通过掩码订阅频道。</font><font style="vertical-align: inherit;">全局样式的掩码传递给PSUBSCRIBE命令：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PSUBSCRIBE sports:*</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+客户将从</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">体育</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">开始从所有渠道接收消息</font><i><font style="vertical-align: inherit;">：</font></i><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">在另一个客户端中，调用以下命令：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PUBLISH sports:hockey oilers/7:leafs/1<font></font>
+(integer) 1<font></font>
+&gt; PUBLISH sports:basketball raptors/33:pacers/7<font></font>
+(integer) 1<font></font>
+&gt; PUBLISH weather:edmonton snow/-4c<font></font>
+(integer) 0</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+请注意，前两支球队返回1，而最后两支球队返回0。尽管我们没有直接订阅“ </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">体育：曲棍球”</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">或“ </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">体育：篮球”</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，但客户会通过掩码进行订阅来接收消息。</font><font style="vertical-align: inherit;">在客户-订户窗口中，我们可以看到只有匹配掩码的通道才有结果。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">1) "pmessage"<font></font>
+2) "sports:*"<font></font>
+3) "sports:hockey"<font></font>
+4) "oilers/7:leafs/1"<font></font>
+1) "pmessage"<font></font>
+2) "sports:*"<font></font>
+3) "sports:basketball"<font></font>
+4) "raptors/33:pacers/7"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此输出与SUBSCRIBE命令的输出略有不同，因为它包含掩码本身以及通道的真实名称。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分布式事件</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redis的发布/订阅消息传递方案可以扩展以创建有趣的分布式事件。</font><font style="vertical-align: inherit;">假设我们有一个存储在哈希表中的结构，但是我们只想在单个字段超过订户设置的数值时更新客户端。</font><font style="vertical-align: inherit;">我们将通过遮罩收听频道并提取</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">status中</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的哈希值</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">在此示例中，我们对</font><font style="vertical-align: inherit;">具有值5-9的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">update_status</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">感兴趣</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PSUBSCRIBE update_status:[5-9]<font></font>
+1) "psubscribe"<font></font>
+2) "update_status:[5-9]"<font></font>
+3) (integer) 1<font></font>
+...</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要更改</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">status / error_level值</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，我们需要两个可以依次执行或在MULTI / EXEC块中执行的命令。</font><font style="vertical-align: inherit;">第一个命令设置级别，第二个命令发布一个通知，该通知具有在通道本身中编码的值。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; HSET status error_level 5<font></font>
+(integer) 1<font></font>
+&gt; PUBLISH update_status:5 0<font></font>
+(integer) 1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在第一个窗口中，我们看到已收到该消息，然后您可以切换到另一个客户端并调用HGETALL命令：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">...<font></font>
+1) "pmessage"<font></font>
+2) "update_status:[5-9]"<font></font>
+3) "update_status:5"<font></font>
+4) "0"<font></font>
+<font></font>
+&gt; HGETALL status<font></font>
+1) "error_level"<font></font>
+2) "5"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们还可以使用此方法来更新某些冗长过程的局部变量。</font><font style="vertical-align: inherit;">这可以允许同一进程的多个实例实时交换数据。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为什么这种模式比使用Pub / Sub更好？</font><font style="vertical-align: inherit;">进程重新启动时，它可以获取整个状态并开始侦听。</font><font style="vertical-align: inherit;">更改将在任意数量的进程之间同步。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数据存储方式</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在Redis中有几种​​存储结构化数据的模式。</font><font style="vertical-align: inherit;">在本章中，我们将考虑以下内容：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JSON中的数据存储；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">储存设施。</font></font></li>
+</ul><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JSON数据存储</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在Redis中有几种​​存储JSON数据的选项。</font><font style="vertical-align: inherit;">最常见的形式是预先序列化对象并将其保存在特殊键下：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; SET car "{\"colour\":\"blue\",\"make\":\"saab\",\"model\":93,\"features\":[\"powerlocks\",\"moonroof\"]}"<font></font>
+OK<font></font>
+&gt; GET car<font></font>
+"{\"colour\":\"blue\",\"make\":\"saab\",\"model\":93,\"features\":[\"powerlocks\",\"moonroof\"]}"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+它看起来似乎很简单，但是它有一些非常严重的缺点：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">序列化需要客户端计算资源来读写。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JSON格式会增加数据大小；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Redis只有间接的方式来处理JSON中的数据。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+前两点在少量数据上可以忽略不计，但是成本会随着数据的增长而增加。</font><font style="vertical-align: inherit;">但是，第三点是最关键的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在Redis 4.0之前，在Redis中使用JSON的唯一方法是在cjson模块中使用Lua脚本。</font><font style="vertical-align: inherit;">尽管仍然存在瓶颈，并且在学习Lua方面又增加了麻烦，但这部分解决了问题。</font><font style="vertical-align: inherit;">此外，许多应用程序只是接收了整个JSON字符串，将其反序列化，使用数据，进行序列化，然后再次保存。</font><font style="vertical-align: inherit;">这是一种反模式。</font><font style="vertical-align: inherit;">以这种方式丢失数据的风险很大。</font></font><br>
+<br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">应用程序实例1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">应用程序实例2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1个</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; GET my-car</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[反序列化，更改机器颜色，然后再次序列化]</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; GET my-car</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; SET my-car</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+[实例1的新值]</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[反序列化，更改机器型号，然后再次序列化]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; SET my-car</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+[实例2的新值]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; GET my-car</code></pre></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第5行的结果将仅显示实例2的更改，实例1的颜色更改将丢失。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redis 4.0及更高版本具有使用模块的能力。</font><font style="vertical-align: inherit;">ReJSON是一个模块，提供了一种特殊的数据类型和用于与其直接交互的命令。</font><font style="vertical-align: inherit;">ReJSON以二进制格式保存数据，从而减小了存储数据的大小，提供了对元素的更快访问，而无需花费时间进行反序列化。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要使用ReJSON，您需要将其安装在Redis服务器上或在Redis Enterprise中启用它。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+前面使用ReJSON的示例如下所示：</font></font><br>
+<br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">应用程序实例1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">应用程序实例2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1个</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; JSON.SET car2 . '{"colour": "blue",  "make":"saab", "model":93,  "features": ["powerlocks",  "moonroof"]}‘<font></font>
+OK</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; JSON.SET car2 colour '"red"'<font></font>
+OK</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; JSON.SET car2 model '95'<font></font>
+OK<font></font>
+&gt; JSON.GET car2 .<font></font>
+"{\"colour\":\"red",\"make\":\"saab\",\"model\":95,\"features\":[\"powerlocks\",\"moonroof\"]}"</code></pre></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ReJSON提供了一种更安全，更快速，更直观的方式来在Redis中使用JSON数据，尤其是在需要对嵌套元素进行原子更改的情况下。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对象存储</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+乍一看，标准Redis“哈希表”数据类型似乎与JSON对象或其他类型非常相似。</font><font style="vertical-align: inherit;">使字段成为字符串或数字并防止嵌套结构要容易得多。</font><font style="vertical-align: inherit;">但是，在计算了每个字段的“路径”之后，您可以“展平”对象并将其保存在Redis哈希表中。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">{<font></font>
+    "colour": "blue",<font></font>
+    "make": "saab",<font></font>
+    "model": {<font></font>
+        "trim": "aero",<font></font>
+        "name": 93<font></font>
+    },<font></font>
+    "features": ["powerlocks", "moonroof"]<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JSONPath</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（JSON的XPath），我们可以在哈希表的同一层上表示每个元素：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; HSET car3 colour blue<font></font>
+&gt; HSET car3 make saab<font></font>
+&gt; HSET car3 model.trim aero<font></font>
+&gt; HSET car3 model.name 93<font></font>
+&gt; HSET car3 features[0] powerlocks<font></font>
+&gt; HSET car3 features[1] moonroof</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了清楚起见，这些命令是单独列出的，但是许多参数可以传递给HSET。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，您可以请求整个对象或其单个字段：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; HGETALL car3<font></font>
+ 1) "colour"<font></font>
+ 2) "blue"<font></font>
+ 3) "make"<font></font>
+ 4) "saab"<font></font>
+ 5) "model.trim"<font></font>
+ 6) "aero"<font></font>
+ 7) "model.name"<font></font>
+ 8) "93"<font></font>
+ 9) "features[0]"<font></font>
+10) "powerlocks"<font></font>
+11) "features[1]"<font></font>
+12) "moonroof"<font></font>
+<font></font>
+&gt; HGET car3 model.trim<font></font>
+"aero"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+尽管这提供了一种快速有效的方法来检索Redis中的存储对象，但它也有缺点：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在不同的语言和库中，JSONPath的实现可能会不同，从而导致不兼容。</font><font style="vertical-align: inherit;">在这种情况下，值得使用一种工具对数据进行序列化和反序列化。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阵列支持：</font></font><br>
+ <ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">稀疏数组可能有问题；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">无法执行许多操作，例如在数组中间插入元素。</font></font></li>
+</ul><br>
+ </li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JSONPath密钥中不必要的资源消耗。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此模式与ReJSON几乎相同。</font><font style="vertical-align: inherit;">如果ReJSON可用，则在大多数情况下最好使用它。</font><font style="vertical-align: inherit;">但是，以上述方式存储对象比ReJSON具有一个优势：与Redis SORT团队集成。</font><font style="vertical-align: inherit;">但是，此命令在计算上很复杂，并且是此模式范围之外的单独复杂主题。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下一个结论部分将介绍时间序列模式，限速模式，布隆过滤器模式，计数器以及Redis中Lua的使用。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PS：我试图将这些文章的文字尽可能以“野蛮的”英语改成俄语，但是，如果您认为这个主意难以理解或不正确，请在评论中纠正我。</font></font></div>
+      
+    </div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN487570/">https://habr.com/ru/post/zh-CN487570/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN487558/index.html">保罗·格雷厄姆（Paul Graham）：儿童与新兴企业</a></li>
+<li><a href="../zh-CN487560/index.html">美国银行：Yandex的市值将增长14亿美元</a></li>
+<li><a href="../zh-CN487564/index.html">保罗·格雷厄姆（Paul Graham）：“头脑中的最高创意”</a></li>
+<li><a href="../zh-CN487566/index.html">了解CSS网格（第1部分）：网格容器</a></li>
+<li><a href="../zh-CN487568/index.html">Case Full HP：如何从Google Play中获得推荐，以及如何使ASO适应不同的国家</a></li>
+<li><a href="../zh-CN487574/index.html">使用音频：进度和数据可视化</a></li>
+<li><a href="../zh-CN487578/index.html">CMake静态库优化</a></li>
+<li><a href="../zh-CN487582/index.html">没有神烧锅</a></li>
+<li><a href="../zh-CN487584/index.html">信息安全化</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

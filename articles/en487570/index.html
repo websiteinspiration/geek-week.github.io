@@ -1,0 +1,539 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✅ 🔽 👨🏽‍✈️ Redis Best Practices, Part 2 🔑 🧘🏿 🕑</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The second part of the Redis Best Practices translation cycle from Redis Labs, and it discusses interaction patterns and data storage patterns.
+ The f...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Redis Best Practices, Part 2</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/487570/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The second part of the Redis Best Practices translation cycle from Redis Labs, and it discusses interaction patterns and data storage patterns.</font></font><div style="text-align:center;"><img src="https://habrastorage.org/webt/hr/6y/f5/hr6yf5w1hp0fh-i5vfa0p1pxeuy.png" width="15%"></div><a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The first part is </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Interaction patterns</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redis can function not only as a traditional DBMS, but also its structures and commands can be used to exchange messages between microservices or processes. </font><font style="vertical-align: inherit;">The widespread use of Redis clients, the speed and efficiency of the server and protocol, as well as the built-in classic structures allow you to create your own workflows and event mechanisms. </font><font style="vertical-align: inherit;">In this chapter, we will cover the following topics:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">queue of events;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">blocking with Redlock;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pub / Sub;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">distributed events.</font></font></li>
+</ul><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Event queue</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lists in Redis are ordered line lists, very similar to linked lists that you may be familiar with. Adding a value to a list (push) and deleting a value from a list (pop) are very lightweight operations. As you can imagine, this is a very good structure for managing a queue: add elements to the beginning and read them from the end (FIFO). Redis also provides additional features that make this pattern more efficient, reliable, and easy to use.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lists have a subset of commands that let you execute "blocking" behavior. </font><font style="vertical-align: inherit;">The term “blocking” refers to a connection with only one client. </font><font style="vertical-align: inherit;">In fact, these commands do not allow the client to do anything until a value appears in the list or until the timeout expires. </font><font style="vertical-align: inherit;">This eliminates the need to poll Redis, waiting for the result. </font><font style="vertical-align: inherit;">Since the client cannot do anything while it expects a value, we will need two open clients to illustrate this:</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">#</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Customer 1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Client 2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[expect value]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q hello<font></font>
+(integer) 1</code></pre></td>
+<td><pre><code class="plaintext hljs">1) "my-q"<font></font>
+2) "hello"</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[client unlocked, ready to accept commands]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[expect value]</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this example, in step 1, we see that the blocked client does not immediately return anything, since it does not contain anything. </font><font style="vertical-align: inherit;">The final argument is the wait time. </font><font style="vertical-align: inherit;">Here 0 means eternal expectation. </font><font style="vertical-align: inherit;">On the second line </font><font style="vertical-align: inherit;">, a value is entered </font><font style="vertical-align: inherit;">in </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">my-q</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and the first client immediately exits the blocking state. </font><font style="vertical-align: inherit;">On the third line, BRPOP is called again (you can do this in a loop in the application), and the client also waits for the next value. </font><font style="vertical-align: inherit;">By pressing “Ctrl + C” you can break the lock and exit the client. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's reverse the example and see how BRPOP works with a non-empty list:</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">#</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Customer 1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Client 2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q hello<font></font>
+(integer) 1</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q hej<font></font>
+(integer) 2</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q bonjour<font></font>
+(integer) 3</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0<font></font>
+1) "my-q"<font></font>
+2) "hello"</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0<font></font>
+1) "my-q"<font></font>
+2) "hej"</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">6</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0<font></font>
+1) "my-q"<font></font>
+2) "bonjour"</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">7</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOP my-q 0</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[expect value]</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In steps 1-3, we add 3 values ​​to the list and see that the answer grows, indicating the number of elements in the list. Step 4, despite calling BRPOP, returns the value immediately. This is because blocking behavior occurs only when there are no values ​​in the queue. We can see the same instant response in steps 5-6 because this is done for each item in the queue. In step 7, BRPOP does not find anything in the queue and blocks the client until something is added.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Often queues represent some work that needs to be done in another process (worker). </font><font style="vertical-align: inherit;">In this type of workload, it is important that the work does not disappear if the worker falls for some reason during execution. </font><font style="vertical-align: inherit;">Redis supports this type of queue. </font><font style="vertical-align: inherit;">To do this, use the BRPOPLPUSH command instead of BRPOP. </font><font style="vertical-align: inherit;">She expects a value in one list, and as soon as it appears there, puts it in another list. </font><font style="vertical-align: inherit;">This is done atomically, so it is impossible for two workers to change the same value. </font><font style="vertical-align: inherit;">Let's see how it works:</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">#</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Customer 1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Client 2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; LINDEX worker-q 0<font></font>
+(nil)</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[If the result is not nil, somehow process it and go to step 4]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; LREM worker-q -1 [   1]<font></font>
+(integer) 1</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[return to step 1]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; BRPOPLPUSH my-q worker-q 0</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[expect value]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; LPUSH my-q hello</code></pre></td>
+<td><pre><code class="plaintext hljs">"hello"</code></pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[client unlocked, ready to accept commands]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">6</font></font></td>
+<td></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[handle hello]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">7</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; LREM worker-q -1 hello<font></font>
+(integer) 1</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">8</font></font></td>
+<td></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[return to step 1]</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In steps 1-2, we do nothing, because </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-q is</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> empty. If something has returned, then we process it and delete it, and again return to step 1 to check if something has got into the queue. Thus, we first clear the worker's queue and perform the existing work. In step 4, we wait until the value appears in </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">my-q</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and when it does, it is atomically transferred to </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-q</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Then we somehow process </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“hello”</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , after that we delete it from </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-q</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and return to step 1. If the process dies in step 6, the value still remains in </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-q</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . After restarting the process, we will immediately delete everything that was not deleted in step 7.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This pattern greatly reduces the likelihood of job loss, but only if the worker dies between steps 2 and 3 or 5 and 6, which is unlikely, but </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">best practice</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> will take this into account in the worker's logic.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lock with redlock</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sometimes in the system it is necessary to block some resource. </font><font style="vertical-align: inherit;">This may be necessary in order to apply important changes that cannot be resolved in a competitive environment. </font><font style="vertical-align: inherit;">Blocking Objectives:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">allow one and only one worker to capture the resource;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">be able to reliably release the lock object;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Do not lock the resource tightly (must be unlocked after a certain period of time).</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redis is a good option for implementing blocking, as it has a simple key-based data model, and each shard is single-threaded and fairly fast. There is an excellent lock implementation using Redis called Redlock. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redlock clients are available for almost every language, however, it is important to know how Redlock works in order to use it safely and effectively.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First, you need to understand that Redlock is designed to run on at least 3 machines with independent Redis instances. This eliminates the single point of failure in your locking mechanism, which can lead to a deadlock of all resources. Another point to understand is that although the clocks on the machines should not be 100% synchronized, they should function the same way - time moves at the same speed: one second on the machine And the same as one second on machine B.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Setting a lock object with Redlock begins by obtaining a timestamp with millisecond precision. You must also indicate in advance the blocking time. Then the blocking object is set by setting (SET) the key with a random value (only if this key does not exist yet) and setting the timeout for the key. This is repeated for each independent instance. If the instance falls, then it is immediately skipped. If the lock object was successfully installed on most instances before the timeout expires, then it is considered captured. The time to install or update the lock object is the amount of time it takes to reach the lock state, minus the predefined lock time. In the event of an error or timeout, unlock all instances and try again.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To free a lock object, it is better to use a Lua script that will check if the expected random value is in the set of keys. </font><font style="vertical-align: inherit;">If there is, then you can delete it, otherwise it is better to leave the keys, as these may be newer lock objects.</font></font><br>
+<br>
+<pre><code class="plaintext hljs">if redis.call("get",KEYS[1]) == ARGV[1] then<font></font>
+    return redis.call("del",KEYS[1])<font></font>
+else<font></font>
+    return 0<font></font>
+end</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The Redlock process provides good guarantees and the absence of a single point of failure, so you can be completely sure that single lock objects will be distributed and that no mutual locks will occur.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pub / Sub</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In addition to data storage, Redis can also be used as the Pub / Sub platform (publisher / subscriber). </font><font style="vertical-align: inherit;">In this pattern, a publisher can issue messages to any number of channel subscribers. </font><font style="vertical-align: inherit;">These are messages based on the “shot and forget” principle, that is, if the message is released and the subscriber does not exist, then the message disappears without a possibility of recovery. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+By subscribing to the channel, the client enters subscriber mode and can no longer call commands - it becomes readonly. </font><font style="vertical-align: inherit;">The publisher has no such restrictions. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can subscribe to more than one channel. </font><font style="vertical-align: inherit;">We start by subscribing to the two weather and sports channels using the SUBSCRIBE command:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; SUBSCRIBE weather sports<font></font>
+Reading messages... (press Ctrl-C to quit)<font></font>
+1) "subscribe"<font></font>
+2) "weather"<font></font>
+3) (integer) 1<font></font>
+1) "subscribe"<font></font>
+2) "sports"<font></font>
+3) (integer) 2</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In a separate client (another terminal window, for example) we can publish messages in any of these channels using the PUBLISH command:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PUBLISH sports oilers/7:leafs/1<font></font>
+(integer) 1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The first argument is the name of the channel, the second is the message. </font><font style="vertical-align: inherit;">The message can be any, in this case it is a coded account in the game. </font><font style="vertical-align: inherit;">The command returns the number of clients to whom the message will be delivered. </font><font style="vertical-align: inherit;">In the subscriber client, we immediately see the message:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">1) "message"<font></font>
+2) "sports"<font></font>
+3) "oilers/7:leafs/1"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The response contains three elements: an indication that this is a message, a subscription channel, and, in fact, a message. </font><font style="vertical-align: inherit;">The client immediately after receiving returns to listening to the channel. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Returning to the publisher, we may post another message:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PUBLISH weather snow/-4c<font></font>
+(integer) 1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the subscriber we will see the same format, but with a different channel with the message:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">1) "message"<font></font>
+2) "weather"<font></font>
+3) "snow/-4c"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's post a message to a channel where there are no subscribers:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PUBLISH currency CADUSD/0.787<font></font>
+(integer) 0</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since no one is listening to the </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">currency</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> channel </font><font style="vertical-align: inherit;">, the answer will be 0. This message has been sent, and clients who later subscribe to this channel will not receive a notification about this message - it has been sent and forgotten. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In addition to subscribing to a single channel, Redis allows subscribing to channels by mask. </font><font style="vertical-align: inherit;">The glob-style mask is passed to the PSUBSCRIBE command:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PSUBSCRIBE sports:*</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The client will receive messages from all channels, starting with </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sports:</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">In another client, call the following commands:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PUBLISH sports:hockey oilers/7:leafs/1<font></font>
+(integer) 1<font></font>
+&gt; PUBLISH sports:basketball raptors/33:pacers/7<font></font>
+(integer) 1<font></font>
+&gt; PUBLISH weather:edmonton snow/-4c<font></font>
+(integer) 0</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Please note that the first two teams return 1, while the last returns 0. And although we are not directly subscribed to </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sports: hockey</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> or </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sports: basketball</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , the client receives messages through a subscription by mask. </font><font style="vertical-align: inherit;">In the client-subscriber window, we can see that there are results only for channels matching the mask.</font></font><br>
+<br>
+<pre><code class="plaintext hljs">1) "pmessage"<font></font>
+2) "sports:*"<font></font>
+3) "sports:hockey"<font></font>
+4) "oilers/7:leafs/1"<font></font>
+1) "pmessage"<font></font>
+2) "sports:*"<font></font>
+3) "sports:basketball"<font></font>
+4) "raptors/33:pacers/7"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This output is slightly different from the output of the SUBSCRIBE command because it contains the mask itself, as well as the real name of the channel.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Distributed Events</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redis' Pub / Sub messaging scheme can be expanded to create interesting distributed events. </font><font style="vertical-align: inherit;">Let's say we have a structure that is stored in a hash table, but we want to update clients only when a single field exceeds the numerical value set by the subscriber. </font><font style="vertical-align: inherit;">We will listen to the channels by mask and extract the hash in </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">status</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">In this example, we are interested in </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">update_status</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> with values ​​5-9.</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; PSUBSCRIBE update_status:[5-9]<font></font>
+1) "psubscribe"<font></font>
+2) "update_status:[5-9]"<font></font>
+3) (integer) 1<font></font>
+...</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To change the </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">status / error_level value</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , we need two commands that can be executed sequentially or in the MULTI / EXEC block. </font><font style="vertical-align: inherit;">The first command sets the level, and the second publishes a notification with the value encoded in the channel itself.</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; HSET status error_level 5<font></font>
+(integer) 1<font></font>
+&gt; PUBLISH update_status:5 0<font></font>
+(integer) 1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the first window, we see that the message has been received, and after that you can switch to another client and call the HGETALL command:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">...<font></font>
+1) "pmessage"<font></font>
+2) "update_status:[5-9]"<font></font>
+3) "update_status:5"<font></font>
+4) "0"<font></font>
+<font></font>
+&gt; HGETALL status<font></font>
+1) "error_level"<font></font>
+2) "5"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We can also use this method to update the local variable of some lengthy process. </font><font style="vertical-align: inherit;">This can allow multiple instances of the same process to exchange data in real time. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Why is this pattern better than using Pub / Sub? </font><font style="vertical-align: inherit;">When the process restarts, it can just get the whole state and start listening. </font><font style="vertical-align: inherit;">Changes will be synchronized between any number of processes.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Data storage patterns</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are several patterns for storing structured data in Redis. </font><font style="vertical-align: inherit;">In this chapter we will consider the following:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">data storage in JSON;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">storage facilities.</font></font></li>
+</ul><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JSON data storage</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are several options for storing JSON data in Redis. </font><font style="vertical-align: inherit;">The most common form is to serialize the object in advance and save it under a special key:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; SET car "{\"colour\":\"blue\",\"make\":\"saab\",\"model\":93,\"features\":[\"powerlocks\",\"moonroof\"]}"<font></font>
+OK<font></font>
+&gt; GET car<font></font>
+"{\"colour\":\"blue\",\"make\":\"saab\",\"model\":93,\"features\":[\"powerlocks\",\"moonroof\"]}"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It would seem to look simple, but it has some very serious drawbacks:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">serialization takes client computing resources to read and write;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JSON format increases data size;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Redis has only an indirect way of handling data in JSON.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The first couple of points may be negligible on small amounts of data, but the costs will increase as the data grows. </font><font style="vertical-align: inherit;">However, the third point is the most critical. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Prior to Redis 4.0, the only way to work with JSON inside Redis was to use a Lua script in the cjson module. </font><font style="vertical-align: inherit;">This partially solved the problem, although it still remained a bottleneck and created additional hassle with learning Lua. </font><font style="vertical-align: inherit;">In addition, many applications simply received the entire JSON string, deserialized it, worked with the data, serialized back, and saved it again. </font><font style="vertical-align: inherit;">This is an antipattern. </font><font style="vertical-align: inherit;">There is a big risk of losing data in this way.</font></font><br>
+<br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">#</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Application Instance # 1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Application Instance # 2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; GET my-car</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[deserialize, change machine color and serialize again]</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; GET my-car</code></pre></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; SET my-car</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+[new value from instance # 1]</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[deserialize, change machine model and serialize again]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; SET my-car</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+[new value from instance # 2]</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; GET my-car</code></pre></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The result on line 5 will show changes only to instance 2, and the color change by instance 1 will be lost. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redis version 4.0 and higher has the ability to use modules. </font><font style="vertical-align: inherit;">ReJSON is a module that provides a special data type and commands for direct interaction with it. </font><font style="vertical-align: inherit;">ReJSON saves the data in binary format, which reduces the size of the stored data, provides faster access to elements without spending time on de / serialization. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To use ReJSON, you need to install it on a Redis server or enable it in Redis Enterprise. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The previous example using ReJSON would look like this:</font></font><br>
+<br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">#</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Application Instance # 1</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Application Instance # 2</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; JSON.SET car2 . '{"colour": "blue",  "make":"saab", "model":93,  "features": ["powerlocks",  "moonroof"]}‘<font></font>
+OK</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></td>
+<td><pre><code class="plaintext hljs">&gt; JSON.SET car2 colour '"red"'<font></font>
+OK</code></pre></td>
+<td></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></td>
+<td></td>
+<td><pre><code class="plaintext hljs">&gt; JSON.SET car2 model '95'<font></font>
+OK<font></font>
+&gt; JSON.GET car2 .<font></font>
+"{\"colour\":\"red",\"make\":\"saab\",\"model\":95,\"features\":[\"powerlocks\",\"moonroof\"]}"</code></pre></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ReJSON provides a safer, faster, and more intuitive way to work with JSON data in Redis, especially in cases where atomic changes to nested elements are necessary.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Object Storage</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At first glance, the standard Redis “hash table” data type may seem very similar to a JSON object or other type. </font><font style="vertical-align: inherit;">It is much easier to make fields either a string or a number and prevent nested structures. </font><font style="vertical-align: inherit;">However, after calculating the “path” to each field, you can “flatten” the object and save it in the Redis hash table.</font></font><br>
+<br>
+<pre><code class="plaintext hljs">{<font></font>
+    "colour": "blue",<font></font>
+    "make": "saab",<font></font>
+    "model": {<font></font>
+        "trim": "aero",<font></font>
+        "name": 93<font></font>
+    },<font></font>
+    "features": ["powerlocks", "moonroof"]<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Using </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JSONPath</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (XPath for JSON), we can represent each element at the same level of the hash table:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; HSET car3 colour blue<font></font>
+&gt; HSET car3 make saab<font></font>
+&gt; HSET car3 model.trim aero<font></font>
+&gt; HSET car3 model.name 93<font></font>
+&gt; HSET car3 features[0] powerlocks<font></font>
+&gt; HSET car3 features[1] moonroof</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For clarity, the commands are listed separately, but many parameters can be passed to HSET. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now you can request the entire object or its individual field:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&gt; HGETALL car3<font></font>
+ 1) "colour"<font></font>
+ 2) "blue"<font></font>
+ 3) "make"<font></font>
+ 4) "saab"<font></font>
+ 5) "model.trim"<font></font>
+ 6) "aero"<font></font>
+ 7) "model.name"<font></font>
+ 8) "93"<font></font>
+ 9) "features[0]"<font></font>
+10) "powerlocks"<font></font>
+11) "features[1]"<font></font>
+12) "moonroof"<font></font>
+<font></font>
+&gt; HGET car3 model.trim<font></font>
+"aero"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Although this provides a quick and useful way to retrieve a stored object in Redis, it has its drawbacks:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in different languages ​​and libraries, the implementation of JSONPath may be different, causing incompatibility. </font><font style="vertical-align: inherit;">In this case, it is worth serializing and deserializing the data with one tool;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">array support:</font></font><br>
+ <ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sparse arrays can be problematic;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">it is impossible to perform many operations, such as inserting an element in the middle of an array.</font></font></li>
+</ul><br>
+ </li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unnecessary resource consumption in JSONPath keys.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This pattern is pretty much the same as ReJSON. </font><font style="vertical-align: inherit;">If ReJSON is available, then in most cases it is better to use it. </font><font style="vertical-align: inherit;">However, storing objects in the way above has one advantage over ReJSON: integration with the Redis SORT team. </font><font style="vertical-align: inherit;">However, this command is computationally complex and is a separate complex topic beyond the scope of this pattern. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The next concluding part will cover time series patterns, speed limit patterns, Bloom filter patterns, counters, and the use of Lua in Redis. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PS I tried to adapt the text of these articles in “barbaric” English as much as possible into Russian, but if you think that somewhere the idea is incomprehensible or incorrect, correct me in the comments.</font></font></div>
+      
+    </div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/en487570/">https://habr.com/ru/post/en487570/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en487558/index.html">Paul Graham: Children and Startups</a></li>
+<li><a href="../en487560/index.html">Bank of America: Yandex capitalization will grow by $ 1.4 billion</a></li>
+<li><a href="../en487564/index.html">Paul Graham: “The Top Idea in Your Mind”</a></li>
+<li><a href="../en487566/index.html">Understanding CSS Grid (1 part): Grid container</a></li>
+<li><a href="../en487568/index.html">Case Full HP: how to get featured from Google Play and adapt ASO to different countries</a></li>
+<li><a href="../en487574/index.html">Working with audio: progress and data visualization</a></li>
+<li><a href="../en487578/index.html">CMake Optimization for Static Libraries</a></li>
+<li><a href="../en487582/index.html">No gods burn pots</a></li>
+<li><a href="../en487584/index.html">Githabification of Information Security</a></li>
+<li><a href="../es486176/index.html">Memo de correspondencia de correo electrónico corporativo</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

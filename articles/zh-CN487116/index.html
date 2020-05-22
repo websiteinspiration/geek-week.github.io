@@ -1,0 +1,241 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏾‍🚒 ☝️ 🍡 为什么Discord从Go变成Rust 🐒 👨‍👦 🕠</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Rust正在成为广泛领域中的一流语言。我们在Discord的服务器和客户端上都成功使用了它。例如，在客户端上使用Go Live的视频编码管道，在服务器端使用Elixir NIF（本机实现的功能）功能。
+ 
+ 我们最近从Go到Rust重写了单个服务的性能，从而极大地提高了它的性能。本文将解释为什么对我...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>为什么Discord从Go变成Rust</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/487116/"><img src="https://habrastorage.org/getpro/habr/post_images/84a/0f1/d61/84a0f1d6126d5fd59b9c708f19c84692.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Rust正在成为广泛领域中的一流语言。</font><font style="vertical-align: inherit;">我们在Discord的服务器和客户端上都成功使用了它。</font><font style="vertical-align: inherit;">例如，在客户端上使用Go Live的视频编码管道，在服务器端使用</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Elixir NIF</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（本机实现的功能）功能。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们最近从Go到Rust重写了单个服务的性能，从而极大地提高了它的性能。</font><font style="vertical-align: inherit;">本文将解释为什么对我们来说重写服务是有意义的，我们是如何做到的以及生产率提高了多少。</font></font><br>
+<a name="habracut"></a><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">读取状态跟踪服务（读取状态）</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们的公司是基于一种产品构建的，所以让我们从某种背景开始，正是我们从Go转移到Rust的过程。这是一个读取状态服务。她唯一的任务是跟踪您阅读的频道和消息。每次您连接到Discord，每次发送消息以及每次阅读消息时，都会访问“读取状态”。简而言之，状态被连续读取并且处于“热路径”上。我们要确保Discord总是很快，所以状态检查应该很快。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Go上的服务实施未满足所有要求。</font><font style="vertical-align: inherit;">在大多数情况下，它都能快速运行，但每隔几分钟就会出现强烈的延迟，用户会注意到。</font><font style="vertical-align: inherit;">在检查了情况之后，我们确定延迟是由于Go的关键特性所致：其内存模型和垃圾收集器（GC）。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为什么Go无法达到我们的绩效目标</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了解释Go无法达到我们的性能目标的原因，我们首先需要讨论数据结构，规模，访问模式和服务架构。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了存储状态信息，我们使用一种数据结构，称为：读取状态。不和谐中有数十亿美元：每个频道的每个用户处于一种状态。每个状态都有几个计数器，这些计数器必须进行原子更新，并且经常重置为零。例如，计数器之一是</font></font><code>@mention</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通道中</font><font style="vertical-align: inherit;">的数字</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了快速更新原子计数器，每个读取状态服务器都具有最近最少使用（LRU）缓存。每个缓存都有数百万个用户和数千万个状态。高速缓存每秒更新数十万次。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了安全起见，缓存与Cassandra数据库集群同步。</font><font style="vertical-align: inherit;">当密钥从缓存中推出时，我们在数据库中输入该用户的状态。</font><font style="vertical-align: inherit;">将来，我们计划在每次状态更新后30秒内更新数据库。</font><font style="vertical-align: inherit;">这是每秒数据库中成千上万的记录。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下图显示了Go </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><sup><font style="vertical-align: inherit;">1</font></sup></a><font style="vertical-align: inherit;">服务在峰值时间间隔的响应时间和CPU负载</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><sup><font style="vertical-align: inherit;"></font></sup></a><a name="1_1"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">可以看出，CPU上的延迟和负载爆发大约每两分钟发生一次。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/90d/37b/89f/90d37b89f25eab54420107e63c086c44.png"><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">那么每两分钟延迟的增长是从哪里来的呢？</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在Go中，当密钥从缓存中推出时不会立即释放内存。取而代之的是，垃圾收集器会定期运行并查找未使用的内存部分。这是很多工作，可能会使程序变慢。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们服务的定期变慢很可能与垃圾回收有关。但是我们编写了一个非常有效的Go代码，并且分配了最少的内存。应该没有太多的垃圾了。有什么事？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通过遍历Go源代码，我们了解到Go </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">至少每两分钟</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">强制启动一次垃圾收集</font><font style="vertical-align: inherit;">。无论堆大小如何，如果GC在两分钟内都没有启动，Go将强制其启动。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们决定，如果您更频繁地运行GC，则可以避免长时间出现这些峰值，因此我们在服务中设置了一个端点来即时更改</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GC Percent</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">值</font><font style="vertical-align: inherit;">。不幸的是，GC Percent的配置没有任何影响。怎么会这样事实证明，GC不想启动频率更高，因为我们分配内存的频率不够高。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们开始进一步挖掘。事实证明，由于释放的内存量巨大，不会发生如此大的延迟，而是因为垃圾回收器扫描了整个LRU缓存以检查所有内存。然后我们决定，如果我们减少LRU缓存，则扫描量将减少。因此，我们在服务中添加了另一个参数以更改LRU缓存的大小，并更改了体系结构，从而将LRU分解为每个服务器上的许多单独的缓存。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事情就这样发生了。使用较小的缓存，可以减少峰值延迟。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+不幸的是，减少LRU缓存的妥协性提高了第99个百分位（即，不包括峰值延迟的99％延迟样本的平均值增加了）。这是因为减少高速缓存会降低用户的读取状态将在高速缓存中的可能性。如果不在这里，那么我们必须转向数据库。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在对不同大小的缓存进行大量负载测试之后，我们找到了可接受的设置。</font><font style="vertical-align: inherit;">尽管不是理想的解决方案，但它是一个令人满意的解决方案，因此我们将服务留给了很长一段时间才能像这样工作。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同时，我们在其他Discord系统中非常成​​功地实现了Rust，因此，我们做出了集体决定，仅在Rust上为新服务编写框架和库。</font><font style="vertical-align: inherit;">而且，该服务似乎是移植到Rust的理想选择：它很小且具有自治性，我们希望Rust可以延迟解决这些峰值问题，并最终使该服务对用户来说更加愉悦</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><sup><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></sup></a><a name="2_2"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rust中的内存管理</font></font></h1><br>
+<blockquote><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rust具有令人难以置信的快速和高效的内存：</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在没有运行时环境和垃圾收集器的情况下，</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">它适用于高性能服务，嵌入式应用程序，并易于与其他语言集成。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><sup><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></sup></a><a name="3_3"></a></i></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Rust没有垃圾收集器，因此我们决定不会像Go这样的延迟。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在内存管理中，他采用了一种非常独特的方法，即“拥有”内存。</font><font style="vertical-align: inherit;">简而言之，Rust跟踪谁有权读取和写入内存。</font><font style="vertical-align: inherit;">他知道程序何时使用内存，并在不再需要内存时立即释放它。</font><font style="vertical-align: inherit;">Rust会在编译时强制执行内存规则，这实际上消除了运行时内存错误的可能性。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><sup><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4</font></font></sup></a><a name="4_4"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您不需要手动跟踪内存。</font><font style="vertical-align: inherit;">编译器会照顾这一点。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，在Rust版本中，当从LRU缓存中排除“读取状态”时，将立即释放内存。</font><font style="vertical-align: inherit;">该内存不会停滞，不会等待垃圾回收器。</font><font style="vertical-align: inherit;">Rust知道它已不再使用，并立即释放它。</font><font style="vertical-align: inherit;">运行时中没有用于扫描要释放的内存的进程。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">异步锈</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是Rust生态系统存在一个问题。在实施我们的服务时，Rust的稳定分支中没有不错的异步功能。对于网络服务，必须进行异步编程。社区已经开发了几个库，但是它们具有不平凡的连接和非常愚蠢的错误消息。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+幸运的是，Rust团队努力简化了异步编程，并且它已经可以在不稳定的通道上使用（Nightly）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Discord从不害怕学习有前途的新技术。例如，我们是Elixir，React，React Native和Scylla的第一批用户之一。如果某种技术看起来很有前途并给我们带来优势，那么我们已经准备好面对不可避免的实施困难和先进工具的不稳定。这就是为什么我们如此迅速地吸引了2.5亿用户，而该州不到50位程序员的原因之一。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从不稳定的Rust通道引入新的异步函数是我们愿意采用一种新的，有希望的技术的另一个例子。工程团队决定实施必要的功能，而无需等待稳定版本的支持。我们与社区的其他代表一起克服了所有出现的问题，现在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">异步Rust</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">保持稳定的分支。</font><font style="vertical-align: inherit;">我们的房价已付清。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实施，压力测试和启动</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+只需重写代码就很容易。我们从粗略的广播开始，然后将其缩小到有意义的地方。例如，Rust有一个出色的类型系统，它广泛地支持泛型（用于处理任何类型的数据），因此我们悄悄丢弃了Go代码，从而弥补了泛型的不足。另外，Rust内存模型考虑了不同线程中的内存安全性，因此我们放弃了保护性goroutines。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+负载测试立即显示出极好的结果。事实证明，Rust的服务性能与Go版本的服务性能一样高，</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">但是没有这些增加的延迟</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常，我们实际上没有优化Rust版本。</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">但是，即使使用最简单的优化，Rust仍能胜过经过精心调整的Go版本。</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这很好地证明了与深入Go相比，编写有效的Rust程序是多么容易。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是我们不满足于简单的性能要求。</font><font style="vertical-align: inherit;">经过一些分析和优化，</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们在各个方面都超过了Go</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">延迟，CPU和内存-Rust版本中的一切都变得更好。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+防锈性能优化包括：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在LRU缓存中切换到BTreeMap而不是HashMap，以优化内存使用率。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用支持现代并发Rust的版本替换原始指标库。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">减少内存中的份数。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+满意后，我们决定部署该服务。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在进行压力测试时，发射进行得非常顺利。</font><font style="vertical-align: inherit;">我们将服务连接到一个测试节点，发现并修复了一些临界情况。</font><font style="vertical-align: inherit;">不久之后，他们将新版本推向了整个服务器园区。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+结果如下所示。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+紫色图形为Go，蓝色图形为Rust。</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><img src="https://habrastorage.org/webt/yb/-v/mi/yb-vmise0bioz33f8yfrockjr_0.png"></a><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">增加缓存大小</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当该服务成功工作了几天后，我们决定再次增加LRU缓存。</font><font style="vertical-align: inherit;">如上所述，在Go版本中，无法完成此操作，因为垃圾收集的时间增加了。</font><font style="vertical-align: inherit;">由于我们不再进行垃圾收集，因此您可以增加缓存，并进一步提高性能。</font><font style="vertical-align: inherit;">因此，我们增加了服务器上的内存，优化了数据结构以减少内存使用（出于娱乐目的），并将缓存大小增加到800万个“读取状态”状态。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下结果不言而喻。</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">请注意，现在平均时间以微秒为单位，最大延迟</font></font><code>@mention</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">以毫秒为单位。</font></font></b><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/93f/55a/500/93f55a500413c691a4e711e4c90ceada.png"></div><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">生态系统发展</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最后，Rust拥有一个快速发展的奇妙生态系统。</font><font style="vertical-align: inherit;">例如，最近我们使用的异步运行时的新版本是Tokio 0.2。</font><font style="vertical-align: inherit;">我们进行了更新，并且不费吹灰之力就自动减少了CPU的负载。</font><font style="vertical-align: inherit;">在下图中，您可以看到自1月16日左右以来负荷如何减少。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/e5f/128/490/e5f12849036cfea0b9e9246a1e321ed0.png"></div><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最后的想法</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Discord当前在软件堆栈的许多部分中使用Rust：对于GameSDK，使用Go Live，</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Elixir NIF</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，一些后端服务等</font><font style="vertical-align: inherit;">捕获和编码视频</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在开始新项目或软件组件时，我们绝对会考虑使用Rust。当然，只有在有意义的地方。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+除了性能之外，Rust还为开发人员提供了许多其他好处。例如，随着产品需求的变化或引入新的语言功能，其类型安全和借位检查器大大简化了重构。生态系统和工具非常出色，并且正在迅速发展。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有趣的事实：Rust团队还使用Discord进行协调。甚至有一个非常有用的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rust社区服务器</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，有时我们在这里聊天。</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><div style="text-align:center;"><img src="https://habrastorage.org/webt/br/pc/l_/brpcl_fl4bwj8fcmaeodxotfw5s.png"></div></a><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">脚注</font></font></h4><br>
+<font color="gray"><ol>
+<li><a name="1"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图表摘自Go 1.9.2版。</font><font style="vertical-align: inherit;">我们尝试了1.8、1.9和1.10版本，没有进行任何改进。</font><font style="vertical-align: inherit;">从Go到Rust的初始迁移已于2019年5月完成。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[回来]</font></font></a><br>
+</li>
+<li><a name="2"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为了清楚起见，我们不建议无缘无故地在Rust中重写所有内容。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[回来]</font></font></a><br>
+</li>
+<li><a name="3"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从官方网站报价。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[回来]</font></font></a><br>
+</li>
+<li><a name="4"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">当然，除非您使用</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">unsafe</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[回来]</font></font></a></li>
+</ol></font></div>
+      
+    </div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN487116/">https://habr.com/ru/post/zh-CN487116/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN487100/index.html">最先进的不可变数据结构</a></li>
+<li><a href="../zh-CN487106/index.html">PVS-Studio分析仪RunUO检查</a></li>
+<li><a href="../zh-CN487108/index.html">手机游戏玩家资料：MyTracker研究</a></li>
+<li><a href="../zh-CN487110/index.html">Slurm SRE。由Booking.com和Google.com的专家进行的完整实验</a></li>
+<li><a href="../zh-CN487112/index.html">疯狂边缘：基本圈子</a></li>
+<li><a href="../zh-CN487118/index.html">Loki-使用Prometheus方法收集日志</a></li>
+<li><a href="../zh-CN487120/index.html">如何散发小猫</a></li>
+<li><a href="../zh-CN487122/index.html">Google JavaScript样式指南翻译</a></li>
+<li><a href="../zh-CN487124/index.html">Borey Yangel采访了有关Yandex自驾和爱丽丝的创作故事</a></li>
+<li><a href="../zh-CN487126/index.html">公司开发团队如何使用GitLab和Mattermost ChatOps加快开发速度</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

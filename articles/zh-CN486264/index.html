@@ -1,0 +1,197 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧙🏼 👨‍🏫 🌒 PostgreSQL 13：并行VACUUM 🛬 🛰️ 👩🏽‍🏭</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="前几天，阿米特·卡皮拉（Amit Kapila）犯下了泽田雅彦（Mahahiko Sawada）补丁，该补丁可以并行清洁。该表本身仍由一个（引导）进程清除，但是要清理索引，它现在可以启动后台工作进程，每个索引一个。在手动模式下，这可以加快清理具有多个索引的大型表的速度；自动清洁尚未使用此功能。
+ 
+...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL 13：并行VACUUM</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/486264/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前几天，阿米特·卡皮拉（Amit Kapila）犯下了泽田雅彦（Mahahiko Sawada）补丁，该补丁可以并行清洁。</font><font style="vertical-align: inherit;">该表本身仍由一个（引导）进程清除，但是要清理索引，它现在可以启动后台工作进程，每个索引一个。</font><font style="vertical-align: inherit;">在手动模式下，这可以加快清理具有多个索引的大型表的速度；</font><font style="vertical-align: inherit;">自动清洁尚未使用此功能。</font></font><br>
+<a name="habracut"></a><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">相关链接：</font></font><br>
+<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">承诺</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">讨论区</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">主要提交</font></font></a></li>
+</ul></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如您</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">所知</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，桌子清洁过程包括几个阶段。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，对表进行扫描，并在内存中收集到行的不必要（“死”）版本的链接。</font><font style="vertical-align: inherit;">内存受</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">maintenance_work_mem</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">参数限制</font><font style="vertical-align: inherit;">，因此所有链接可能一次无法容纳。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后，对所有索引进行顺序排序（与以前一样），并从中清除指向已找到的无效版本字符串的指针。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后，将再次扫描表中已查看的部分，并且已从中清除行的无效版本。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果一次无法处理所有无效版本的字符串，那么将清除内存，并从上次停止的位置再次重复整个过程。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+整个方案保持不变，但是现在可以并行清除索引。</font><font style="vertical-align: inherit;">为此，牵头流程启动了几个工作流程，这些工作流程解析现有索引并进行处理。</font><font style="vertical-align: inherit;">一个索引仅由一个进程处理。</font><font style="vertical-align: inherit;">清除所有索引后，工作流程完成，协调员进入下一阶段。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例如，使用</font></font><code>ticket_flights</code> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">demobase</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> flight </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">table</font></a><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">上面有一个索引，但是您可以创建更多索引。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">demo=# <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">index</span> <span class="hljs-keyword">on</span> ticket_flights (fare_conditions);<font></font>
+demo=# <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">index</span> <span class="hljs-keyword">on</span> ticket_flights (amount);
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+并行处理中仅涉及大小超过</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min_parallel_index_scan_size</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">参数值的索引</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我们的指标很适合：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">demo=# <span class="hljs-keyword">SHOW</span> min_parallel_index_scan_size;
+</code></pre><pre><code class="plaintext hljs"> min_parallel_index_scan_size <font></font>
+------------------------------<font></font>
+ 512kB<font></font>
+(1 row)<font></font>
+</code></pre><pre><code class="pgsql hljs">demo=# <span class="hljs-keyword">SELECT</span> pg_size_pretty(pg_relation_size(indexname::<span class="hljs-type">regclass</span>))
+<span class="hljs-keyword">FROM</span> pg_indexes
+<span class="hljs-keyword">WHERE</span> tablename = <span class="hljs-string">'ticket_flights'</span>;
+</code></pre><pre><code class="plaintext hljs"> pg_size_pretty <font></font>
+----------------<font></font>
+ 325 MB<font></font>
+ 187 MB<font></font>
+ 180 MB<font></font>
+(3 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+更新一半的行以加载清理工作：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">demo=# <span class="hljs-keyword">UPDATE</span> ticket_flights <span class="hljs-keyword">SET</span> amount = amount + <span class="hljs-number">1</span> <span class="hljs-keyword">WHERE</span> random() &gt; <span class="hljs-number">0.5</span>;
+</code></pre><pre><code class="plaintext hljs">UPDATE 4194262
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+走。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">demo=# <span class="hljs-keyword">VACUUM</span> <span class="hljs-keyword">VERBOSE</span> ticket_flights;
+</code></pre><pre><code class="plaintext hljs">INFO:  vacuuming "bookings.ticket_flights"<font></font>
+INFO:  launched 2 parallel vacuum workers for index vacuuming (planned: 2)<font></font>
+INFO:  scanned index "ticket_flights_fare_conditions_idx" to remove 4194262 row versions by parallel vacuum worker<font></font>
+DETAIL:  CPU: user: 1.84 s, system: 0.41 s, elapsed: 11.82 s<font></font>
+INFO:  scanned index "ticket_flights_amount_idx" to remove 4194262 row versions by parallel vacuum worker<font></font>
+DETAIL:  CPU: user: 2.31 s, system: 0.44 s, elapsed: 12.95 s<font></font>
+INFO:  scanned index "ticket_flights_pkey" to remove 4194262 row versions<font></font>
+...<font></font>
+INFO:  "ticket_flights": found 4194262 removable, 8391852 nonremovable row versions in 104885 out of 104885 pages<font></font>
+DETAIL:  0 dead row versions cannot be removed yet, oldest xmin: 630<font></font>
+There were 0 unused item identifiers.<font></font>
+Skipped 0 pages due to buffer pins, 0 frozen pages.<font></font>
+0 pages are entirely empty.<font></font>
+CPU: user: 9.91 s, system: 4.40 s, elapsed: 121.40 s.<font></font>
+VACUUM<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+可以看出，领导过程启动了两个工作人员，并采用了一个索引。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+可以明确指定工作流程的数量（当然，在任何情况下都不会超过</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">max_parallel_maintenance_workers</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，而不会超过</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">max_worker_processes</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font><font style="vertical-align: inherit;">明确的指示尤其可以用于关闭并发：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">demo=# <span class="hljs-keyword">VACUUM</span> (PARALLEL <span class="hljs-number">0</span>, <span class="hljs-keyword">VERBOSE</span>) ticket_flights;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我希望这个主题会得到进一步发展。</font><font style="vertical-align: inherit;">可以通过多个过程并行扫描该表（这在原始的Savada补丁中，但未包含在最后一个补丁中），每个索引也可以并行清除。</font><font style="vertical-align: inherit;">还必须教导自动清洁使用并行性。</font></font><br>
+<br>
+<blockquote><b>P. S.</b> ,       .       . -  ,   ,   .<br>
+</blockquote></div>
+      
+    </div><p>Source: <a rel="nofollow" href="https://habr.com/ru/post/zh-CN486264/">https://habr.com/ru/post/zh-CN486264/</a></p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN486252/index.html">如果加速一倍半会怎样？</a></li>
+<li><a href="../zh-CN486256/index.html">电子身份证</a></li>
+<li><a href="../zh-CN486258/index.html">Pindastrial屏蔽-Raspberry PI的电源和RS-485接口模块</a></li>
+<li><a href="../zh-CN486260/index.html">使用粒子系统显示游戏内消息</a></li>
+<li><a href="../zh-CN486262/index.html">5G网络漏洞</a></li>
+<li><a href="../zh-CN486268/index.html">Rust 1.41.0版本：FFI中Box <T>的新保证，货物安装的改进，特征的宽松</a></li>
+<li><a href="../zh-CN486274/index.html">在市场对伊朗和美国之间的冲突做出反应之后，比特币是否被视为安全资产？</a></li>
+<li><a href="../zh-CN486278/index.html">Kafka mitap的材料：СDC连接器，增长问题，Kubernetes</a></li>
+<li><a href="../zh-CN486288/index.html">监视Apache Ignite。做对了</a></li>
+<li><a href="../zh-CN486298/index.html">生酮饮食：从治疗癫痫病到不健康</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
