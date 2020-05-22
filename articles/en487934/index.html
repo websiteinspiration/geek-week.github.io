@@ -1,0 +1,772 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✍️ 👄 ⏩ How we optimized our DNS server using GO tools 💀 👽 🐎</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In anticipation of the start of a new stream on the course "Developer Golang" prepared a translation of interesting material.
+ 
+ 
+ 
+ Our authoritative...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>How we optimized our DNS server using GO tools</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/otus/blog/487934/"><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In anticipation of the start of a new stream on the course </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"Developer Golang"</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> prepared a translation of interesting material.</font></font></i><br>
+<br>
+<img src="https://habrastorage.org/webt/_m/nk/zf/_mnkzfy1x9apnfm5u3hikc54-7w.png"><br>
+<hr><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Our </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">authoritative DNS server is</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> used by tens of thousands of websites. </font><font style="vertical-align: inherit;">We respond to millions of queries daily. </font><font style="vertical-align: inherit;">Nowadays, DNS attacks are becoming more and more common, DNS is an important part of our system, and we need to make sure that we can work well under high load. </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dnsflood</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> is a small tool that can generate a huge number of udp requests.</font></font><br>
+<br>
+<pre><code class="go hljs"># timeout <span class="hljs-number">20</span>s ./dnsflood example.com <span class="hljs-number">127.0</span><span class="hljs-number">.0</span><span class="hljs-number">.1</span> -p <span class="hljs-number">2053</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+System monitoring showed that the memory usage of our service grew so fast that we had to stop it, otherwise we would run into OOM errors. </font><font style="vertical-align: inherit;">It was like a memory leak problem; </font><font style="vertical-align: inherit;">There are various reasons for "similar" and "real" memory leaks in go:</font></font><a name="habracut"></a><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hanging goroutines</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">misuse of defer and finalizer</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">substrings and sub-cuts</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">global variables</font></font></li>
+</ul><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">This post</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> provides a detailed explanation of various leaks. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Before making any conclusions, let's first conduct a profiling.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Godebug</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Various debugging tools can be enabled using an environment variable </font></font><code>GODEBUG</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, passing a comma-separated list of pairs </font></font><code>name=value</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Trace planner</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The scheduler trace can provide information about goroutine behavior at runtime. </font><font style="vertical-align: inherit;">To enable the scheduler trace, run the program with </font></font><code>GODEBUG=schedtrace=100</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, the value determines the output period in ms.</font></font><br>
+ <br>
+<pre><code class="go hljs">$ GODEBUG=schedtrace=<span class="hljs-number">100</span> ./redins -c config.json<font></font>
+SCHED <span class="hljs-number">2952</span>ms: ... runqueue=<span class="hljs-number">3</span> [<span class="hljs-number">26</span> <span class="hljs-number">11</span> <span class="hljs-number">7</span> <span class="hljs-number">18</span> <span class="hljs-number">13</span> <span class="hljs-number">30</span> <span class="hljs-number">6</span> <span class="hljs-number">3</span> <span class="hljs-number">24</span> <span class="hljs-number">25</span> <span class="hljs-number">11</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">3053</span>ms: ... runqueue=<span class="hljs-number">3</span> [<span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">4</span> <span class="hljs-number">0</span> <span class="hljs-number">21</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">3154</span>ms: ... runqueue=<span class="hljs-number">0</span> [<span class="hljs-number">0</span> <span class="hljs-number">6</span> <span class="hljs-number">2</span> <span class="hljs-number">4</span> <span class="hljs-number">0</span> <span class="hljs-number">30</span> <span class="hljs-number">0</span> <span class="hljs-number">5</span> <span class="hljs-number">0</span> <span class="hljs-number">11</span> <span class="hljs-number">2</span> <span class="hljs-number">5</span>]<font></font>
+SCHED <span class="hljs-number">3255</span>ms: ... runqueue=<span class="hljs-number">1</span> [<span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">3355</span>ms: ... runqueue=<span class="hljs-number">0</span> [<span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">3456</span>ms: ... runqueue=<span class="hljs-number">0</span> [<span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">3557</span>ms: ... runqueue=<span class="hljs-number">0</span> [<span class="hljs-number">13</span> <span class="hljs-number">0</span> <span class="hljs-number">3</span> <span class="hljs-number">0</span> <span class="hljs-number">3</span> <span class="hljs-number">33</span> <span class="hljs-number">2</span> <span class="hljs-number">0</span> <span class="hljs-number">10</span> <span class="hljs-number">8</span> <span class="hljs-number">10</span> <span class="hljs-number">14</span>]<font></font>
+SCHED <span class="hljs-number">3657</span>ms: ...runqueue=<span class="hljs-number">3</span> [<span class="hljs-number">14</span> <span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">5</span> <span class="hljs-number">19</span> <span class="hljs-number">54</span> <span class="hljs-number">9</span> <span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">1</span> <span class="hljs-number">29</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">3758</span>ms: ... runqueue=<span class="hljs-number">0</span> [<span class="hljs-number">67</span> <span class="hljs-number">1</span> <span class="hljs-number">5</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">87</span> <span class="hljs-number">4</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">3859</span>ms: ... runqueue=<span class="hljs-number">6</span> [<span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">3</span> <span class="hljs-number">6</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">3</span> <span class="hljs-number">2</span> <span class="hljs-number">2</span> <span class="hljs-number">19</span>]<font></font>
+SCHED <span class="hljs-number">3960</span>ms: ... runqueue=<span class="hljs-number">0</span> [<span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">4060</span>ms: ... runqueue=<span class="hljs-number">5</span> [<span class="hljs-number">4</span> <span class="hljs-number">0</span> <span class="hljs-number">5</span> <span class="hljs-number">0</span> <span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">4161</span>ms: ... runqueue=<span class="hljs-number">0</span> [<span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">1</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">4262</span>ms: ... runqueue=<span class="hljs-number">4</span> [<span class="hljs-number">0</span> <span class="hljs-number">128</span> <span class="hljs-number">21</span> <span class="hljs-number">172</span> <span class="hljs-number">1</span> <span class="hljs-number">19</span> <span class="hljs-number">8</span> <span class="hljs-number">2</span> <span class="hljs-number">43</span> <span class="hljs-number">5</span> <span class="hljs-number">139</span> <span class="hljs-number">37</span>]<font></font>
+SCHED <span class="hljs-number">4362</span>ms: ... runqueue=<span class="hljs-number">0</span> [<span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">4463</span>ms: ... runqueue=<span class="hljs-number">6</span> [<span class="hljs-number">0</span> <span class="hljs-number">28</span> <span class="hljs-number">23</span> <span class="hljs-number">39</span> <span class="hljs-number">4</span> <span class="hljs-number">11</span> <span class="hljs-number">4</span> <span class="hljs-number">11</span> <span class="hljs-number">25</span> <span class="hljs-number">0</span> <span class="hljs-number">25</span> <span class="hljs-number">0</span>]<font></font>
+SCHED <span class="hljs-number">4564</span>ms: ... runqueue=<span class="hljs-number">354</span> [<span class="hljs-number">51</span> <span class="hljs-number">45</span> <span class="hljs-number">33</span> <span class="hljs-number">32</span> <span class="hljs-number">15</span> <span class="hljs-number">20</span> <span class="hljs-number">8</span> <span class="hljs-number">7</span> <span class="hljs-number">5</span> <span class="hljs-number">42</span> <span class="hljs-number">6</span> <span class="hljs-number">0</span>]</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">runqueue</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> is the length of the global queue of goroutines to run. </font><font style="vertical-align: inherit;">The numbers in parentheses are the length of the process queue. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The ideal situation is when all processes are busy executing goroutines, and the moderate length of the execution queue is evenly distributed between all processes:</font></font><br>
+<br>
+<pre><code class="go hljs">SCHED <span class="hljs-number">2449</span>ms: gomaxprocs=<span class="hljs-number">12</span> idleprocs=<span class="hljs-number">0</span> threads=<span class="hljs-number">40</span> spinningthreads=<span class="hljs-number">1</span> idlethreads=<span class="hljs-number">1</span> runqueue=<span class="hljs-number">20</span> [<span class="hljs-number">20</span> <span class="hljs-number">20</span> <span class="hljs-number">20</span> <span class="hljs-number">20</span> <span class="hljs-number">20</span> <span class="hljs-number">20</span> <span class="hljs-number">20</span> <span class="hljs-number">20</span> <span class="hljs-number">20</span> <span class="hljs-number">20</span> <span class="hljs-number">20</span>]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Looking at the output of </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">schedtrace</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , we can see periods of time when almost all processes are idle. </font><font style="vertical-align: inherit;">This means that we are not using the processor at full capacity.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Garbage collector trace</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To enable garbage collection (GC) tracing, run the program with an environment variable </font></font><code>GODEBUG=gctrace=1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+ <br>
+<pre><code class="go hljs">GODEBUG=gctrace=<span class="hljs-number">1</span> ./redins -c config1.json<font></font>
+.<font></font>
+.<font></font>
+.<font></font>
+gc <span class="hljs-number">30</span> @<span class="hljs-number">3.727</span>s <span class="hljs-number">1</span>%: <span class="hljs-number">0.066</span>+<span class="hljs-number">21</span>+<span class="hljs-number">0.093</span> ms clock, <span class="hljs-number">0.79</span>+<span class="hljs-number">128</span>/<span class="hljs-number">59</span>/<span class="hljs-number">0</span>+<span class="hljs-number">1.1</span> ms cpu, <span class="hljs-number">67</span>-&gt;<span class="hljs-number">71</span>-&gt;<span class="hljs-number">45</span> MB, <span class="hljs-number">76</span> MB goal, <span class="hljs-number">12</span> P<font></font>
+gc <span class="hljs-number">31</span> @<span class="hljs-number">3.784</span>s <span class="hljs-number">2</span>%: <span class="hljs-number">0.030</span>+<span class="hljs-number">27</span>+<span class="hljs-number">0.053</span> ms clock, <span class="hljs-number">0.36</span>+<span class="hljs-number">177</span>/<span class="hljs-number">81</span>/<span class="hljs-number">7.8</span>+<span class="hljs-number">0.63</span> ms cpu, <span class="hljs-number">79</span>-&gt;<span class="hljs-number">84</span>-&gt;<span class="hljs-number">55</span> MB, <span class="hljs-number">90</span> MB goal, <span class="hljs-number">12</span> P<font></font>
+gc <span class="hljs-number">32</span> @<span class="hljs-number">3.858</span>s <span class="hljs-number">3</span>%: <span class="hljs-number">0.026</span>+<span class="hljs-number">34</span>+<span class="hljs-number">0.024</span> ms clock, <span class="hljs-number">0.32</span>+<span class="hljs-number">234</span>/<span class="hljs-number">104</span>/<span class="hljs-number">0</span>+<span class="hljs-number">0.29</span> ms cpu, <span class="hljs-number">96</span>-&gt;<span class="hljs-number">100</span>-&gt;<span class="hljs-number">65</span> MB, <span class="hljs-number">110</span> MB goal, <span class="hljs-number">12</span> P<font></font>
+gc <span class="hljs-number">33</span> @<span class="hljs-number">3.954</span>s <span class="hljs-number">3</span>%: <span class="hljs-number">0.026</span>+<span class="hljs-number">44</span>+<span class="hljs-number">0.13</span> ms clock, <span class="hljs-number">0.32</span>+<span class="hljs-number">191</span>/<span class="hljs-number">131</span>/<span class="hljs-number">57</span>+<span class="hljs-number">1.6</span> ms cpu, <span class="hljs-number">117</span>-&gt;<span class="hljs-number">123</span>-&gt;<span class="hljs-number">79</span> MB, <span class="hljs-number">131</span> MB goal, <span class="hljs-number">12</span> P<font></font>
+gc <span class="hljs-number">34</span> @<span class="hljs-number">4.077</span>s <span class="hljs-number">4</span>%: <span class="hljs-number">0.010</span>+<span class="hljs-number">53</span>+<span class="hljs-number">0.024</span> ms clock, <span class="hljs-number">0.12</span>+<span class="hljs-number">241</span>/<span class="hljs-number">159</span>/<span class="hljs-number">69</span>+<span class="hljs-number">0.29</span> ms cpu, <span class="hljs-number">142</span>-&gt;<span class="hljs-number">147</span>-&gt;<span class="hljs-number">91</span> MB, <span class="hljs-number">158</span> MB goal, <span class="hljs-number">12</span> P<font></font>
+gc <span class="hljs-number">35</span> @<span class="hljs-number">4.228</span>s <span class="hljs-number">5</span>%: <span class="hljs-number">0.017</span>+<span class="hljs-number">61</span>+<span class="hljs-number">0.12</span> ms clock, <span class="hljs-number">0.20</span>+<span class="hljs-number">296</span>/<span class="hljs-number">179</span>/<span class="hljs-number">94</span>+<span class="hljs-number">1.5</span> ms cpu, <span class="hljs-number">166</span>-&gt;<span class="hljs-number">174</span>-&gt;<span class="hljs-number">105</span> MB, <span class="hljs-number">182</span> MB goal, <span class="hljs-number">12</span> P<font></font>
+gc <span class="hljs-number">36</span> @<span class="hljs-number">4.391</span>s <span class="hljs-number">6</span>%: <span class="hljs-number">0.017</span>+<span class="hljs-number">73</span>+<span class="hljs-number">0.086</span> ms clock, <span class="hljs-number">0.21</span>+<span class="hljs-number">492</span>/<span class="hljs-number">216</span>/<span class="hljs-number">4.0</span>+<span class="hljs-number">1.0</span> ms cpu, <span class="hljs-number">191</span>-&gt;<span class="hljs-number">198</span>-&gt;<span class="hljs-number">122</span> MB, <span class="hljs-number">210</span> MB goal, <span class="hljs-number">12</span> P<font></font>
+gc <span class="hljs-number">37</span> @<span class="hljs-number">4.590</span>s <span class="hljs-number">7</span>%: <span class="hljs-number">0.049</span>+<span class="hljs-number">85</span>+<span class="hljs-number">0.095</span> ms clock, <span class="hljs-number">0.59</span>+<span class="hljs-number">618</span>/<span class="hljs-number">253</span>/<span class="hljs-number">0</span>+<span class="hljs-number">1.1</span> ms cpu, <span class="hljs-number">222</span>-&gt;<span class="hljs-number">230</span>-&gt;<span class="hljs-number">140</span> MB, <span class="hljs-number">244</span> MB goal, <span class="hljs-number">12</span> P<font></font>
+.<font></font>
+.<font></font>
+.</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As we see here, the amount of memory used increases, and the amount of time gc takes to complete his work also increases. </font><font style="vertical-align: inherit;">This means that we consume more memory than it can handle. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You </font></font><code>GODEBUG</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">can learn </font><font style="vertical-align: inherit;">more about </font><font style="vertical-align: inherit;">and some other golang environment variables </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Enabling Profiler</font></font></h4><br>
+<code>go tool pprof</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- A tool for analyzing and profiling data. </font><font style="vertical-align: inherit;">There are two ways to configure </font></font><code>pprof</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">: either directly call functions </font></font><code>runtime/pprof</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in your code, for example </font></font><code>pprof.StartCPUProfile()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, or install an </font></font><code>net/http/pprof</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">http listner and get data from there, which we did. </font><font style="vertical-align: inherit;">It has a </font></font><code>pprof</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">very small resource consumption, so it can be used safely in development, but the profile endpoint should not be publicly available, since sensitive data can be disclosed. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All we need to do for the second option is to import the </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“net / http / pprof” package</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+ <br>
+<pre><code class="go hljs"><span class="hljs-keyword">import</span> (<font></font>
+  _ <span class="hljs-string">"net/http/pprof"</span>
+)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+then add an http listner:</font></font><br>
+ <br>
+<pre><code class="go hljs"><span class="hljs-keyword">go</span> <span class="hljs-function"><span class="hljs-keyword">func</span><span class="hljs-params">()</span></span> {<font></font>
+  log.Println(http.ListenAndServe(<span class="hljs-string">"localhost:6060"</span>, <span class="hljs-literal">nil</span>))<font></font>
+}()</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pprof has several default profiles:</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">allocs</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : fetch all past memory allocations</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">block</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : stack trace that led to blocking of synchronization primitives</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">goroutine</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : stack trace of all current goroutines</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">heap</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : fetch memory allocations of live objects.</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mutex</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : stack trace of conflicting mutex holders</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">profile</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : processor profile.</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">threadcreate</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : a stack trace that led to the creation of new threads in the OS</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">trace</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : trace the execution of the current program.</font></font></li>
+</ul><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Note: the trace endpoint, unlike all other endpoints, is a </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">trace</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> profile </font><font style="vertical-align: inherit;">, not </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pprof</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , you can view it using go tool trace instead </font></font><code>go tool pprof</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Now that everything is ready, we can look at the available tools.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Processor profiler</font></font></h4><br>
+<pre><code class="go hljs">‍‍‍‍‍‍‍‍‍‍‍‍‍‍‍$ <span class="hljs-keyword">go</span> tool pprof http:<span class="hljs-comment">//localhost:6060/debug/pprof/profile?seconds=10</span></code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The processor profiler by default runs for 30 seconds (we can change this by setting the parameter </font></font><code>seconds</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) and collects samples every 100 milliseconds, after which it goes into interactive mode. </font><font style="vertical-align: inherit;">The most common commands are available </font></font><code>top</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>list</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>web</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Use </font></font><code>top n</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to view the hottest entries in text format, there are also two options for sorting output, </font></font><code>-cum</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for cumulative order and </font></font><code>-flat</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+ <br>
+<pre><code class="go hljs">(pprof) top <span class="hljs-number">10</span> -cum<font></font>
+Showing nodes accounting <span class="hljs-keyword">for</span> <span class="hljs-number">1.50</span>s, <span class="hljs-number">6.19</span>% of <span class="hljs-number">24.23</span>s total<font></font>
+Dropped <span class="hljs-number">347</span> nodes (cum &lt;= <span class="hljs-number">0.12</span>s)<font></font>
+Showing top <span class="hljs-number">10</span> nodes out of <span class="hljs-number">186</span><font></font>
+flat  flat%   sum%  cum   cum%<font></font>
+<span class="hljs-number">0.03</span>s <span class="hljs-number">0.12</span>% <span class="hljs-number">0.12</span>% <span class="hljs-number">16.7</span>s <span class="hljs-number">69.13</span>% (*Server).serveUDPPacket
+<span class="hljs-number">0.05</span>s <span class="hljs-number">0.21</span>% <span class="hljs-number">0.33</span>% <span class="hljs-number">15.6</span>s <span class="hljs-number">64.51</span>% (*Server).serveDNS
+<span class="hljs-number">0</span>     <span class="hljs-number">0</span>%    <span class="hljs-number">0.33</span>% <span class="hljs-number">14.3</span>s <span class="hljs-number">59.10</span>% (*ServeMux).ServeDNS
+<span class="hljs-number">0</span>     <span class="hljs-number">0</span>%    <span class="hljs-number">0.33</span>% <span class="hljs-number">14.2</span>s <span class="hljs-number">58.73</span>% HandlerFunc.ServeDNS
+<span class="hljs-number">0.01</span>s <span class="hljs-number">0.04</span>% <span class="hljs-number">0.37</span>% <span class="hljs-number">14.2</span>s <span class="hljs-number">58.73</span>% main.handleRequest
+<span class="hljs-number">0.07</span>s <span class="hljs-number">0.29</span>% <span class="hljs-number">0.66</span>% <span class="hljs-number">13.5</span>s <span class="hljs-number">56.00</span>% (*DnsRequestHandler).HandleRequest
+<span class="hljs-number">0.99</span>s <span class="hljs-number">4.09</span>% <span class="hljs-number">4.75</span>% <span class="hljs-number">7.56</span>s <span class="hljs-number">31.20</span>% runtime.gentraceback
+<span class="hljs-number">0.02</span>s <span class="hljs-number">0.08</span>% <span class="hljs-number">4.83</span>% <span class="hljs-number">7.02</span>s <span class="hljs-number">28.97</span>% runtime.systemstack
+<span class="hljs-number">0.31</span>s <span class="hljs-number">1.28</span>% <span class="hljs-number">6.11</span>% <span class="hljs-number">6.62</span>s <span class="hljs-number">27.32</span>% runtime.mallocgc
+<span class="hljs-number">0.02</span>s <span class="hljs-number">0.08</span>% <span class="hljs-number">6.19</span>% <span class="hljs-number">6.35</span>s <span class="hljs-number">26.21</span>% (*DnsRequestHandler).FindANAME<font></font>
+(pprof)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+use </font></font><code>list</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to explore function.</font></font><br>
+<br>
+<pre><code class="go hljs">(pprof) list handleRequest<font></font>
+Total: <span class="hljs-number">24.23</span>s<font></font>
+ROUTINE ======================== main.handleRequest in /home/arash/<span class="hljs-keyword">go</span>/src/arvancloud/redins/redins.<span class="hljs-keyword">go</span>
+     <span class="hljs-number">10</span>ms     <span class="hljs-number">14.23</span>s (flat, cum) <span class="hljs-number">58.73</span>% of Total<font></font>
+        .          .     <span class="hljs-number">35</span>: l          *handler.RateLimiter<font></font>
+        .          .     <span class="hljs-number">36</span>: configFile <span class="hljs-keyword">string</span>
+        .          .     <span class="hljs-number">37</span>:)<font></font>
+        .          .     <span class="hljs-number">38</span>:<font></font>
+        .          .     <span class="hljs-number">39</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">handleRequest</span><span class="hljs-params">(w dns.ResponseWriter, r *dns.Msg)</span></span> {
+     <span class="hljs-number">10</span>ms      <span class="hljs-number">610</span>ms     <span class="hljs-number">40</span>: context := handler.NewRequestContext(w, r)<font></font>
+        .       <span class="hljs-number">50</span>ms     <span class="hljs-number">41</span>: logger.Default.Debugf(<span class="hljs-string">"handle request: [%d] %s %s"</span>, r.Id, context.RawName(), context.Type())<font></font>
+        .          .     <span class="hljs-number">42</span>:<font></font>
+        .          .     <span class="hljs-number">43</span>: <span class="hljs-keyword">if</span> l.CanHandle(context.IP()) {<font></font>
+        .     <span class="hljs-number">13.57</span>s     <span class="hljs-number">44</span>:  h.HandleRequest(context)<font></font>
+        .          .     <span class="hljs-number">45</span>: } <span class="hljs-keyword">else</span> {<font></font>
+        .          .     <span class="hljs-number">46</span>:  context.Response(dns.RcodeRefused)<font></font>
+        .          .     <span class="hljs-number">47</span>: }<font></font>
+        .          .     <span class="hljs-number">48</span>:}<font></font>
+        .          .     <span class="hljs-number">49</span>:<font></font>
+(pprof)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The team </font></font><code>web</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">generates an SVG-graph of critical areas and opens it in the browser. </font></font><br>
+<br>
+<code>(pprof)web handleReques</code><br>
+<br>
+<img src="https://habrastorage.org/webt/bt/hi/di/bthidimalsguoeg_obuzzmzy7ro.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A large amount of time spent in GC functions, such as </font></font><code>runtime.mallocgc</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, often results in significant memory allocation, which can add load to the garbage collector and increase latency. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A large amount of time spent on synchronization mechanisms, such as </font></font><code>runtime.chansend</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">or </font></font><code>runtime.lock</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, may be a sign of conflict. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A large amount of time spent on </font></font><code>syscall.Read/Write</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">means excessive use of I / O operations.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Memory profiler</font></font></h4><br>
+<pre><code class="go hljs">$ <span class="hljs-keyword">go</span> tool pprof http:<span class="hljs-comment">//localhost:6060/debug/pprof/allocs</span></code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+By default, it shows the lifetime of the allocated memory. </font><font style="vertical-align: inherit;">We can see the number of selected objects using </font></font><code>-alloc_objects</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">other useful options: </font></font><code>-iuse_objects</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>-inuse_space</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for checking </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">live</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> memory. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Usually, if you want to reduce memory consumption, you need to look at </font></font><code>-inuse_space</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, but if you want to reduce latency, look at </font></font><code>-alloc_objects</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">after enough run / load time.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Identification of a bottleneck</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is important to first determine the type of bottleneck (processor, I / O, memory) that we are dealing with. </font><font style="vertical-align: inherit;">In addition to profilers, there is another type of tool. </font></font><br>
+<br>
+<code>go tool trace</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">can show what goroutines do in detail. </font><font style="vertical-align: inherit;">To collect a trace example, we need to send an http request to the trace endpoint:</font></font><br>
+<br>
+<pre><code class="go hljs">$ curl http:<span class="hljs-comment">//localhost:6060/debug/pprof/trace?seconds=5 --output trace.out</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The generated file can be viewed using the trace tool:</font></font><br>
+ <br>
+<pre><code class="go hljs">$ <span class="hljs-keyword">go</span> tool trace trace.out
+<span class="hljs-number">2019</span>/<span class="hljs-number">12</span>/<span class="hljs-number">25</span> <span class="hljs-number">15</span>:<span class="hljs-number">30</span>:<span class="hljs-number">50</span> Parsing trace...
+<span class="hljs-number">2019</span>/<span class="hljs-number">12</span>/<span class="hljs-number">25</span> <span class="hljs-number">15</span>:<span class="hljs-number">30</span>:<span class="hljs-number">59</span> Splitting trace...
+<span class="hljs-number">2019</span>/<span class="hljs-number">12</span>/<span class="hljs-number">25</span> <span class="hljs-number">15</span>:<span class="hljs-number">31</span>:<span class="hljs-number">10</span> Opening browser. Trace viewer is listening on http:<span class="hljs-comment">//127.0.0.1:42703</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Go tool trace is a web application that uses the Chrome DevTools protocol and is compatible only with Chrome browsers. The main page looks something like this: </font></font><br>
+ <br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (0s-409.575266ms) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (411.075559ms-747.252311ms) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (747.252311ms-1.234968945s) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (1.234968945s-1.774245108s) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (1.774245484s-2.111339514s) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (2.111339514s-2.674030898s) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (2.674031362s-3.044145798s) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (3.044145798s-3.458795252s) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (3.43953778s-4.075080634s) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (4.075081098s-4.439271287s) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View35 4.439 -4.814869651s) </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">View trace (4.814869651s-5.253597835s) </font></font></a><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Goroutine analysis </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Network blocking profile ()</font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The Synchronization blocking profile () </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SYSCALL blocking profile () </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scheduler latency The profile () </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the User-defined tasks </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the User-defined regions For RentAircraft </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the Minimum the mutator utilization</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Trace divides the trace so that your browser can handle it </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/xx/xa/pf/xxxapfdolkivu1jce6axclwsmqg.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are a huge variety of data, which makes them almost unreadable if we don’t know what we are looking for. Let's leave it for now. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The following link on the main page is </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“goroutine analysis”</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which shows the different </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">types of</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> working goroutines in the program during the trace period:</font></font><br>
+ <br>
+<pre><code class="go hljs">Goroutines:<font></font>
+github.com/miekg/dns.(*Server).serveUDPPacket N=<span class="hljs-number">441703</span>
+runtime.gcBgMarkWorker N=<span class="hljs-number">12</span>
+github.com/karlseguin/ccache.(*Cache).worker N=<span class="hljs-number">2</span>
+main.Start.func1 N=<span class="hljs-number">1</span>
+runtime.bgsweep N=<span class="hljs-number">1</span>
+arvancloud/redins/handler.NewHandler.func2 N=<span class="hljs-number">1</span>
+runtime/trace.Start.func1 N=<span class="hljs-number">1</span>
+net/http.(*conn).serve N=<span class="hljs-number">1</span>
+runtime.timerproc N=<span class="hljs-number">3</span>
+net/http.(*connReader).backgroundRead N=<span class="hljs-number">1</span>
+N=<span class="hljs-number">40</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Click on the first element with </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">N = 441703</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , this is what we get: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/dh/lt/qy/dhltqyepbyyuk_i7tcadrdyx_gs.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">goroutin analysis</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+This is very interesting. </font><font style="vertical-align: inherit;">Most operations take almost no time to complete, and most of the time is spent in the Sync block. </font><font style="vertical-align: inherit;">Let's take a closer look at one of them: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/tu/bs/vt/tubsvt8trkqhgjrfpjijolibof4.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">goroutine trace pattern</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+It seems that our program is almost always inactive. </font><font style="vertical-align: inherit;">From here we can go directly to the lock tool; </font><font style="vertical-align: inherit;">lock profiling is disabled by default, we need to enable it in our code first:</font></font><br>
+<br>
+<pre><code class="go hljs">runtime.SetBlockProfileRate(<span class="hljs-number">1</span>)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we can get a selection of locks:</font></font><br>
+ <br>
+<pre><code class="go hljs">$ <span class="hljs-keyword">go</span> tool pprof http:<span class="hljs-comment">//localhost:6060/debug/pprof/block</span><font></font>
+(pprof) top<font></font>
+Showing nodes accounting <span class="hljs-keyword">for</span> <span class="hljs-number">16.03</span>wks, <span class="hljs-number">99.75</span>% of <span class="hljs-number">16.07</span>wks total<font></font>
+Dropped <span class="hljs-number">87</span> nodes (cum &lt;= <span class="hljs-number">0.08</span>wks)<font></font>
+Showing top <span class="hljs-number">10</span> nodes out of <span class="hljs-number">27</span><font></font>
+     flat  flat%   sum%        cum   cum%<font></font>
+ <span class="hljs-number">10.78</span>wks <span class="hljs-number">67.08</span>% <span class="hljs-number">67.08</span>%   <span class="hljs-number">10.78</span>wks <span class="hljs-number">67.08</span>%  internal/poll.(*fdMutex).rwlock
+  <span class="hljs-number">5.25</span>wks <span class="hljs-number">32.67</span>% <span class="hljs-number">99.75</span>%    <span class="hljs-number">5.25</span>wks <span class="hljs-number">32.67</span>%  sync.(*Mutex).Lock
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">99.75</span>%    <span class="hljs-number">5.25</span>wks <span class="hljs-number">32.67</span>%  arvancloud/redins/handler.(*DnsRequestHandler).Filter
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">99.75</span>%    <span class="hljs-number">5.25</span>wks <span class="hljs-number">32.68</span>%  arvancloud/redins/handler.(*DnsRequestHandler).FindANAME
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">99.75</span>%   <span class="hljs-number">16.04</span>wks <span class="hljs-number">99.81</span>%  arvancloud/redins/handler.(*DnsRequestHandler).HandleRequest
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">99.75</span>%   <span class="hljs-number">10.78</span>wks <span class="hljs-number">67.08</span>%  arvancloud/redins/handler.(*DnsRequestHandler).Response
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">99.75</span>%   <span class="hljs-number">10.78</span>wks <span class="hljs-number">67.08</span>%  arvancloud/redins/handler.(*RequestContext).Response
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">99.75</span>%    <span class="hljs-number">5.25</span>wks <span class="hljs-number">32.67</span>%  arvancloud/redins/handler.ChooseIp
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">99.75</span>%   <span class="hljs-number">16.04</span>wks <span class="hljs-number">99.81</span>%  github.com/miekg/dns.(*ServeMux).ServeDNS
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">99.75</span>%   <span class="hljs-number">16.04</span>wks <span class="hljs-number">99.81</span>%  github.com/miekg/dns.(*Server).serveDNS<font></font>
+(pprof)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here we have two different locks ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">poll.fdMutex and sync.Mutex</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ), responsible for almost 100% of the locks. </font><font style="vertical-align: inherit;">This confirms our assumption about a lock conflict, now we only need to find where this happens:</font></font><br>
+<br>
+<pre><code class="go hljs">(pprof) svg lock</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This command creates a vector graph of all nodes that take into account conflicts, with an emphasis on blocking functions: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/in/m4/zu/inm4zuykw5uum0vydotfudr48d0.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">svg-graph of the blocking endpoint</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+we can get the same result from the goroutine endpoint:</font></font><br>
+<br>
+<pre><code class="go hljs">$ <span class="hljs-keyword">go</span> tool pprof http:<span class="hljs-comment">//localhost:6060/debug/pprof/goroutine</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+and then:</font></font><br>
+ <br>
+<pre><code class="go hljs">(pprof) top<font></font>
+Showing nodes accounting <span class="hljs-keyword">for</span> <span class="hljs-number">294412</span>, <span class="hljs-number">100</span>% of <span class="hljs-number">294424</span> total<font></font>
+Dropped <span class="hljs-number">84</span> nodes (cum &lt;= <span class="hljs-number">1472</span>)<font></font>
+Showing top <span class="hljs-number">10</span> nodes out of <span class="hljs-number">32</span><font></font>
+     flat  flat%   sum%        cum   cum%<font></font>
+   <span class="hljs-number">294404</span>   <span class="hljs-number">100</span>%   <span class="hljs-number">100</span>%     <span class="hljs-number">294404</span>   <span class="hljs-number">100</span>%  runtime.gopark
+        <span class="hljs-number">8</span> <span class="hljs-number">0.0027</span>%   <span class="hljs-number">100</span>%     <span class="hljs-number">294405</span>   <span class="hljs-number">100</span>%  github.com/miekg/dns.(*Server).serveUDPPacket
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>%   <span class="hljs-number">100</span>%      <span class="hljs-number">58257</span> <span class="hljs-number">19.79</span>%  arvancloud/redins/handler.(*DnsRequestHandler).Filter
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>%   <span class="hljs-number">100</span>%      <span class="hljs-number">58259</span> <span class="hljs-number">19.79</span>%  arvancloud/redins/handler.(*DnsRequestHandler).FindANAME
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>%   <span class="hljs-number">100</span>%     <span class="hljs-number">293852</span> <span class="hljs-number">99.81</span>%  arvancloud/redins/handler.(*DnsRequestHandler).HandleRequest
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>%   <span class="hljs-number">100</span>%     <span class="hljs-number">235406</span> <span class="hljs-number">79.95</span>%  arvancloud/redins/handler.(*DnsRequestHandler).Response
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>%   <span class="hljs-number">100</span>%     <span class="hljs-number">235406</span> <span class="hljs-number">79.95</span>%  arvancloud/redins/handler.(*RequestContext).Response
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>%   <span class="hljs-number">100</span>%      <span class="hljs-number">58140</span> <span class="hljs-number">19.75</span>%  arvancloud/redins/handler.ChooseIp
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>%   <span class="hljs-number">100</span>%     <span class="hljs-number">293852</span> <span class="hljs-number">99.81</span>%  github.com/miekg/dns.(*ServeMux).ServeDNS
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>%   <span class="hljs-number">100</span>%     <span class="hljs-number">293900</span> <span class="hljs-number">99.82</span>%  github.com/miekg/dns.(*Server).serveDNS<font></font>
+(pprof)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+almost all of our programs are located in runtime.gopark, it is a go scheduler that sleeps goroutines; </font><font style="vertical-align: inherit;">a very common reason for this is a lock conflict</font></font><br>
+<br>
+<pre><code class="go hljs">(pprof) svg gopark</code></pre><br>
+<img src="https://habrastorage.org/webt/-r/r6/pe/-rr6peofee7fshmvot6rb3usrjs.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">svg-graph of the endpoint goroutin</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Here we see two sources of conflict:</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">UDPConn.WriteMsg ()</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It seems that all answers end up writing to the same FD (hence the lock), this makes sense, since they all have the same source address. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We conducted a small experiment with various solutions, and in the end we decided to use several listeners to balance the load. </font><font style="vertical-align: inherit;">Thus, we allow the OS to balance incoming requests between different connections and reduce conflicts.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rand ()</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It looks like there is a lock in regular math / rand functions (more on this </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). </font><font style="vertical-align: inherit;">This can be easily fixed with the help of </font></font><code>Rand.New()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">a random number generator that creates a non-blocking wrapper.</font></font><br>
+<br>
+<pre><code class="go hljs">rg := rand.New(rand.NewSource(<span class="hljs-keyword">int64</span>(time.Now().Nanosecond())))</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It's a little better, but creating a new source is expensive every time. Is it possible to do even better? In our case, we really do not need a random number. We just need a uniform distribution to balance the load, and it turns out that it </font></font><code>Time.Nanoseconds()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">may suit us. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now that we have removed all the unnecessary locks, let's look at the results: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/oq/aw/76/oqaw76gy7k0jxwro9moeo8e374s.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">goroutin analysis</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Looks better, but still, most of the time it takes to lock the synchronization. Let's take a look at the synchronization lock profile from the main page of the trace user interface: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/k4/1y/ky/k41yky-okraevi6-huriop7-g2i.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">synchronization lock timeline</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Let's take a look at the boost function </font></font><code>ccache</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">from the lock endpoint </font></font><code>pprof</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+ <br>
+<pre><code class="go hljs">(pprof) list promote<font></font>
+ROUTINE ======================== github.com/karlseguin/ccache.(*Cache).promote in ...<font></font>
+        <span class="hljs-number">0</span>   <span class="hljs-number">9.66</span>days (flat, cum) <span class="hljs-number">99.70</span>% of Total<font></font>
+        .          .    <span class="hljs-number">155</span>: h.Write([]<span class="hljs-keyword">byte</span>(key))<font></font>
+        .          .    <span class="hljs-number">156</span>: <span class="hljs-keyword">return</span> c.buckets[h.Sum32()&amp;c.bucketMask]<font></font>
+        .          .    <span class="hljs-number">157</span>:}<font></font>
+        .          .    <span class="hljs-number">158</span>:<font></font>
+        .          .    <span class="hljs-number">159</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(c *Cache)</span> <span class="hljs-title">promote</span><span class="hljs-params">(item *Item)</span></span> {<font></font>
+        .   <span class="hljs-number">9.66</span>days    <span class="hljs-number">160</span>: c.promotables &lt;- item<font></font>
+        .          .    <span class="hljs-number">161</span>:}<font></font>
+        .          .    <span class="hljs-number">162</span>:<font></font>
+        .          .    <span class="hljs-number">163</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(c *Cache)</span> <span class="hljs-title">worker</span><span class="hljs-params">()</span></span> {<font></font>
+        .          .    <span class="hljs-number">164</span>: <span class="hljs-keyword">defer</span> <span class="hljs-built_in">close</span>(c.donec)<font></font>
+        .          .    <span class="hljs-number">165</span>:</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All calls </font></font><code>ccache.Get()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">end in one channel </font></font><code>c.promotables</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Caching is an important part of our service, we should consider other options; In </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Dgraph</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> has an excellent article about </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the cache state! Go</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , they also have excellent caching module called </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ristretto</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Unfortunately, ristretto does not yet support Ttl-based release, we could get around this problem by using a very large one </font></font><code>MaxCost</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and keeping the timeout value in our cache structure (we want to keep outdated data in the cache). Let's see the result when using ristretto: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ho/k2/ay/hok2ay6emv_agqfuv-y65sxkius.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">goroutin analysis</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Great!</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We were able to reduce the maximum runtime of gorutin from 5000 ms to 22 ms. </font><font style="vertical-align: inherit;">However, most of the execution time is divided between “synchronization lock” and “waiting for the scheduler”. </font><font style="vertical-align: inherit;">Let's see if we can do something about it: the </font></font><br>
+ <br>
+<img src="https://habrastorage.org/webt/s3/8u/qh/s38uqh-knc7gmandd1erhgelmrs.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">synchronization lock timeline</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+We can do little with it </font></font><code>fdMutex.rwlock</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, now let's focus on another: gcMarkDone, which is responsible for 53% of the block time. </font><font style="vertical-align: inherit;">This feature is part of the garbage collection process. </font><font style="vertical-align: inherit;">Their presence in the critical section is often a sign that we are overloading gc.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">allocation optimization </font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At this point, it may be useful to see how garbage collection works; </font><font style="vertical-align: inherit;">Go uses a mark-and-sweep picker. </font><font style="vertical-align: inherit;">It keeps track of everything that is selected, and as soon as it reaches twice the size (or any other value that GOGC is set to) the size of the previous size, GC cleanup starts. </font><font style="vertical-align: inherit;">The assessment takes place in three stages:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Marker Setting (STW)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Marking (parallel)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Labeling End (STW)</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The Stop The World (STW) phases stop the entire process, although they are usually very short, continuous cycles can increase the duration. This is because at present (go v1.13) goroutines are supplanted only at the points of the function call, therefore, for a continuous cycle, an arbitrarily long pause time is possible, since the GC expects all goroutines to stop. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+During marking, gc uses about 25% </font></font><code>GOMAXPROCS</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, but additional auxiliary functions can be forcibly added to </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mark assist</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , this happens when the fast-moving goroutine outpaces the background marker to reduce the delay caused by gc, we need to minimize heap usage. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Two things to note:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the number of allocations is more important than the size (for example, 1000 memory allocations from a 20-byte structure create much more load on the heap than a single allocation of 20,000 bytes);</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">unlike languages ​​like C / C ++, not all memory allocations end up on the heap. </font><font style="vertical-align: inherit;">The go compiler decides whether the variable will move to the heap or whether it can be placed inside the stack frame. </font><font style="vertical-align: inherit;">Unlike variables allocated on the heap, variables allocated on the stack do not load gc.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For more information on the Go memory model and GC architecture, see this </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">presentation</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To optimize memory allocation, we use the go toolkit:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">processor profiler to find hot distributions;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memory profiler for tracking allocations;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tracer for patterns; </font><font style="vertical-align: inherit;">Gc</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">escape analysis to find out why allocation occurs.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's start with the processor profiler:</font></font><br>
+ <br>
+<pre><code class="go hljs">$ <span class="hljs-keyword">go</span> tool pprof http:<span class="hljs-comment">//localhost:6060/debug/pprof/profile?seconds=20</span>
+(pprof) top <span class="hljs-number">20</span> -cum<font></font>
+Showing nodes accounting <span class="hljs-keyword">for</span> <span class="hljs-number">7.27</span>s, <span class="hljs-number">29.10</span>% of <span class="hljs-number">24.98</span>s total<font></font>
+Dropped <span class="hljs-number">315</span> nodes (cum &lt;= <span class="hljs-number">0.12</span>s)<font></font>
+Showing top <span class="hljs-number">20</span> nodes out of <span class="hljs-number">201</span><font></font>
+     flat  flat%   sum%        cum   cum%<font></font>
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>%     <span class="hljs-number">0</span>%     <span class="hljs-number">16.42</span>s <span class="hljs-number">65.73</span>%  github.com/miekg/dns.(*Server).serveUDPPacket
+    <span class="hljs-number">0.02</span>s  <span class="hljs-number">0.08</span>%  <span class="hljs-number">0.08</span>%     <span class="hljs-number">16.02</span>s <span class="hljs-number">64.13</span>%  github.com/miekg/dns.(*Server).serveDNS
+    <span class="hljs-number">0.02</span>s  <span class="hljs-number">0.08</span>%  <span class="hljs-number">0.16</span>%     <span class="hljs-number">13.69</span>s <span class="hljs-number">54.80</span>%  github.com/miekg/dns.(*ServeMux).ServeDNS
+    <span class="hljs-number">0.01</span>s  <span class="hljs-number">0.04</span>%   <span class="hljs-number">0.2</span>%     <span class="hljs-number">13.48</span>s <span class="hljs-number">53.96</span>%  github.com/miekg/dns.HandlerFunc.ServeDNS
+    <span class="hljs-number">0.02</span>s  <span class="hljs-number">0.08</span>%  <span class="hljs-number">0.28</span>%     <span class="hljs-number">13.47</span>s <span class="hljs-number">53.92</span>%  main.handleRequest
+    <span class="hljs-number">0.24</span>s  <span class="hljs-number">0.96</span>%  <span class="hljs-number">1.24</span>%     <span class="hljs-number">12.50</span>s <span class="hljs-number">50.04</span>%  arvancloud/redins/handler.(*DnsRequestHandler).HandleRequest
+    <span class="hljs-number">0.81</span>s  <span class="hljs-number">3.24</span>%  <span class="hljs-number">4.48</span>%      <span class="hljs-number">6.91</span>s <span class="hljs-number">27.66</span>%  runtime.gentraceback
+    <span class="hljs-number">3.82</span>s <span class="hljs-number">15.29</span>% <span class="hljs-number">19.78</span>%      <span class="hljs-number">5.48</span>s <span class="hljs-number">21.94</span>%  syscall.Syscall
+    <span class="hljs-number">0.02</span>s  <span class="hljs-number">0.08</span>% <span class="hljs-number">19.86</span>%      <span class="hljs-number">5.44</span>s <span class="hljs-number">21.78</span>%  arvancloud/redins/handler.(*DnsRequestHandler).Response
+    <span class="hljs-number">0.06</span>s  <span class="hljs-number">0.24</span>% <span class="hljs-number">20.10</span>%      <span class="hljs-number">5.25</span>s <span class="hljs-number">21.02</span>%  arvancloud/redins/handler.(*RequestContext).Response
+    <span class="hljs-number">0.03</span>s  <span class="hljs-number">0.12</span>% <span class="hljs-number">20.22</span>%      <span class="hljs-number">4.97</span>s <span class="hljs-number">19.90</span>%  arvancloud/redins/handler.(*DnsRequestHandler).FindANAME
+    <span class="hljs-number">0.56</span>s  <span class="hljs-number">2.24</span>% <span class="hljs-number">22.46</span>%      <span class="hljs-number">4.92</span>s <span class="hljs-number">19.70</span>%  runtime.mallocgc
+    <span class="hljs-number">0.07</span>s  <span class="hljs-number">0.28</span>% <span class="hljs-number">22.74</span>%      <span class="hljs-number">4.90</span>s <span class="hljs-number">19.62</span>%  github.com/miekg/dns.(*response).WriteMsg
+    <span class="hljs-number">0.04</span>s  <span class="hljs-number">0.16</span>% <span class="hljs-number">22.90</span>%      <span class="hljs-number">4.40</span>s <span class="hljs-number">17.61</span>%  github.com/miekg/dns.(*response).Write
+    <span class="hljs-number">0.01</span>s  <span class="hljs-number">0.04</span>% <span class="hljs-number">22.94</span>%      <span class="hljs-number">4.36</span>s <span class="hljs-number">17.45</span>%  github.com/miekg/dns.WriteToSessionUDP
+    <span class="hljs-number">1.43</span>s  <span class="hljs-number">5.72</span>% <span class="hljs-number">28.66</span>%      <span class="hljs-number">4.30</span>s <span class="hljs-number">17.21</span>%  runtime.pcvalue
+    <span class="hljs-number">0.01</span>s  <span class="hljs-number">0.04</span>% <span class="hljs-number">28.70</span>%      <span class="hljs-number">4.15</span>s <span class="hljs-number">16.61</span>%  runtime.newstack
+    <span class="hljs-number">0.06</span>s  <span class="hljs-number">0.24</span>% <span class="hljs-number">28.94</span>%      <span class="hljs-number">4.09</span>s <span class="hljs-number">16.37</span>%  runtime.copystack
+    <span class="hljs-number">0.01</span>s  <span class="hljs-number">0.04</span>% <span class="hljs-number">28.98</span>%      <span class="hljs-number">4.05</span>s <span class="hljs-number">16.21</span>%  net.(*UDPConn).WriteMsgUDP
+    <span class="hljs-number">0.03</span>s  <span class="hljs-number">0.12</span>% <span class="hljs-number">29.10</span>%      <span class="hljs-number">4.04</span>s <span class="hljs-number">16.17</span>%  net.(*UDPConn).writeMsg</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We are particularly interested in related functions, </font></font><code>mallocgc</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">this is where help with tags</font></font><br>
+ <br>
+<pre><code class="go hljs">(pprof) svg mallocgc</code></pre><br>
+<img src="https://habrastorage.org/webt/kz/yw/mb/kzywmb1pzaiw3x2h4aprdtzvl9c.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We can track the distribution using the endpoint </font></font><code>alloc</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, the option </font></font><code>alloc_object</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">means the total number of allocations, there are other options for using memory and allocation space.</font></font><br>
+ <br>
+<pre><code class="go hljs">$ <span class="hljs-keyword">go</span> tool pprof -alloc_objects http:<span class="hljs-comment">//localhost:6060/debug/pprof/allocs</span><font></font>
+(pprof) top -cum<font></font>
+Active filters:<font></font>
+  show=handler<font></font>
+Showing nodes accounting <span class="hljs-keyword">for</span> <span class="hljs-number">58464353</span>, <span class="hljs-number">59.78</span>% of <span class="hljs-number">97803168</span> total<font></font>
+Dropped <span class="hljs-number">1</span> node (cum &lt;= <span class="hljs-number">489015</span>)<font></font>
+Showing top <span class="hljs-number">10</span> nodes out of <span class="hljs-number">19</span><font></font>
+     flat  flat%   sum%        cum   cum%<font></font>
+ <span class="hljs-number">15401215</span> <span class="hljs-number">15.75</span>% <span class="hljs-number">15.75</span>%   <span class="hljs-number">70279955</span> <span class="hljs-number">71.86</span>%  arvancloud/redins/handler.(*DnsRequestHandler).HandleRequest
+  <span class="hljs-number">2392100</span>  <span class="hljs-number">2.45</span>% <span class="hljs-number">18.19</span>%   <span class="hljs-number">27198697</span> <span class="hljs-number">27.81</span>%  arvancloud/redins/handler.(*DnsRequestHandler).FindANAME
+   <span class="hljs-number">711174</span>  <span class="hljs-number">0.73</span>% <span class="hljs-number">18.92</span>%   <span class="hljs-number">14936976</span> <span class="hljs-number">15.27</span>%  arvancloud/redins/handler.(*DnsRequestHandler).Filter
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">18.92</span>%   <span class="hljs-number">14161410</span> <span class="hljs-number">14.48</span>%  arvancloud/redins/handler.(*DnsRequestHandler).Response
+ <span class="hljs-number">14161410</span> <span class="hljs-number">14.48</span>% <span class="hljs-number">33.40</span>%   <span class="hljs-number">14161410</span> <span class="hljs-number">14.48</span>%  arvancloud/redins/handler.(*RequestContext).Response
+  <span class="hljs-number">7284487</span>  <span class="hljs-number">7.45</span>% <span class="hljs-number">40.85</span>%   <span class="hljs-number">11118401</span> <span class="hljs-number">11.37</span>%  arvancloud/redins/handler.NewRequestContext
+ <span class="hljs-number">10439697</span> <span class="hljs-number">10.67</span>% <span class="hljs-number">51.52</span>%   <span class="hljs-number">10439697</span> <span class="hljs-number">10.67</span>%  arvancloud/redins/handler.reverseZone
+        <span class="hljs-number">0</span>     <span class="hljs-number">0</span>% <span class="hljs-number">51.52</span>%   <span class="hljs-number">10371430</span> <span class="hljs-number">10.60</span>%  arvancloud/redins/handler.(*DnsRequestHandler).FindZone
+  <span class="hljs-number">2680723</span>  <span class="hljs-number">2.74</span>% <span class="hljs-number">54.26</span>%    <span class="hljs-number">8022046</span>  <span class="hljs-number">8.20</span>%  arvancloud/redins/handler.(*GeoIp).GetSameCountry
+  <span class="hljs-number">5393547</span>  <span class="hljs-number">5.51</span>% <span class="hljs-number">59.78</span>%    <span class="hljs-number">5393547</span>  <span class="hljs-number">5.51</span>%  arvancloud/redins/handler.(*DnsRequestHandler).LoadLocation</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+From now on, we can use list for each function and see if we can reduce memory allocation. </font><font style="vertical-align: inherit;">Let's check: </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">printf-like functions</font></font></b><br>
+<br>
+<pre><code class="go hljs">(pprof) list handleRequest<font></font>
+Total: <span class="hljs-number">97803168</span>
+ROUTINE ======================== main.handleRequest in /home/arash/<span class="hljs-keyword">go</span>/src/arvancloud/redins/redins.<span class="hljs-keyword">go</span>
+  <span class="hljs-number">2555943</span>   <span class="hljs-number">83954299</span> (flat, cum) <span class="hljs-number">85.84</span>% of Total<font></font>
+        .          .     <span class="hljs-number">35</span>: l          *handler.RateLimiter<font></font>
+        .          .     <span class="hljs-number">36</span>: configFile <span class="hljs-keyword">string</span>
+        .          .     <span class="hljs-number">37</span>:)<font></font>
+        .          .     <span class="hljs-number">38</span>:<font></font>
+        .          .     <span class="hljs-number">39</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">handleRequest</span><span class="hljs-params">(w dns.ResponseWriter, r *dns.Msg)</span></span> {<font></font>
+        .   <span class="hljs-number">11118401</span>     <span class="hljs-number">40</span>: context := handler.NewRequestContext(w, r)
+  <span class="hljs-number">2555943</span>    <span class="hljs-number">2555943</span>     <span class="hljs-number">41</span>: logger.Default.Debugf(<span class="hljs-string">"handle request: [%d] %s %s"</span>, r.Id, context.RawName(), context.Type())<font></font>
+        .          .     <span class="hljs-number">42</span>:<font></font>
+        .          .     <span class="hljs-number">43</span>: <span class="hljs-keyword">if</span> l.CanHandle(context.IP()) {<font></font>
+        .   <span class="hljs-number">70279955</span>     <span class="hljs-number">44</span>:  h.HandleRequest(context)<font></font>
+        .          .     <span class="hljs-number">45</span>: } <span class="hljs-keyword">else</span> {<font></font>
+        .          .     <span class="hljs-number">46</span>:  context.Response(dns.RcodeRefused)<font></font>
+        .          .     <span class="hljs-number">47</span>: }<font></font>
+        .          .     <span class="hljs-number">48</span>:}<font></font>
+        .          .     <span class="hljs-number">49</span>:</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Line 41 is especially interesting, even when debugging is turned off, memory is still allocated there, we can use escape analysis to examine it in more detail. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Go Escape Analysis Tool is actually a compiler flag</font></font><br>
+<br>
+<pre><code class="go hljs">$ <span class="hljs-keyword">go</span> build -gcflags <span class="hljs-string">'-m'</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can add another -m for more information.</font></font><br>
+<br>
+<pre><code class="go hljs">$ <span class="hljs-keyword">go</span> build -gcflags <span class="hljs-string">'-m '</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+for a more convenient interface, use </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">view-annotated-file</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<pre><code class="go hljs">$ <span class="hljs-keyword">go</span> build -gcflags <span class="hljs-string">'-m'</span><font></font>
+.<font></font>
+.<font></font>
+.<font></font>
+../redins.<span class="hljs-keyword">go</span>:<span class="hljs-number">39</span>:<span class="hljs-number">20</span>: leaking param: w<font></font>
+./redins.<span class="hljs-keyword">go</span>:<span class="hljs-number">39</span>:<span class="hljs-number">42</span>: leaking param: r<font></font>
+./redins.<span class="hljs-keyword">go</span>:<span class="hljs-number">41</span>:<span class="hljs-number">55</span>: r.MsgHdr.Id escapes to heap<font></font>
+./redins.<span class="hljs-keyword">go</span>:<span class="hljs-number">41</span>:<span class="hljs-number">75</span>: context.RawName() escapes to heap<font></font>
+./redins.<span class="hljs-keyword">go</span>:<span class="hljs-number">41</span>:<span class="hljs-number">91</span>: context.Request.Type() escapes to heap<font></font>
+./redins.<span class="hljs-keyword">go</span>:<span class="hljs-number">41</span>:<span class="hljs-number">23</span>: handleRequest []<span class="hljs-keyword">interface</span> {} literal does not escape<font></font>
+./redins.<span class="hljs-keyword">go</span>:<span class="hljs-number">219</span>:<span class="hljs-number">17</span>: leaking param: path<font></font>
+.<font></font>
+.<font></font>
+.</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here all the parameters </font></font><code>Debugf</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">go to heap. </font><font style="vertical-align: inherit;">This is due to the way of determining </font></font><code>Debugf</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(l *EventLogger)</span> <span class="hljs-title">Debugf</span><span class="hljs-params">(format <span class="hljs-keyword">string</span>, args ...<span class="hljs-keyword">interface</span>{})</span></span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All parameters are </font></font><code>args</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">converted to a type </font></font><code>interface{}</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">that is always dumped to the heap. </font><font style="vertical-align: inherit;">We can either delete the debug logs, or use a library of logs with a zero distribution, for example, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">zerolog</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For more information about escape analysis, see </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“allocation eficiency in golang”</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Work with strings</font></font></b><br>
+<br>
+<pre><code class="go hljs">(pprof) list reverseZone<font></font>
+Total: <span class="hljs-number">100817064</span>
+ROUTINE ======================== arvancloud/redins/handler.reverseZone in /home/arash/<span class="hljs-keyword">go</span>/src/arvancloud/redins/handler/handler.<span class="hljs-keyword">go</span>
+  <span class="hljs-number">6127746</span>   <span class="hljs-number">10379086</span> (flat, cum) <span class="hljs-number">10.29</span>% of Total<font></font>
+        .          .    <span class="hljs-number">396</span>:  logger.Default.Warning(<span class="hljs-string">"log queue is full"</span>)<font></font>
+        .          .    <span class="hljs-number">397</span>: }<font></font>
+        .          .    <span class="hljs-number">398</span>:}<font></font>
+        .          .    <span class="hljs-number">399</span>:<font></font>
+        .          .    <span class="hljs-number">400</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">reverseZone</span><span class="hljs-params">(zone <span class="hljs-keyword">string</span>)</span> <span class="hljs-title">string</span></span> {<font></font>
+        .    <span class="hljs-number">4251340</span>    <span class="hljs-number">401</span>: x := strings.Split(zone, <span class="hljs-string">"."</span>)<font></font>
+        .          .    <span class="hljs-number">402</span>: <span class="hljs-keyword">var</span> y <span class="hljs-keyword">string</span>
+        .          .    <span class="hljs-number">403</span>: <span class="hljs-keyword">for</span> i := <span class="hljs-built_in">len</span>(x) - <span class="hljs-number">1</span>; i &gt;= <span class="hljs-number">0</span>; i-- {
+  <span class="hljs-number">6127746</span>    <span class="hljs-number">6127746</span>    <span class="hljs-number">404</span>:  y += x[i] + <span class="hljs-string">"."</span>
+        .          .    <span class="hljs-number">405</span>: }<font></font>
+        .          .    <span class="hljs-number">406</span>: <span class="hljs-keyword">return</span> y<font></font>
+        .          .    <span class="hljs-number">407</span>:}<font></font>
+        .          .    <span class="hljs-number">408</span>:<font></font>
+        .          .    <span class="hljs-number">409</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(h *DnsRequestHandler)</span> <span class="hljs-title">LoadZones</span><span class="hljs-params">()</span></span> {<font></font>
+(pprof)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since a line in Go is immutable, creating a temporary line causes memory allocation. </font><font style="vertical-align: inherit;">Starting with Go 1.10, you can use it </font></font><code>strings.Builder</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to create a string.</font></font><br>
+ <br>
+<pre><code class="go hljs">(pprof) list reverseZone<font></font>
+Total: <span class="hljs-number">93437002</span>
+ROUTINE ======================== arvancloud/redins/handler.reverseZone in /home/arash/<span class="hljs-keyword">go</span>/src/arvancloud/redins/handler/handler.<span class="hljs-keyword">go</span>
+        <span class="hljs-number">0</span>    <span class="hljs-number">7580611</span> (flat, cum)  <span class="hljs-number">8.11</span>% of Total<font></font>
+        .          .    <span class="hljs-number">396</span>:  logger.Default.Warning(<span class="hljs-string">"log queue is full"</span>)<font></font>
+        .          .    <span class="hljs-number">397</span>: }<font></font>
+        .          .    <span class="hljs-number">398</span>:}<font></font>
+        .          .    <span class="hljs-number">399</span>:<font></font>
+        .          .    <span class="hljs-number">400</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">reverseZone</span><span class="hljs-params">(zone <span class="hljs-keyword">string</span>)</span> <span class="hljs-title">string</span></span> {<font></font>
+        .    <span class="hljs-number">3681140</span>    <span class="hljs-number">401</span>: x := strings.Split(zone, <span class="hljs-string">"."</span>)<font></font>
+        .          .    <span class="hljs-number">402</span>: <span class="hljs-keyword">var</span> sb strings.Builder<font></font>
+        .    <span class="hljs-number">3899471</span>    <span class="hljs-number">403</span>: sb.Grow(<span class="hljs-built_in">len</span>(zone)+<span class="hljs-number">1</span>)<font></font>
+        .          .    <span class="hljs-number">404</span>: <span class="hljs-keyword">for</span> i := <span class="hljs-built_in">len</span>(x) - <span class="hljs-number">1</span>; i &gt;= <span class="hljs-number">0</span>; i-- {<font></font>
+        .          .    <span class="hljs-number">405</span>:  sb.WriteString(x[i])<font></font>
+        .          .    <span class="hljs-number">406</span>:  sb.WriteByte(<span class="hljs-string">'.'</span>)<font></font>
+        .          .    <span class="hljs-number">407</span>: }<font></font>
+        .          .    <span class="hljs-number">408</span>: <span class="hljs-keyword">return</span> sb.String()</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since we do not care about the value of the inverted line, we can eliminate </font></font><code>Split()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">it by simply flipping the entire line.</font></font><br>
+ <br>
+<pre><code class="go hljs">(pprof) list reverseZone<font></font>
+Total: <span class="hljs-number">89094296</span>
+ROUTINE ======================== arvancloud/redins/handler.reverseZone in /home/arash/<span class="hljs-keyword">go</span>/src/arvancloud/redins/handler/handler.<span class="hljs-keyword">go</span>
+  <span class="hljs-number">3801168</span>    <span class="hljs-number">3801168</span> (flat, cum)  <span class="hljs-number">4.27</span>% of Total<font></font>
+        .          .    <span class="hljs-number">400</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">reverseZone</span><span class="hljs-params">(zone <span class="hljs-keyword">string</span>)</span> []<span class="hljs-title">byte</span></span> {<font></font>
+        .          .    <span class="hljs-number">401</span>: runes := []<span class="hljs-keyword">rune</span>(<span class="hljs-string">"."</span> + zone)<font></font>
+        .          .    <span class="hljs-number">402</span>: <span class="hljs-keyword">for</span> i, j := <span class="hljs-number">0</span>, <span class="hljs-built_in">len</span>(runes)<span class="hljs-number">-1</span>; i &lt; j; i, j = i+<span class="hljs-number">1</span>, j<span class="hljs-number">-1</span> {<font></font>
+        .          .    <span class="hljs-number">403</span>:  runes[i], runes[j] = runes[j], runes[i]<font></font>
+        .          .    <span class="hljs-number">404</span>: }
+  <span class="hljs-number">3801168</span>    <span class="hljs-number">3801168</span>    <span class="hljs-number">405</span>: <span class="hljs-keyword">return</span> []<span class="hljs-keyword">byte</span>(<span class="hljs-keyword">string</span>(runes))<font></font>
+        .          .    <span class="hljs-number">406</span>:}<font></font>
+        .          .    <span class="hljs-number">407</span>:<font></font>
+        .          .    <span class="hljs-number">408</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(h *DnsRequestHandler)</span> <span class="hljs-title">LoadZones</span><span class="hljs-params">()</span></span> {<font></font>
+        .          .    <span class="hljs-number">409</span>: h.LastZoneUpdate = time.Now()<font></font>
+        .          .    <span class="hljs-number">410</span>: zones, err := h.Redis.SMembers(<span class="hljs-string">"redins:zones"</span>)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Read more about working with strings </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+ <br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sync.Pool</font></font></h3><br>
+<pre><code class="go hljs">(pprof) list GetASN<font></font>
+Total: <span class="hljs-number">69005282</span>
+ROUTINE ======================== arvancloud/redins/handler.(*GeoIp).GetASN in /home/arash/<span class="hljs-keyword">go</span>/src/arvancloud/redins/handler/geoip.<span class="hljs-keyword">go</span>
+  <span class="hljs-number">1146897</span>    <span class="hljs-number">1146897</span> (flat, cum)  <span class="hljs-number">1.66</span>% of Total<font></font>
+        .          .    <span class="hljs-number">231</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(g *GeoIp)</span> <span class="hljs-title">GetASN</span><span class="hljs-params">(ip net.IP)</span> <span class="hljs-params">(<span class="hljs-keyword">uint</span>, error)</span></span> {
+  <span class="hljs-number">1146897</span>    <span class="hljs-number">1146897</span>    <span class="hljs-number">232</span>: <span class="hljs-keyword">var</span> record <span class="hljs-keyword">struct</span> {<font></font>
+        .          .    <span class="hljs-number">233</span>:  AutonomousSystemNumber <span class="hljs-keyword">uint</span> <span class="hljs-string">`maxminddb:"autonomous_system_number"`</span>
+        .          .    <span class="hljs-number">234</span>: }<font></font>
+        .          .    <span class="hljs-number">235</span>: err := g.ASNDB.Lookup(ip, &amp;record)<font></font>
+        .          .    <span class="hljs-number">236</span>: <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {<font></font>
+        .          .    <span class="hljs-number">237</span>:  logger.Default.Errorf(<span class="hljs-string">"lookup failed : %s"</span>, err)<font></font>
+(pprof) list GetGeoLocation<font></font>
+Total: <span class="hljs-number">69005282</span>
+ROUTINE ======================== arvancloud/redins/handler.(*GeoIp).GetGeoLocation in /home/arash/<span class="hljs-keyword">go</span>/src/arvancloud/redins/handler/geoip.<span class="hljs-keyword">go</span>
+  <span class="hljs-number">1376298</span>    <span class="hljs-number">3604572</span> (flat, cum)  <span class="hljs-number">5.22</span>% of Total<font></font>
+        .          .    <span class="hljs-number">207</span>:<font></font>
+        .          .    <span class="hljs-number">208</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(g *GeoIp)</span> <span class="hljs-title">GetGeoLocation</span><span class="hljs-params">(ip net.IP)</span> <span class="hljs-params">(latitude <span class="hljs-keyword">float64</span>, longitude <span class="hljs-keyword">float64</span>, country <span class="hljs-keyword">string</span>, err error)</span></span> {<font></font>
+        .          .    <span class="hljs-number">209</span>: <span class="hljs-keyword">if</span> !g.Enable || g.CountryDB == <span class="hljs-literal">nil</span> {<font></font>
+        .          .    <span class="hljs-number">210</span>:  <span class="hljs-keyword">return</span>
+        .          .    <span class="hljs-number">211</span>: }
+  <span class="hljs-number">1376298</span>    <span class="hljs-number">1376298</span>    <span class="hljs-number">212</span>: <span class="hljs-keyword">var</span> record <span class="hljs-keyword">struct</span> {<font></font>
+        .          .    <span class="hljs-number">213</span>:  Location <span class="hljs-keyword">struct</span> {<font></font>
+        .          .    <span class="hljs-number">214</span>:   Latitude        <span class="hljs-keyword">float64</span> <span class="hljs-string">`maxminddb:"latitude"`</span>
+        .          .    <span class="hljs-number">215</span>:   LongitudeOffset <span class="hljs-keyword">uintptr</span> <span class="hljs-string">`maxminddb:"longitude"`</span>
+        .          .    <span class="hljs-number">216</span>:  } <span class="hljs-string">`maxminddb:"location"`</span>
+        .          .    <span class="hljs-number">217</span>:  Country <span class="hljs-keyword">struct</span> {<font></font>
+        .          .    <span class="hljs-number">218</span>:   ISOCode <span class="hljs-keyword">string</span> <span class="hljs-string">`maxminddb:"iso_code"`</span>
+        .          .    <span class="hljs-number">219</span>:  } <span class="hljs-string">`maxminddb:"country"`</span>
+        .          .    <span class="hljs-number">220</span>: }<font></font>
+        .          .    <span class="hljs-number">221</span>: <span class="hljs-comment">// logger.Default.Debugf("ip : %s", ip)</span>
+        .          .    <span class="hljs-number">222</span>: <span class="hljs-keyword">if</span> err := g.CountryDB.Lookup(ip, &amp;record); err != <span class="hljs-literal">nil</span> {<font></font>
+        .          .    <span class="hljs-number">223</span>:  logger.Default.Errorf(<span class="hljs-string">"lookup failed : %s"</span>, err)<font></font>
+        .          .    <span class="hljs-number">224</span>:  <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-string">""</span>, err<font></font>
+        .          .    <span class="hljs-number">225</span>: }<font></font>
+        .    <span class="hljs-number">2228274</span>    <span class="hljs-number">226</span>: _ = g.CountryDB.Decode(record.Location.LongitudeOffset, &amp;longitude)<font></font>
+        .          .    <span class="hljs-number">227</span>: <span class="hljs-comment">// logger.Default.Debug("lat = ", record.Location.Latitude, " lang = ", longitude, " country = ", record.Country.ISOCode)</span>
+        .          .    <span class="hljs-number">228</span>: <span class="hljs-keyword">return</span> record.Location.Latitude, longitude, record.Country.ISOCode, <span class="hljs-literal">nil</span>
+        .          .    <span class="hljs-number">229</span>:}<font></font>
+        .          .    <span class="hljs-number">230</span>:<font></font>
+        .          .    <span class="hljs-number">231</span>:<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(g *GeoIp)</span> <span class="hljs-title">GetASN</span><span class="hljs-params">(ip net.IP)</span> <span class="hljs-params">(<span class="hljs-keyword">uint</span>, error)</span></span> {</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We use </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">maxmiddb</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> functions </font><font style="vertical-align: inherit;">to get geolocation data. </font><font style="vertical-align: inherit;">These functions are taken </font></font><code>interface{}</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">as parameters, which, as we saw earlier, can cause heap shoots. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+we can use </font></font><code>sync.Pool</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for caching selected but unused elements for subsequent reuse.</font></font><br>
+ <br>
+<pre><code class="go hljs"><span class="hljs-keyword">type</span> MMDBGeoLocation <span class="hljs-keyword">struct</span> {<font></font>
+  Coordinations <span class="hljs-keyword">struct</span> {<font></font>
+     Latitude        <span class="hljs-keyword">float64</span> <span class="hljs-string">`maxminddb:"latitude"`</span>
+     Longitude       <span class="hljs-keyword">float64</span>
+     LongitudeOffset <span class="hljs-keyword">uintptr</span> <span class="hljs-string">`maxminddb:"longitude"`</span>
+  } <span class="hljs-string">`maxminddb:"location"`</span>
+  Country <span class="hljs-keyword">struct</span> {<font></font>
+     ISOCode <span class="hljs-keyword">string</span> <span class="hljs-string">`maxminddb:"iso_code"`</span>
+  } <span class="hljs-string">`maxminddb:"country"`</span><font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">type</span> MMDBASN <span class="hljs-keyword">struct</span> {<font></font>
+  AutonomousSystemNumber <span class="hljs-keyword">uint</span> <span class="hljs-string">`maxminddb:"autonomous_system_number"`</span><font></font>
+}<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(g *GeoIp)</span> <span class="hljs-title">GetGeoLocation</span><span class="hljs-params">(ip net.IP)</span> <span class="hljs-params">(*MMDBGeoLocation, error)</span></span> {
+  <span class="hljs-keyword">if</span> !g.Enable || g.CountryDB == <span class="hljs-literal">nil</span> {
+     <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>, EMMDBNotAvailable<font></font>
+  }<font></font>
+  <span class="hljs-keyword">var</span> record *MMDBGeoLocation = g.LocationPool.Get().(*MMDBGeoLocation)<font></font>
+  logger.Default.Debugf(<span class="hljs-string">"ip : %s"</span>, ip)
+  <span class="hljs-keyword">if</span> err := g.CountryDB.Lookup(ip, &amp;record); err != <span class="hljs-literal">nil</span> {<font></font>
+     logger.Default.Errorf(<span class="hljs-string">"lookup failed : %s"</span>, err)
+     <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>, err<font></font>
+  }<font></font>
+  _ = g.CountryDB.Decode(record.Coordinations.LongitudeOffset, &amp;record.Coordinations.Longitude)<font></font>
+  logger.Default.Debug(<span class="hljs-string">"lat = "</span>, record.Coordinations.Latitude, <span class="hljs-string">" lang = "</span>, record.Coordinations.Longitude, <span class="hljs-string">" country = "</span>, record.Country.ISOCode)
+  <span class="hljs-keyword">return</span> record, <span class="hljs-literal">nil</span><font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(g *GeoIp)</span> <span class="hljs-title">GetASN</span><span class="hljs-params">(ip net.IP)</span> <span class="hljs-params">(<span class="hljs-keyword">uint</span>, error)</span></span> {
+  <span class="hljs-keyword">var</span> record *MMDBASN = g.AsnPool.Get().(*MMDBASN)<font></font>
+  err := g.ASNDB.Lookup(ip, record)<font></font>
+  <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {<font></font>
+     logger.Default.Errorf(<span class="hljs-string">"lookup failed : %s"</span>, err)
+     <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>, err<font></font>
+  }<font></font>
+  logger.Default.Debug(<span class="hljs-string">"asn = "</span>, record.AutonomousSystemNumber)
+  <span class="hljs-keyword">return</span> record.AutonomousSystemNumber, <span class="hljs-literal">nil</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+More about sync.Pool </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are many other possible optimizations, but at the moment, it seems that we have already done enough. </font><font style="vertical-align: inherit;">For more information on memory optimization techniques, you can read </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Allocation efficiency in high-performance Go services</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">results</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To visualize the results of memory optimization, we use a diagram in </font></font><code>go tool trace</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">called “Minimum Mutator Utilization”, here Mutator means not gc. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Before optimization: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/k5/og/yd/k5ogydpov-6tpkxmulro0f8tkic.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here we have a window of about 500 milliseconds without efficient use (gc consumes all resources), and we will never get 80% effective use in the long run. </font><font style="vertical-align: inherit;">We want the window of zero effective use to be as small as possible, and as quickly as possible to achieve 100% use, something like this: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+after optimization:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/6e/bt/5k/6ebt5k70pm7ufao23uln7b5dcgq.png"><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusion</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Using go tools, we were able to optimize our service to handle a large number of requests and better use of system resources. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can see our source code on </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GitHub</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Here is a</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> non-optimized version and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here is an</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> optimized one.</font></font><br>
+ <br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">It will also be useful</font></font></h3><br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">go perfbook</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">effective go</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">so you wanna go fast</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">writing high performace go</font></font></a></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That's all. </font><font style="vertical-align: inherit;">See you on the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">course</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> !</font></font></div>
+      
+    </div><p class="reference-to-source js-reference-to-source">Source: https://habr.com/ru/post/undefined/</p>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en487922/index.html">Learning to deploy microservices. Part 1. Spring Boot and Docker</a></li>
+<li><a href="../en487924/index.html">Kim Dotcom: Caught, the most wanted person online. Part 3</a></li>
+<li><a href="../en487926/index.html">In search of physical education</a></li>
+<li><a href="../en487930/index.html">Lecture night I want to gamedev</a></li>
+<li><a href="../en487932/index.html">Ideal normal maps for Unity (and other programs)</a></li>
+<li><a href="../en487938/index.html">Introducing effector-dom using the example task list</a></li>
+<li><a href="../en487940/index.html">Reproducible computing in R. How to separate code and data?</a></li>
+<li><a href="../en487944/index.html">Machine learning in the energy sector, or not only everyone can watch tomorrow</a></li>
+<li><a href="../en487948/index.html">Two-factor authentication in OpenVPN with Telegram bot</a></li>
+<li><a href="../es486176/index.html">Memo de correspondencia de correo electrónico corporativo</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
