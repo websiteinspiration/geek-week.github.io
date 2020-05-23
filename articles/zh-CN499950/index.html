@@ -1,0 +1,165 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏹 🧚🏿 🚴 大量的可用RAM，NVMe Intel P4500以及所有内容都变慢-交换分区添加失败的故事 🔺 ❓ 🐬</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在本文中，我将讨论VPS云中的一台服务器最近发生的情况，使我困惑了几个小时。我已经配置Linux服务器和对Linux服务器进行故障排除大约15年了，但是这种情况根本不适合我的实践-我做出了一些错误的假设，并且在完全确定问题的原因并解决之前有些失望。
+ 前言
+ 
+
+我们运营一个中型云，该云在以下配置的...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>大量的可用RAM，NVMe Intel P4500以及所有内容都变慢-交换分区添加失败的故事</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/499950/"><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在本文中，我将讨论VPS云中的一台服务器最近发生的情况，使我困惑了几个小时。</font><font style="vertical-align: inherit;">我已经配置Linux服务器和对Linux服务器进行故障排除大约15年了，但是这种情况根本不适合我的实践-我做出了一些错误的假设，并且在完全确定问题的原因并解决之前有些失望。</font></font></p><br>
+<h2 id="preambula"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前言</font></font></h2><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们运营一个中型云，该云在以下配置的典型服务器上构建-32核，256 GB RAM和NVMe PCI-E Intel P4500 4TB。我们非常喜欢这种配置，因为它使我们不必考虑缺少IO，从而在VM实例（实例）的类型级别上提供了正确的限制。由于NVMe Intel </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">P4500</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">具有令人印象深刻的性能，因此我们可以同时为计算机提供完整的IOPS设置，并为IOWAIT为零的备份服务器提供备份存储。</font></font></p><a name="habracut"></a><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们属于那些不使用超融合SDN和其他时尚，时尚，年轻作品来存储VM卷的老信徒，他们相信，系统越简单，在“大师到山上”的条件下就越容易开玩笑。</font><font style="vertical-align: inherit;">因此，我们将QCOW2格式的VM卷存储在XFS或EXT4中，该文件部署在LVM2之上。</font></font></p><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们还必须通过用于编排的产品Apache CloudStack来使用QCOW2。</font></font></blockquote><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">要执行备份，我们会像LVM2快照一样拍摄完整的卷映像（是的，我们知道LVM2快照很慢，但是Intel P4500也在这里帮助了我们）。我们这样做</font></font><code>lvmcreate -s ..</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并使用它来</font></font><code>dd</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">将备份发送到具有ZFS存储的远程服务器。在这里，我们仍然有点进步-ZFS仍可以以压缩形式存储数据，并且我们可以使用快速恢复数据</font></font><code>DD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">或</font><font style="vertical-align: inherit;">使用来</font><font style="vertical-align: inherit;">获取单个VM卷</font></font><code>mount -o loop ...</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></p><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">当然，您可以不拍摄LVM2卷的完整映像，而可以在模式下挂载文件系统</font></font><code>RO</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并复制QCOW2映像本身，但是，我们面临这样一个事实，即XFS变得不那么糟糕了，这不是立即发生的，而是不可预测的。</font><font style="vertical-align: inherit;">我们真的不喜欢当管理程序主机在周末，夜晚或假日突然突然“粘住”时，由于错误发生时不清楚。</font><font style="vertical-align: inherit;">因此，对于XFS，我们不使用模式下的安装快照</font></font><code>RO</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">来提取卷，而只是复制整个LVM2卷。</font></font></blockquote><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在我们的情况下，备份服务器的备份速度取决于备份服务器的性能，对于不可压缩的数据大约为600-800 MB / s，另一个限制因素是10Gbit / s通道，它将备份服务器连接到群集。 </font></font></p><br>
+<p>           8  .  ,       ,   ,      -,      , , 8 GB/,     -.</p><br>
+<p>       ,    —    Intel P4500,  NFS , ,  ZFS.</p><br>
+<h2 id="istoriya-o-rezervnom-kopirovanii">   </h2><br>
+<p>  -      SWAP  8 GB,   -  ""   <code>DD</code>   .        2xSATA SSD RAID1  2xSAS HDD RAID1    LSI  HP.  ,    ,   ,         " readonly",  SWAP-.       RAM      30-40% ,    SWAP  .</p><br>
+<p><strong>   </strong>.     :</p><br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span><font></font>
+mkdir -p /mnt/backups/volumes<font></font>
+<font></font>
+DIR=/mnt/images-snap<font></font>
+VOL=images/volume<font></font>
+DATE=$(date <span class="hljs-string">"+%d"</span>)<font></font>
+HOSTNAME=$(hostname)<font></font>
+<font></font>
+lvcreate -s -n <span class="hljs-variable">$VOL</span>-snap -l100%FREE <span class="hljs-variable">$VOL</span>
+ionice -c3 dd iflag=direct <span class="hljs-keyword">if</span>=/dev/<span class="hljs-variable">$VOL</span>-snap bs=1M of=/mnt/backups/volumes/<span class="hljs-variable">$HOSTNAME</span>-<span class="hljs-variable">$DATE</span>.raw<font></font>
+lvremove -f <span class="hljs-variable">$VOL</span>-snap</code></pre><br>
+<p>   <code>ionice -c3</code>,      NVMe   ,   IO    :</p><br>
+<pre><code class="bash hljs">cat /sys/block/nvme0n1/queue/scheduler<font></font>
+[none] </code></pre><br>
+<p>,     legacy-   SSD RAID-,    ,    <em>AS IS</em>.  ,     ,    <code>ionice</code>    .</p><br>
+<p>    <code>iflag=direct</code>  <code>DD</code>.   direct IO   ,       IO  . , <code>oflag=direct</code>   ,       ZFS   .</p><br>
+<p>          . </p><br>
+<p><strong>  </strong>…  ,         ,      IOWAIT  50%.           :</p><br>
+<pre><code class="plaintext hljs">Volume group "images" not found</code></pre><br>
+<p>   "  Intel P4500", ,        ,       .  LVM2       LVM2:</p><br>
+<pre><code class="bash hljs">vgcfgrestore images</code></pre><br>
+<p>        :<br>
+<img src="https://habrastorage.org/webt/e9/cx/jc/e9cxjcnwemlh8ffzylxr5-gmn0c.png"></p><br>
+<p>    —  ,    ,   VPS-  ,      .  ,   — <code>iostat</code>   IOPS-   IOWAIT. ,   "  NVMe"  ,    . </p><br>
+<h2 id="razbor-situacii-po-shagam">   </h2><br>
+<p><strong> </strong>.          VPS-  128 GB RAM.    ,      32 GB   . VPS  ,       ,  SWAP- .</p><br>
+<p><strong> </strong>.      <code>vm.swappiness</code>     - <code>60</code>.  SWAP    SAS HDD RAID1.</p><br>
+<p><strong>  (  )</strong>.    <code>DD</code>     ,     RAM    NFS.  ,   <code>swappiness</code>,     VPS   ,      HDD RAID1.    ,  IOWAIT   ,     IO NVMe,    IO HDD RAID1.</p><br>
+<p><strong>   </strong>.     32GB.   16 ,  ,       SWAP   .    <code>swappiness</code>    <code>5</code>   .</p><br>
+<p><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这怎么可能不发生</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">首先，如果SWAP位于SSD RAID或NVMe设备上，其次，如果没有NVMe设备，但是会有一个速度较慢的设备无法产生如此大的数据量-具有讽刺意味的是，问题发生了NVMe太快了。</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">之后，一切都开始像以前一样工作-零IOWAIT。</font></font></p></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN499928/index.html">Udalenka：COVID-19发生了什么变化，谁现在比以前更好</a></li>
+<li><a href="../zh-CN499930/index.html">我如何在Go区块链上设计区块和交易</a></li>
+<li><a href="../zh-CN499934/index.html">鞭打效应与啤酒博弈：建模与供应链管理</a></li>
+<li><a href="../zh-CN499936/index.html">Linux的主要原因</a></li>
+<li><a href="../zh-CN499944/index.html">C ++中的Google样式指南。第10部分</a></li>
+<li><a href="../zh-CN499954/index.html">Storacle-分散的文件存储</a></li>
+<li><a href="../zh-CN499960/index.html">JanusGraph图DBMS实验，用于解决寻找合适路径的问题</a></li>
+<li><a href="../zh-CN499962/index.html">有关级联分类器的一些事实，在科学文章中很少认真考虑。</a></li>
+<li><a href="../zh-CN499964/index.html">美国宇航局选择了三家将参与该计划的公司来制造一艘登陆月球的飞船</a></li>
+<li><a href="../zh-CN499968/index.html">甚至在五月份发生的最持久的在线mitap列表</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,385 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤚🏿 🤘🏻 ⏬ Roslyn & EF Core: building a DbContext in runtime 👨🏻‍🚒 🔄 🐈</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Entity Framework Core can generate model code and DbContext for an existing database using a console command dotnet ef dbcontext scaffold. Why don't w...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Roslyn & EF Core: building a DbContext in runtime</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/500102/"><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Entity Framework Core can generate model code and DbContext for an existing database using a console command </font></font><code>dotnet ef dbcontext scaffold</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Why don't we try generating a DbContext in runtime?</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In the article I will tell how in runtime in my application:</font></font></p><br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Generate DbContext code using EF Core.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Compile it in memory using Roslyn.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Download the resulting assembly.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Create an instance of the generated DbContext.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Work with the database through the received DbContext.</font></font></li>
+</ol><br>
+<p><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">An example is available on github.</font></font></a></p><a name="habracut"></a><br>
+<h1 id="podgotovka-k-rabote"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Preparation for work</font></font></h1><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The platform for the application will be NET Core 3.1.3.</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">For example, I will use the MS SQL database, we need a connection string to it. </font><font style="vertical-align: inherit;">However, the approach itself works for any database engine supported by EF Core (I tested sqlite and postregs).</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Let's create a console application, add the necessary packages to it:</font></font></p><br>
+<pre><code class="xml hljs"><span class="hljs-tag">&lt;<span class="hljs-name">Project</span> <span class="hljs-attr">Sdk</span>=<span class="hljs-string">"Microsoft.NET.Sdk"</span>&gt;</span><font></font>
+<font></font>
+  <span class="hljs-tag">&lt;<span class="hljs-name">PropertyGroup</span>&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-name">OutputType</span>&gt;</span>Exe<span class="hljs-tag">&lt;/<span class="hljs-name">OutputType</span>&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-name">TargetFramework</span>&gt;</span>netcoreapp3.1<span class="hljs-tag">&lt;/<span class="hljs-name">TargetFramework</span>&gt;</span>
+  <span class="hljs-tag">&lt;/<span class="hljs-name">PropertyGroup</span>&gt;</span><font></font>
+<font></font>
+  <span class="hljs-tag">&lt;<span class="hljs-name">ItemGroup</span>&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-name">PackageReference</span> <span class="hljs-attr">Include</span>=<span class="hljs-string">"Microsoft.CodeAnalysis"</span> <span class="hljs-attr">Version</span>=<span class="hljs-string">"3.5.0"</span> /&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-name">PackageReference</span> <span class="hljs-attr">Include</span>=<span class="hljs-string">"Microsoft.EntityFrameworkCore"</span> <span class="hljs-attr">Version</span>=<span class="hljs-string">"3.1.3"</span> /&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-name">PackageReference</span> <span class="hljs-attr">Include</span>=<span class="hljs-string">"Microsoft.EntityFrameworkCore.Design"</span> <span class="hljs-attr">Version</span>=<span class="hljs-string">"3.1.3"</span> /&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-name">PackageReference</span> <span class="hljs-attr">Include</span>=<span class="hljs-string">"Microsoft.EntityFrameworkCore.Proxies"</span> <span class="hljs-attr">Version</span>=<span class="hljs-string">"3.1.3"</span> /&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-name">PackageReference</span> <span class="hljs-attr">Include</span>=<span class="hljs-string">"Microsoft.EntityFrameworkCore.SqlServer"</span> <span class="hljs-attr">Version</span>=<span class="hljs-string">"3.1.3"</span> /&gt;</span>
+    <span class="hljs-tag">&lt;<span class="hljs-name">PackageReference</span> <span class="hljs-attr">Include</span>=<span class="hljs-string">"Bricelam.EntityFrameworkCore.Pluralizer"</span> <span class="hljs-attr">Version</span>=<span class="hljs-string">"1.0.0"</span> /&gt;</span>
+  <span class="hljs-tag">&lt;/<span class="hljs-name">ItemGroup</span>&gt;</span><font></font>
+<font></font>
+<span class="hljs-tag">&lt;/<span class="hljs-name">Project</span>&gt;</span></code></pre><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The code generator is in the package </font></font><code>Microsoft.EntityFrameworkCore.Design</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">If you install this package through the package manager console, the following code will be added to your * .csproj:</font></font></p><br>
+<pre><code class="xml hljs"><span class="hljs-tag">&lt;<span class="hljs-name">PackageReference</span> <span class="hljs-attr">Include</span>=<span class="hljs-string">"Microsoft.EntityFrameworkCore.Design"</span> <span class="hljs-attr">Version</span>=<span class="hljs-string">"3.1.3"</span>&gt;</span>
+  <span class="hljs-tag">&lt;<span class="hljs-name">PrivateAssets</span>&gt;</span>all<span class="hljs-tag">&lt;/<span class="hljs-name">PrivateAssets</span>&gt;</span>
+  <span class="hljs-tag">&lt;<span class="hljs-name">IncludeAssets</span>&gt;</span>runtime; build; native; contentfiles; analyzers<span class="hljs-tag">&lt;/<span class="hljs-name">IncludeAssets</span>&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-name">PackageReference</span>&gt;</span></code></pre><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">This code says [ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ] that the package is needed only during development, and is not used in runtime. </font><font style="vertical-align: inherit;">We will need it in runtime, so we need to import the package like this:</font></font></p><br>
+<pre><code class="xml hljs"><span class="hljs-tag">&lt;<span class="hljs-name">PackageReference</span> <span class="hljs-attr">Include</span>=<span class="hljs-string">"Microsoft.EntityFrameworkCore.Design"</span> <span class="hljs-attr">Version</span>=<span class="hljs-string">"3.1.3"</span> /&gt;</span></code></pre><br>
+<h1 id="1-sgeneriruem-kod"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1. Generate the code</font></font></h1><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In the Entity Framework Core, the code generates a service </font></font><code>IReverseEngineerScaffolder</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font></p><br>
+<pre><code class="cs hljs"><span class="hljs-keyword">interface</span> <span class="hljs-title">IReverseEngineerScaffolder</span><font></font>
+{<font></font>
+    <span class="hljs-function">ScaffoldedModel <span class="hljs-title">ScaffoldModel</span>(<span class="hljs-params">
+        <span class="hljs-keyword">string</span> connectionString, 
+
+        //   
+        DatabaseModelFactoryOptions databaseOptions, 
+
+        //   
+        ModelReverseEngineerOptions modelOptions, 
+
+        //  ,  
+        ModelCodeGenerationOptions codeOptions</span>)</span>;<font></font>
+}</code></pre><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The easiest way to create an instance of this service is to create a Dependency Injection Container for it. </font></font></p><br>
+<p>      :</p><br>
+<pre><code class="cs hljs"><span class="hljs-function">IReverseEngineerScaffolder <span class="hljs-title">CreateMssqlScaffolder</span>(<span class="hljs-params"></span>)</span> =&gt; 
+    <span class="hljs-keyword">new</span> ServiceCollection()<font></font>
+        .AddEntityFrameworkSqlServer()<font></font>
+        .AddLogging()<font></font>
+        .AddEntityFrameworkDesignTimeServices()<font></font>
+        .AddSingleton&lt;LoggingDefinitions, SqlServerLoggingDefinitions&gt;()<font></font>
+        .AddSingleton&lt;IRelationalTypeMappingSource, SqlServerTypeMappingSource&gt;()<font></font>
+        .AddSingleton&lt;IAnnotationCodeGenerator, AnnotationCodeGenerator&gt;()<font></font>
+        .AddSingleton&lt;IDatabaseModelFactory, SqlServerDatabaseModelFactory&gt;()<font></font>
+        .AddSingleton&lt;IProviderConfigurationCodeGenerator, SqlServerCodeGenerator&gt;()<font></font>
+        .AddSingleton&lt;IScaffoldingModelFactory, RelationalScaffoldingModelFactory&gt;()<font></font>
+        .AddSingleton&lt;IPluralizer, Bricelam.EntityFrameworkCore.Design.Pluralizer&gt;()<font></font>
+        .BuildServiceProvider()<font></font>
+        .GetRequiredService&lt;IReverseEngineerScaffolder&gt;();<font></font>
+</code></pre><br>
+<p><code>IPluralizer</code>   .   ,        .</p><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">PostgreSQL</b>
+                        <div class="spoiler_text"><pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">private</span> IReverseEngineerScaffolder <span class="hljs-title">CreatePostgreScaffolder</span>(<span class="hljs-params"></span>)</span> =&gt; 
+    <span class="hljs-keyword">new</span> ServiceCollection()<font></font>
+        .AddEntityFrameworkNpgsql()<font></font>
+        .AddLogging()<font></font>
+        .AddEntityFrameworkDesignTimeServices()<font></font>
+        .AddSingleton&lt;LoggingDefinitions, NpgsqlLoggingDefinitions&gt;()<font></font>
+        .AddSingleton&lt;IRelationalTypeMappingSource, NpgsqlTypeMappingSource&gt;()<font></font>
+        .AddSingleton&lt;IAnnotationCodeGenerator, AnnotationCodeGenerator&gt;()<font></font>
+        .AddSingleton&lt;IDatabaseModelFactory, NpgsqlDatabaseModelFactory&gt;()<font></font>
+        .AddSingleton&lt;IProviderConfigurationCodeGenerator, NpgsqlCodeGenerator&gt;()<font></font>
+        .AddSingleton&lt;IScaffoldingModelFactory, RelationalScaffoldingModelFactory&gt;()<font></font>
+        .AddSingleton&lt;IPluralizer, Bricelam.EntityFrameworkCore.Design.Pluralizer&gt;()<font></font>
+        .BuildServiceProvider()<font></font>
+        .GetRequiredService&lt;IReverseEngineerScaffolder&gt;();</code></pre></div>
+                    </div><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">sqlite</b>
+                        <div class="spoiler_text"><pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">private</span> IReverseEngineerScaffolder <span class="hljs-title">CreateSqliteScaffolder</span>(<span class="hljs-params"></span>)</span> =&gt; 
+    <span class="hljs-keyword">new</span> ServiceCollection()<font></font>
+        .AddEntityFrameworkSqlite()<font></font>
+        .AddLogging()<font></font>
+        .AddEntityFrameworkDesignTimeServices()<font></font>
+        .AddSingleton&lt;LoggingDefinitions, SqliteLoggingDefinitions&gt;()<font></font>
+        .AddSingleton&lt;IRelationalTypeMappingSource, SqliteTypeMappingSource&gt;()<font></font>
+        .AddSingleton&lt;IAnnotationCodeGenerator, AnnotationCodeGenerator&gt;()<font></font>
+        .AddSingleton&lt;IDatabaseModelFactory, SqliteDatabaseModelFactory&gt;()<font></font>
+        .AddSingleton&lt;IProviderConfigurationCodeGenerator, SqliteCodeGenerator&gt;()<font></font>
+        .AddSingleton&lt;IScaffoldingModelFactory, RelationalScaffoldingModelFactory&gt;()<font></font>
+        .AddSingleton&lt;IPluralizer, Bricelam.EntityFrameworkCore.Design.Pluralizer&gt;()<font></font>
+        .BuildServiceProvider()<font></font>
+        .GetRequiredService&lt;IReverseEngineerScaffolder&gt;();</code></pre></div>
+                    </div><br>
+<p>     :</p><br>
+<pre><code class="cs hljs"><span class="hljs-keyword">var</span> scaffolder = CreateMssqlScaffolder();</code></pre><br>
+<p>    :</p><br>
+<pre><code class="cs hljs"><span class="hljs-comment">//     </span>
+<span class="hljs-keyword">var</span> dbOpts = <span class="hljs-keyword">new</span> DatabaseModelFactoryOptions();<font></font>
+<font></font>
+<span class="hljs-comment">//       </span>
+<span class="hljs-keyword">var</span> modelOpts = <span class="hljs-keyword">new</span> ModelReverseEngineerOptions(); <font></font>
+<font></font>
+<span class="hljs-keyword">var</span> codeGenOpts = <span class="hljs-keyword">new</span> ModelCodeGenerationOptions()<font></font>
+{<font></font>
+    <span class="hljs-comment">//   </span>
+    RootNamespace = <span class="hljs-string">"TypedDataContext"</span>,<font></font>
+    ContextName = <span class="hljs-string">"DataContext"</span>,<font></font>
+    ContextNamespace = <span class="hljs-string">"TypedDataContext.Context"</span>,<font></font>
+    ModelNamespace = <span class="hljs-string">"TypedDataContext.Models"</span>,<font></font>
+<font></font>
+    <span class="hljs-comment">//        ,</span>
+    <span class="hljs-comment">//       runtime</span>
+    SuppressConnectionStringWarning = <span class="hljs-literal">true</span>
+};</code></pre><br>
+<p> ,    </p><br>
+<pre><code class="cs hljs">ScaffoldedModel scaffoldedModelSources =    <font></font>
+    scaffolder.ScaffoldModel(onnectionString, dbOpts, modelOpts, codeGenOpts);</code></pre><br>
+<p> :</p><br>
+<pre><code class="cs hljs"><span class="hljs-comment">//  </span>
+<span class="hljs-keyword">class</span> <span class="hljs-title">ScaffoldedModel</span><font></font>
+{<font></font>
+    <span class="hljs-comment">//   DbContext</span>
+    <span class="hljs-keyword">public</span> <span class="hljs-keyword">virtual</span> ScaffoldedFile ContextFile { <span class="hljs-keyword">get</span>; <span class="hljs-keyword">set</span>; }<font></font>
+<font></font>
+    <span class="hljs-comment">//     </span>
+    <span class="hljs-keyword">public</span> <span class="hljs-keyword">virtual</span> IList&lt;ScaffoldedFile&gt; AdditionalFiles { <span class="hljs-keyword">get</span>; }<font></font>
+}</code></pre><br>
+<p>  Lazy Loading,   <code>UseLazyLoadingProxies()</code>   :</p><br>
+<pre><code class="cs hljs"><span class="hljs-keyword">var</span> contextFile = scaffoldedModelSources.ContextFile.Code<font></font>
+    .Replace(<span class="hljs-string">".UseSqlServer"</span>, <span class="hljs-string">".UseLazyLoadingProxies().UseSqlServer"</span>);</code></pre><br>
+<p>,    ,  .</p><br>
+<h1 id="2-kompiliruem-kod-s-pomoschyu-roslyn">2.     Roslyn</h1><br>
+<p> Roslyn,    :</p><br>
+<pre><code class="cs hljs"><span class="hljs-function">CSharpCompilation <span class="hljs-title">GenerateCode</span>(<span class="hljs-params">List&lt;<span class="hljs-keyword">string</span>&gt; sourceFiles</span>)</span><font></font>
+{<font></font>
+    <span class="hljs-keyword">var</span> options = CSharpParseOptions.Default.WithLanguageVersion(LanguageVersion.CSharp8);
+    <span class="hljs-keyword">var</span> parsedSyntaxTrees = sourceFiles<font></font>
+        .Select(f =&gt; SyntaxFactory.ParseSyntaxTree(f, options));<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span> CSharpCompilation.Create(<span class="hljs-string">$"DataContext.dll"</span>,<font></font>
+        parsedSyntaxTrees,<font></font>
+        references: GetCompilationReferences(),<font></font>
+        options: <span class="hljs-keyword">new</span> CSharpCompilationOptions(<font></font>
+            OutputKind.DynamicallyLinkedLibrary,<font></font>
+            optimizationLevel: OptimizationLevel.Release));<font></font>
+}</code></pre><br>
+<p>  ,       :</p><br>
+<pre><code class="cs hljs"><span class="hljs-function">List&lt;MetadataReference&gt; <span class="hljs-title">CompilationReferences</span>(<span class="hljs-params"></span>)</span><font></font>
+{<font></font>
+    <span class="hljs-keyword">var</span> refs = <span class="hljs-keyword">new</span> List&lt;MetadataReference&gt;();<font></font>
+<font></font>
+    <span class="hljs-comment">//  ,        ,</span>
+    <span class="hljs-comment">//      </span>
+    <span class="hljs-keyword">var</span> referencedAssemblies = Assembly.GetExecutingAssembly().GetReferencedAssemblies();<font></font>
+    refs.AddRange(referencedAssemblies.Select(a =&gt;<font></font>
+        MetadataReference.CreateFromFile(Assembly.Load(a).Location)));<font></font>
+<font></font>
+    <span class="hljs-comment">//  ,    :</span><font></font>
+    refs.Add(MetadataReference.CreateFromFile(<font></font>
+        <span class="hljs-keyword">typeof</span>(<span class="hljs-keyword">object</span>).Assembly.Location));<font></font>
+    refs.Add(MetadataReference.CreateFromFile(<font></font>
+        Assembly.Load(<span class="hljs-string">"netstandard, Version=2.0.0.0"</span>).Location));<font></font>
+    refs.Add(MetadataReference.CreateFromFile(<font></font>
+        <span class="hljs-keyword">typeof</span>(System.Data.Common.DbConnection).Assembly.Location));<font></font>
+    refs.Add(MetadataReference.CreateFromFile(<font></font>
+        <span class="hljs-keyword">typeof</span>(System.Linq.Expressions.Expression).Assembly.Location))<font></font>
+<font></font>
+    <span class="hljs-comment">//     LazyLoading,     :</span>
+    <span class="hljs-comment">// refs.Add(MetadataReference.CreateFromFile(</span>
+    <span class="hljs-comment">//     typeof(ProxiesExtensions).Assembly.Location));</span><font></font>
+<font></font>
+    <span class="hljs-keyword">return</span> refs;<font></font>
+}</code></pre><br>
+<p>  : </p><br>
+<pre><code class="cs hljs">MemoryStream peStream = <span class="hljs-keyword">new</span> MemoryStream();<font></font>
+EmitResult emitResult = GenerateCode(sourceFiles).Emit(peStream);</code></pre><br>
+<p>  , <code>emitResult.Success</code>   <code>true</code>,   <code>peStream</code>    .</p><br>
+<p> -   ,    .  <code>emitResult</code>      .</p><br>
+<h1 id="3-zagruzhaem-sborku">3.  </h1><br>
+<p>,   ,  :</p><br>
+<pre><code class="cs hljs"><span class="hljs-keyword">var</span> assemblyLoadContext = <span class="hljs-keyword">new</span> AssemblyLoadContext(<span class="hljs-string">"DbContext"</span>, isCollectible);<font></font>
+<font></font>
+<span class="hljs-keyword">var</span> assembly = assemblyLoadContext.LoadFromStream(peStream);</code></pre><br>
+<p>     <code>isCollectible</code>.  ,         .      NET Core 3 [<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=">2</a>].</p><br>
+<p>  ,      ,      .    [<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=">5</a>]:</p><br>
+<pre><code class="cs hljs">assemblyLoadContext.Unload();</code></pre><br>
+<p>  LazyLoading,  EF Core   Proxy-   ,      DefaultLoadContext,      <code>collectible</code>.   NonCollectible-     collectible-,       <code>collectible</code>    LazyLoading.     [<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=">3</a>][<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=">4</a>],     .</p><br>
+<h1 id="4-ispolzuem-nash-sgenerirovannyy-dbcontext">4.    DbContext</h1><br>
+<p>   ,     DbContext.</p><br>
+<pre><code class="cs hljs"><span class="hljs-keyword">var</span> type = assembly.GetType(<span class="hljs-string">"TypedDataContext.Context.DataContext"</span>);<font></font>
+<font></font>
+<span class="hljs-keyword">var</span> constructor = type.GetConstructor(Type.EmptyTypes);<font></font>
+<font></font>
+DbContext dynamicContext = (DbContext)constructor.Invoke(<span class="hljs-literal">null</span>);</code></pre><br>
+<p>  ,    :</p><br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">class</span> <span class="hljs-title">DynamicContextExtensions</span><font></font>
+{<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> IQueryable <span class="hljs-title">Query</span>(<span class="hljs-params"><span class="hljs-keyword">this</span> DbContext context, <span class="hljs-keyword">string</span> entityName</span>)</span> =&gt;<font></font>
+        context.Query(context.Model.FindEntityType(entityName).ClrType);<font></font>
+<font></font>
+    <span class="hljs-keyword">static</span> <span class="hljs-keyword">readonly</span> MethodInfo SetMethod =
+        <span class="hljs-keyword">typeof</span>(DbContext).GetMethod(<span class="hljs-keyword">nameof</span>(DbContext.Set), <span class="hljs-number">1</span>, Array.Empty&lt;Type&gt;()) ??
+        <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> Exception(<span class="hljs-string">$"Type not found: DbContext.Set"</span>);<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> IQueryable <span class="hljs-title">Query</span>(<span class="hljs-params"><span class="hljs-keyword">this</span> DbContext context, Type entityType</span>)</span> =&gt;<font></font>
+        (IQueryable)SetMethod.MakeGenericMethod(entityType)?.Invoke(context, <span class="hljs-literal">null</span>) ??
+        <span class="hljs-keyword">throw</span> <span class="hljs-keyword">new</span> Exception(<span class="hljs-string">$"Type not found: <span class="hljs-subst">{entityType.FullName}</span>"</span>);<font></font>
+}</code></pre><br>
+<p>     Reflection       <code>Set&lt;&gt;</code>  DbContext.</p><br>
+<p>        ,       :</p><br>
+<pre><code class="cs hljs"><span class="hljs-keyword">foreach</span> (<span class="hljs-keyword">var</span> entityType <span class="hljs-keyword">in</span> dynamicContext.Model.GetEntityTypes())<font></font>
+{<font></font>
+    <span class="hljs-keyword">var</span> items = (IQueryable&lt;<span class="hljs-keyword">object</span>&gt;)dynamicContext.Query(entityType.Name);<font></font>
+<font></font>
+    Console.Write(<span class="hljs-string">$"Entity type: <span class="hljs-subst">{entityType.ClrType.Name}</span> "</span>);<font></font>
+    Console.WriteLine(<span class="hljs-string">$"contains <span class="hljs-subst">{items.Count()}</span> items"</span>);<font></font>
+}</code></pre><br>
+<h1 id="scenarii-primeneniya"> </h1><br>
+<p>         ,       ,      ,    .</p><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title"></b>
+                        <div class="spoiler_text"><p> ASP.NET Core Blazor  ,    ,  SQL,       MS SQL, PostrgreSQL, sqlite, </p><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">   </b>
+                        <div class="spoiler_text"><p><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><img src="https://habrastorage.org/webt/0p/yo/o9/0pyoo9f_l8cideknx0kyewnzgea.png"></a></p></div>
+                    </div><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">    </b>
+                        <div class="spoiler_text"><p><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><img src="https://habrastorage.org/webt/ro/jh/8a/rojh8a5_w2eucazndrqmklpzz8g.png"></a></p></div>
+                    </div><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">   </b>
+                        <div class="spoiler_text"><p><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><img src="https://habrastorage.org/webt/ws/rx/ct/wsrxctb4hdu1x0lpv6rvwteklh0.png"></a></p></div>
+                    </div><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">     c#</b>
+                        <div class="spoiler_text"><p><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><img src="https://habrastorage.org/webt/fj/e5/2o/fje52obtofiichnz-hnkhonk3z4.png"></a></p></div>
+                    </div><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">  </b>
+                        <div class="spoiler_text"><p><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><img src="https://habrastorage.org/webt/hh/nr/5x/hhnr5xzyycnyl0vqccfmv2l-_64.png"></a></p></div>
+                    </div></div>
+                    </div><br>
+<h1 id="vyvod"></h1><br>
+<p>   ,    EF Core DbContext  runtime.     NET Core — <code>collectible assemblies</code>,     ,         .</p><br>
+<h1 id="ssylki"></h1><br>
+<p><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">     github.</a></p><br>
+<p>[1] <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">   (PackageReference)   </a></p><br>
+<p>[2] <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">Collectible assemblies in .NET Core 3.0</a></p><br>
+<p>[3] <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">Lazy loading proxy doesn't support entity inside collectible assembly #18272</a></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[4] </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Support Collectible Dynamic Assemblies # 473</font></font></a></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[5] </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How to use and debug assembly unloadability in .NET Core</font></font></a></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Thank you for your time!</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I have a few more topics that I would like to write about. </font><font style="vertical-align: inherit;">I would be grateful if you indicate in the survey topics that would be of interest to you.</font></font></p></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en500074/index.html">You decided to join the development of an open source product. What to prepare for?</a></li>
+<li><a href="../en500076/index.html">Deploying Java Applications in OpenShift</a></li>
+<li><a href="../en500086/index.html">Writing a javascript calculator</a></li>
+<li><a href="../en500098/index.html">JavaScript Nehronical</a></li>
+<li><a href="../en500100/index.html">TV first, responsive typography or how not to forget about all sizes of devices</a></li>
+<li><a href="../en500104/index.html">Business process modeling, automatic diagram-text translation and CH-1 notation</a></li>
+<li><a href="../en500106/index.html">GPU programming in Java</a></li>
+<li><a href="../en500108/index.html">(Spring) State in the (Spring) Shell: not production single</a></li>
+<li><a href="../en500110/index.html">A word about the delivery of goods</a></li>
+<li><a href="../en500114/index.html">Job search in Germany as a product manager and more. Part 2/5. The structure of the labor market. ATS. Job boards</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

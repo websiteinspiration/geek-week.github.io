@@ -1,0 +1,485 @@
+<!doctype html>
+<html class="no-js" lang="es">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💑 👩🏻‍🔬 📂 De la vida con Kubernetes: cómo eliminamos DBMS (y no solo) de entornos de revisión a estáticos 🐣 ⚛️ 👩🏼‍🔧</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nota : este artículo no pretende ser una mejor práctica. Describe la experiencia de una implementación específica de una tarea de infraestructura en t...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>De la vida con Kubernetes: cómo eliminamos DBMS (y no solo) de entornos de revisión a estáticos</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/501424/"><img src="https://habrastorage.org/webt/ae/yu/zw/aeyuzw9pz0k6d0pbc0g86pxkfd0.png"><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nota</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : este artículo no pretende ser una mejor práctica. </font><font style="vertical-align: inherit;">Describe la experiencia de una implementación específica de una tarea de infraestructura en términos de uso de Kubernetes y Helm, que puede ser útil para resolver problemas relacionados. </font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El uso de entornos de revisión en CI / CD puede ser muy útil, tanto para desarrolladores como para ingenieros de sistemas. </font><font style="vertical-align: inherit;">Primero sincronicemos las ideas generales sobre ellos:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Los entornos de revisión se pueden crear desde ramas separadas en repositorios Git definidos por los desarrolladores (las denominadas ramas de características).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pueden tener instancias DBMS separadas, procesadores de cola, servicios de almacenamiento en caché, etc. </font><font style="vertical-align: inherit;">- en general, todo para la reproducción completa del entorno de producción.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Permiten el desarrollo paralelo, acelerando significativamente el lanzamiento de nuevas características en la aplicación. </font><font style="vertical-align: inherit;">Al mismo tiempo, se pueden requerir docenas de tales entornos todos los días, por lo que la velocidad de su creación es crítica.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En la intersección del segundo y el tercer punto, a menudo surgen dificultades: dado que la infraestructura es muy diferente, sus componentes se pueden implementar durante mucho tiempo. </font><font style="vertical-align: inherit;">Este tiempo empleado, por ejemplo, incluye restaurar la base de datos desde una copia de seguridad ya preparada *. </font><font style="vertical-align: inherit;">El artículo trata sobre la forma fascinante en la que una vez fuimos para resolver este problema.</font></font><a name="habracut"></a><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">* Por cierto, específicamente sobre volcados de bases de datos grandes en este contexto, ya escribimos en el </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">material sobre la aceleración de la base de datos de bootstrap</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ).</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">El problema y la forma de resolverlo.</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En uno de los proyectos, se nos asignó la tarea de "crear un único punto de entrada para desarrolladores e ingenieros de control de calidad". </font><font style="vertical-align: inherit;">Esta formulación oculta técnicamente lo siguiente:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Para simplificar el trabajo de los ingenieros de control de calidad y algunos otros empleados, elimine todas las bases de datos (y los correspondientes vhosts) utilizados en la revisión, en un entorno separado, estático. </font><font style="vertical-align: inherit;">Por las razones que prevalecen en el proyecto, esta forma de interactuar con ellos fue óptima.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Reduzca el tiempo que lleva crear un entorno de revisión. </font><font style="vertical-align: inherit;">Todo el proceso de su creación desde cero está implícito, es decir </font><font style="vertical-align: inherit;">incluyendo clonación de bases de datos, migraciones, etc.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Desde el punto de vista de la implementación, el problema principal se reduce a garantizar la idempotencia al crear y eliminar entornos de revisión. Para lograr esto, cambiamos el mecanismo para crear entornos de revisión migrando primero los servicios </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQL, MongoDB y RabbitMQ</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> a un entorno estático. Estático se refiere a un entorno "permanente" que no se creará a petición del usuario (como es el caso de los entornos de revisión). </font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">¡Importante!</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> El enfoque con un entorno estático está </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">lejos de ser ideal</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ; para conocer sus deficiencias específicas, consulte el final del artículo. Sin embargo, compartimos esta experiencia en detalle, ya que puede ser más o menos aplicable en otras tareas, y al mismo tiempo sirve como argumento cuando se discuten problemas de diseño de infraestructura.</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entonces, la secuencia de acciones en la implementación:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Al crear un entorno de revisión, lo siguiente debería suceder una vez: la creación de bases de datos en dos DBMS (MongoDB y PostgreSQL), la restauración de bases de datos desde una copia de seguridad / plantilla y la creación de vhost en RabbitMQ. </font><font style="vertical-align: inherit;">Esto requerirá una forma conveniente de cargar los volcados actuales. </font><font style="vertical-align: inherit;">(Si antes tenía entornos de revisión, lo más probable es que ya tenga una solución preparada para esto).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Después de completar el entorno de revisión, debe eliminar la base de datos y el host virtual en RabbitMQ.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En nuestro caso, la infraestructura opera dentro del marco de Kubernetes (usando Helm). </font><font style="vertical-align: inherit;">Por lo tanto, para la implementación de las tareas anteriores, los </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ganchos Helm fueron</font></font></b></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> excelentes </font><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Se pueden realizar tanto antes de la creación de todos los demás componentes en la versión de Helm como después de su eliminación. </font><font style="vertical-align: inherit;">Por lo tanto:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">para la tarea de inicialización, usaremos un enlace </font></font><code>pre-install</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">para iniciarlo antes de crear todos los recursos en el lanzamiento;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">para la tarea de eliminación, un gancho </font></font><code>post-delete</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pasemos a los detalles de implementación.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Implementación práctica</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En la versión original, este proyecto utilizaba solo un trabajo, que constaba de tres contenedores. </font><font style="vertical-align: inherit;">Por supuesto, esto no es del todo conveniente, ya que el resultado es un gran manifiesto que es curiosamente difícil de leer. </font><font style="vertical-align: inherit;">Por lo tanto, lo dividimos en tres pequeños trabajos. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La siguiente es una lista de PostgreSQL, y los otros dos (MongoDB y RabbitMQ) son idénticos en estructura de manifiesto:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">{{- if .Values.global.review }}<font></font>
+---<font></font>
+apiVersion: batch/v1<font></font>
+kind: Job<font></font>
+metadata:<font></font>
+  name: db-create-postgres-database<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "5"<font></font>
+spec:<font></font>
+  template:<font></font>
+    metadata:<font></font>
+      name: init-db-postgres<font></font>
+    spec:<font></font>
+      volumes:<font></font>
+      - name: postgres-scripts<font></font>
+        configMap:<font></font>
+          defaultMode: 0755<font></font>
+          name: postgresql-configmap<font></font>
+      containers:<font></font>
+      - name: init-postgres-database<font></font>
+        image: private-registry/postgres <font></font>
+        command: ["/docker-entrypoint-initdb.d/01-review-load-dump.sh"]<font></font>
+        volumeMounts:<font></font>
+        - name: postgres-scripts<font></font>
+          mountPath: /docker-entrypoint-initdb.d/01-review-load-dump.sh<font></font>
+          subPath: review-load-dump.sh<font></font>
+        env:<font></font>
+{{- include "postgres_env" . | indent 8 }}<font></font>
+      restartPolicy: Never<font></font>
+{{- end }}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Comentarios sobre el contenido del manifiesto:</font></font><br>
+<br>
+<ol>
+<li> Job    review-.  review   CI/CD       Helm- (. <code>if</code>  <code>.Values.global.review</code>    ).</li>
+<li>  Job      — , ConfigMap.       ,  ,       .       ,  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><code>hook-weight</code></a>.</li>
+<li>      cURL   ,        PostgreSQL,       .</li>
+<li>      PostgreSQL    :     ,     shell- .</li>
+</ol><br>
+<h3>PostgreSQL</h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lo más interesante está en el script de shell ( </font></font><code>review-load-dump.sh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) </font><font style="vertical-align: inherit;">ya mencionado en el listado </font><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">¿Cuáles son las opciones generales para restaurar una base de datos en PostgreSQL?</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Recuperación "estándar" de la copia de seguridad;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Recuperación utilizando </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">plantillas</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En nuestro caso, la diferencia entre los dos enfoques está principalmente en la velocidad de crear una base de datos para el nuevo entorno. </font><font style="vertical-align: inherit;">En el primero, cargamos el volcado de la base de datos y lo restauramos </font></font><code>pg_restore</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Y con nosotros esto sucede más lentamente que el segundo método, por lo que se hizo la elección correspondiente. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Usando la segunda opción ( </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">recuperación con plantillas</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) puede clonar la base de datos a nivel físico sin enviarle datos de forma remota desde el contenedor en otro entorno; esto reduce el tiempo de recuperación. </font><font style="vertical-align: inherit;">Sin embargo, hay una limitación: no puede clonar una base de datos a la que permanecen las conexiones activas. </font><font style="vertical-align: inherit;">Dado que usamos stage como el entorno estático (y no como un entorno de revisión separado), necesitamos crear una segunda base de datos y convertirla en una plantilla, actualizándola diariamente (por ejemplo, en la mañana). </font><font style="vertical-align: inherit;">Se preparó un pequeño CronJob para esto:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: batch/v1beta1<font></font>
+kind: CronJob<font></font>
+metadata:<font></font>
+  name: update-postgres-template<font></font>
+spec:<font></font>
+  schedule: "50 4 * * *"<font></font>
+  concurrencyPolicy: Forbid<font></font>
+  successfulJobsHistoryLimit: 3<font></font>
+  failedJobsHistoryLimit: 3<font></font>
+  startingDeadlineSeconds: 600<font></font>
+  jobTemplate:<font></font>
+    spec:<font></font>
+      template:<font></font>
+        spec:<font></font>
+          restartPolicy: Never<font></font>
+          imagePullSecrets:<font></font>
+          - name: registrysecret<font></font>
+          volumes:<font></font>
+          - name: postgres-scripts<font></font>
+            configMap:<font></font>
+              defaultMode: 0755<font></font>
+              name: postgresql-configmap-update-cron<font></font>
+          containers:<font></font>
+          - name: cron<font></font>
+            command: ["/docker-entrypoint-initdb.d/update-postgres-template.sh"]<font></font>
+          image: private-registry/postgres <font></font>
+            volumeMounts:<font></font>
+            - name: postgres-scripts<font></font>
+              mountPath: /docker-entrypoint-initdb.d/update-postgres-template.sh<font></font>
+              subPath: update-postgres-template.sh<font></font>
+            env:<font></font>
+{{- include "postgres_env" . | indent 8 }}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El manifiesto completo de ConfigMap que contiene el script probablemente no tenga mucho sentido (informe en los comentarios si este no es el caso). </font><font style="vertical-align: inherit;">En cambio, daré lo más importante: un script bash:</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-comment">#!/bin/bash -x</span><font></font>
+<font></font>
+CREDENTIALS=<span class="hljs-string">"postgresql://<span class="hljs-variable">${POSTGRES_USER}</span>:<span class="hljs-variable">${POSTGRES_PASSWORD}</span>@<span class="hljs-variable">${POSTGRES_HOST}</span>/postgres"</span><font></font>
+<font></font>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"REVOKE CONNECT ON DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span> FROM public"</span>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '<span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span>'"</span><font></font>
+<font></font>
+curl --fail -vsL <span class="hljs-variable">${HOST_FORDEV}</span>/latest_<span class="hljs-variable">${POSTGRES_DB_STAGE}</span>.psql -o /tmp/<span class="hljs-variable">${POSTGRES_DB}</span>.psql<font></font>
+<font></font>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"ALTER DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span> WITH is_template false allow_connections true;"</span>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"DROP DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span>;"</span> || <span class="hljs-literal">true</span>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"CREATE DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span>;"</span> || <span class="hljs-literal">true</span>
+pg_restore -U <span class="hljs-variable">${POSTGRES_USER}</span> -h <span class="hljs-variable">${POSTGRES_HOST}</span> -w -j 4 -d <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span> /tmp/<span class="hljs-variable">${POSTGRES_DB}</span>.psql<font></font>
+<font></font>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"ALTER DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span> WITH is_template true allow_connections false;"</span><font></font>
+<font></font>
+rm -v /tmp/<span class="hljs-variable">${POSTGRES_DB}</span>.psql</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Puede restaurar varias bases de datos a la vez desde una plantilla sin ningún conflicto. </font><font style="vertical-align: inherit;">Lo principal es que las conexiones a la base de datos deberían estar prohibidas, y la base de datos debería ser una plantilla. </font><font style="vertical-align: inherit;">Esto se hace en el penúltimo paso. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El manifiesto que contiene el script de shell para restaurar la base de datos resultó así:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: postgresql-configmap<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded<font></font>
+data:<font></font>
+  review-load-dump.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+    <font></font>
+ <font></font>
+ <font></font>
+    CREDENTIALS="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/postgres"<font></font>
+<font></font>
+    if [ "$( psql -d "${CREDENTIALS}" -tAc "SELECT CASE WHEN EXISTS (SELECT * FROM pg_stat_activity WHERE datname = '${POSTGRES_DB}' LIMIT 1) THEN 1 ELSE 0 END;" )" = '1' ]<font></font>
+      then<font></font>
+          echo "Open connections has been found in ${POSTGRES_DB} database, will drop them"<font></font>
+          psql -d "${CREDENTIALS}" -c "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '${POSTGRES_DB}' -- AND pid &lt;&gt; pg_backend_pid();"<font></font>
+      else<font></font>
+          echo "No open connections has been found ${POSTGRES_DB} database, skipping this stage"<font></font>
+    fi<font></font>
+<font></font>
+    psql -d "${CREDENTIALS}" -c "DROP DATABASE ${POSTGRES_DB}"<font></font>
+<font></font>
+    if [ "$( psql -d "${CREDENTIALS}" -tAc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'" )" = '1' ]<font></font>
+      then<font></font>
+          echo "Database ${POSTGRES_DB} still exists, delete review job failed"<font></font>
+          exit 1<font></font>
+      else<font></font>
+          echo "Database ${POSTGRES_DB} does not exist, skipping"<font></font>
+    fi<font></font>
+<font></font>
+<font></font>
+    psql ${CREDENTIALS} -d postgres -c 'CREATE DATABASE ${POSTGRES_DB} TEMPLATE "loot-stage-copy"'</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Aparentemente, están involucrados aquí </font></font><code>hook-delete-policy</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Los detalles sobre la aplicación de estas políticas están escritos </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">aquí</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">En el manifiesto dado usamos los </font></font><code>before-hook-creation,hook-succeeded</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">que permiten cumplir los siguientes requisitos: eliminar el objeto anterior antes de crear un nuevo enlace y eliminar solo cuando el enlace fue exitoso. </font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Eliminaremos la base de datos en este mapa de configuración:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: postgresql-configmap-on-delete<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "post-delete, pre-delete"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation<font></font>
+data:<font></font>
+  review-delete-db.sh: |<font></font>
+    #!/bin/bash -e<font></font>
+<font></font>
+    CREDENTIALS="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/postgres"<font></font>
+<font></font>
+    psql -d "${CREDENTIALS}" -w postgres -c "DROP DATABASE ${POSTGRES_DB}"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Aunque lo trasladamos a un ConfigMap separado, se puede colocar en un ConfigMap normal </font></font><code>command</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Después de todo, se puede hacer una línea sin complicar la apariencia del manifiesto en sí. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Si la opción con las plantillas de PostgreSQL por alguna razón no se ajusta o no se ajusta, puede volver a la </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ruta de recuperación "estándar"</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> mencionada anteriormente </font><b><font style="vertical-align: inherit;">utilizando la copia de seguridad</font></b><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">El algoritmo será trivial:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Todas las noches, se realiza una copia de seguridad de la base de datos para que se pueda descargar desde la red local del clúster.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> En el momento de la creación del entorno de revisión, la base de datos se carga y se restaura desde el volcado.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Cuando se despliega el volcado, se realizan todas las demás acciones.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En este caso, el script de recuperación se convertirá aproximadamente de la siguiente manera:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: postgresql-configmap<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded<font></font>
+data:<font></font>
+  review-load-dump.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    CREDENTIALS="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/postgres"<font></font>
+    psql -d "${CREDENTIALS}" -w -c "DROP DATABASE ${POSTGRES_DB}" || true<font></font>
+    psql -d "${CREDENTIALS}" -w -c "CREATE DATABASE ${POSTGRES_DB}"<font></font>
+<font></font>
+    curl --fail -vsL ${HOST_FORDEV}/latest_${POSTGRES_DB_STAGE}.psql -o /tmp/${POSTGRES_DB}.psql<font></font>
+<font></font>
+    psql psql -d "${CREDENTIALS}" -w -c "CREATE EXTENSION ip4r;"<font></font>
+    pg_restore -U ${POSTGRES_USER} -h ${POSTGRES_HOST} -w -j 4 -d ${POSTGRES_DB} /tmp/${POSTGRES_DB}.psql<font></font>
+    rm -v /tmp/${POSTGRES_DB}.psql</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El procedimiento corresponde a lo que ya se ha descrito anteriormente. El único cambio es la eliminación del archivo psql después de que se haya agregado todo el trabajo. </font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nota</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : tanto en el script de recuperación como en el script de desinstalación, la base de datos se elimina cada vez. Esto se hace para evitar posibles conflictos durante la recreación de la revisión: debe asegurarse de que la base de datos se elimine realmente. Además, este problema puede resolverse potencialmente agregando un indicador </font></font><code>--clean</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">en la utilidad </font></font><code>pg_restore</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, pero tenga cuidado: este indicador borra los datos de solo aquellos elementos que están en el volcado, por lo que en nuestro caso esta opción no funciona.</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como resultado, obtuvimos un mecanismo de trabajo que requiere mejoras adicionales (hasta reemplazar los scripts de Bash con un código más elegante). </font><font style="vertical-align: inherit;">Los dejaremos fuera del alcance del artículo (aunque los comentarios sobre el tema, por supuesto, son bienvenidos).</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mongodb</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El siguiente componente es MongoDB. </font><font style="vertical-align: inherit;">La principal dificultad es que para este DBMS, la opción de copiar la base de datos (como en PostgreSQL) existe de manera bastante nominal, porque:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Él está en </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">un estado desaprobado</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Según los resultados de nuestras pruebas, no encontramos una gran diferencia en el tiempo de recuperación de la base de datos en comparación con el habitual </font></font><code>mongo_restore</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sin embargo, observo que las pruebas se llevaron a cabo como parte de un proyecto; en su caso, los resultados pueden ser completamente diferentes.</font></font></i></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Resulta que en el caso de un gran volumen de base de datos, puede surgir un problema grave: ahorramos tiempo en la restauración de la base de datos en PgSQL, pero al mismo tiempo restauramos el volcado en Mongo durante mucho tiempo. </font><font style="vertical-align: inherit;">Al momento de escribir, y dentro del marco de la infraestructura existente, vimos tres formas (por cierto, se pueden combinar):</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">La recuperación puede llevar mucho tiempo, por ejemplo, si su DBMS está ubicado en un sistema de archivos de red (para casos </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">no</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> con entorno de producción). </font><font style="vertical-align: inherit;">Luego, simplemente puede transferir el DBMS del escenario a un nodo separado y usar el almacenamiento local. </font><font style="vertical-align: inherit;">Como esto no es producción, la velocidad de crear una revisión es más crítica para nosotros.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Puede llevar cada recuperación de trabajo a un pod separado, lo que le permite ejecutar previamente migraciones y otros procesos que dependen del funcionamiento del DBMS. </font><font style="vertical-align: inherit;">Así que ahorramos tiempo al completarlos por adelantado.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A veces puede reducir el tamaño del volcado eliminando datos antiguos / irrelevantes, hasta el punto de que es suficiente dejar solo la estructura de la base de datos. </font><font style="vertical-align: inherit;">Por supuesto, esto no es para aquellos casos en que se requiere un volcado completo (por ejemplo, para tareas de prueba de control de calidad).</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Si no necesita crear rápidamente entornos de revisión, puede ignorar todas las dificultades descritas. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nosotros, al no poder copiar la base de datos de manera similar a PgSQL, iremos por el primer camino, es decir </font><font style="vertical-align: inherit;">recuperación estándar de respaldo. </font><font style="vertical-align: inherit;">El algoritmo es el mismo que con PgSQL. </font><font style="vertical-align: inherit;">Esto es fácil de ver si nos fijamos en los manifiestos:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: mongodb-scripts-on-delete<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "post-delete, pre-delete"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation<font></font>
+data:<font></font>
+  review-delete-db.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    mongo ${MONGODB_NAME} --eval "db.dropDatabase()" --host ${MONGODB_REPLICASET}/${MONGODB_HOST}<font></font>
+---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: mongodb-scripts<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded<font></font>
+data:<font></font>
+  review-load-dump.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    curl --fail -vsL ${HOST_FORDEV}/latest_${MONGODB_NAME_STAGE}.gz -o /tmp/${MONGODB_NAME}.gz<font></font>
+<font></font>
+    mongo ${MONGODB_NAME} --eval "db.dropDatabase()" --host ${MONGODB_REPLICASET}/${MONGODB_HOST}<font></font>
+    mongorestore --gzip --nsFrom "${MONGODB_NAME_STAGE}.*" --nsTo "${MONGODB_NAME}.*" --archive=/tmp/${MONGODB_NAME}.gz --host ${MONGODB_REPLICASET}/${MONGODB_HOST}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hay un detalle importante aquí. En nuestro caso, MongoDB está en el clúster y debe asegurarse de que la </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">conexión siempre le ocurra al nodo primario</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Si especifica, por ejemplo, el primer host en el quórum, luego de un tiempo puede cambiar de Primario a Secundario, lo que evitará la creación de una base de datos. Por lo tanto, debe conectarse no a un host, sino inmediatamente a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ReplicaSet</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , enumerando todos los hosts en él. Solo por esta razón, debe hacer MongoDB como StatefulSet para que los nombres de host sean siempre los mismos (sin mencionar que MongoDB es una aplicación con estado por naturaleza). En esta opción, tiene la garantía de conectarse al nodo primario. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para MongoDB, también eliminamos la base de datos antes de crear la revisión, esto se hace por las mismas razones que en PostgreSQL.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Último matiz: dado que la base de datos para revisión está en el mismo entorno que la etapa, se requiere un nombre diferente para la base de datos clonada. </font><font style="vertical-align: inherit;">Si el volcado no es un archivo BSON, se producirá el siguiente error:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">the --db and --collection args should only be used when restoring from a BSON file. Other uses are deprecated and will not exist in the future; use --nsInclude instead</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Por lo tanto, en el ejemplo anterior, </font></font><code>--nsFrom</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">y </font><font style="vertical-align: inherit;">se utilizan </font></font><code>--nsTo</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No encontramos otros problemas con la recuperación. </font><font style="vertical-align: inherit;">Al final, solo agregaré que la documentación de </font></font><code>copyDatabase</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MongoDB está disponible </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">aquí</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , en caso de que desee probar esta opción.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rabbitmq</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La última aplicación en nuestra lista de requisitos fue RabbitMQ. </font><font style="vertical-align: inherit;">Es simple: necesita crear un nuevo vhost en nombre del usuario con el que se conectará la aplicación. </font><font style="vertical-align: inherit;">Y luego bórralo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Manifiesto para crear y eliminar vhosts:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: rabbitmq-configmap<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded<font></font>
+data:<font></font>
+  rabbitmq-setup-vhost.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    /usr/local/bin/rabbitmqadmin -H ${RABBITMQ_HOST} -u ${RABBITMQ_USER} -p ${RABBITMQ_PASSWORD} declare vhost name=${RABBITMQ_VHOST}<font></font>
+---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: rabbitmq-configmap-on-delete<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "post-delete, pre-delete"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation<font></font>
+data:<font></font>
+  rabbitmq-delete-vhost.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    /usr/local/bin/rabbitmqadmin -H ${RABBITMQ_HOST} -u ${RABBITMQ_USER} -p ${RABBITMQ_PASSWORD} delete vhost name=${RABBITMQ_VHOST}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Con grandes dificultades en RabbitMQ nosotros (¿hasta ahora?) No nos hemos encontrado. </font><font style="vertical-align: inherit;">En general, el mismo enfoque puede aplicarse a cualquier otro servicio que no tenga un vínculo crítico para los datos.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">desventajas</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+¿Por qué esta decisión no pretende ser "mejores prácticas"?</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Resulta un solo punto de falla en la forma de un entorno de escenario.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Si una aplicación en un entorno de etapa se ejecuta solo en una réplica, dependemos aún más del host en el que se ejecuta esta aplicación. </font><font style="vertical-align: inherit;">En consecuencia, con un aumento en el número de entornos de revisión, la carga en el nodo aumenta proporcionalmente sin la capacidad de equilibrar esta carga.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No fue posible resolver completamente estos dos problemas, teniendo en cuenta las capacidades de la infraestructura de un proyecto en particular, sin embargo, el daño potencial se puede minimizar mediante la agrupación (agregando nuevos nodos) y el escalado vertical. </font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusión</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A medida que la aplicación se desarrolla y con el aumento en el número de desarrolladores, tarde o temprano, la carga en los entornos de revisión aumenta y se les agregan nuevos requisitos. Es importante que los desarrolladores entreguen los próximos cambios en la producción lo más rápido posible, pero para que esto sea posible, necesitamos entornos de revisión dinámicos que hagan que el desarrollo sea "paralelo". Como resultado, la carga en la infraestructura está creciendo y el tiempo para crear tales entornos está aumentando. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Este artículo fue escrito en base a experiencias reales y bastante específicas. Solo en casos excepcionales aislamos los servicios en entornos estáticos, y aquí se trataba específicamente de él. Tal medida necesaria nos permitió acelerar el desarrollo y la depuración de la aplicación, gracias a la capacidad de crear rápidamente entornos de revisión desde cero.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Cuando comenzamos a hacer esta tarea, parecía muy simple, pero a medida que trabajábamos, encontramos muchos matices. </font><font style="vertical-align: inherit;">Fueron ellos los que se reunieron en el artículo final: aunque no son universales, pueden servir como ejemplo para la base / inspiración de sus propias decisiones sobre entornos de revisión acelerados.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PD</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lea también en nuestro blog:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Consejos y trucos de Kubernetes: acelerar el arranque de grandes bases de datos</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Migración RabbitMQ sin obstáculos a Kubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Migración de MongoDB sin obstáculos a Kubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ejecutar equipos en el proceso de entregar una nueva versión de la aplicación a Kubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ".</font></font></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es501412/index.html">Seguimiento ocular móvil en PyTorch</a></li>
+<li><a href="../es501414/index.html">Configuración de Debian, Nginx y Gunicorn para un proyecto Django</a></li>
+<li><a href="../es501416/index.html">Un poco sobre WebRTC: qué usar y el caso de la práctica</a></li>
+<li><a href="../es501418/index.html">Semana 4 Maratón: Motivación</a></li>
+<li><a href="../es501420/index.html">Shows en línea de Mitapas y YouTube: JUG Ru Group Stream Week</a></li>
+<li><a href="../es501426/index.html">Unison: configuración y automatización de la sincronización bidireccional de directorios en dos servidores</a></li>
+<li><a href="../es501430/index.html">Gran guía para el diseño y la planificación del contenido del sitio web</a></li>
+<li><a href="../es501432/index.html">Dos alternativas a JDBC</a></li>
+<li><a href="../es501434/index.html">Semana de la seguridad 20: piratear una computadora a través de Thunderbolt</a></li>
+<li><a href="../es501436/index.html">Algoritmo de reconocimiento de números en la imagen con baja probabilidad del segundo tipo de error</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

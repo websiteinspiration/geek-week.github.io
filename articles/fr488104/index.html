@@ -1,0 +1,922 @@
+<!doctype html>
+<html class="no-js" lang="fr">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🆔 👧 ↙️ DBA: trouver des index inutiles 😢 😣 👩🏽‍🤝‍👨🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Je rencontre régulièrement une situation où de nombreux développeurs croient sincèrement que l'index dans PostgreSQL est un couteau suisse qui aide un...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>DBA: trouver des index inutiles</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/488104/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Je rencontre régulièrement une situation où de nombreux développeurs croient sincèrement que l'index dans PostgreSQL est un couteau suisse qui aide universellement à tout problème de performance des requêtes. Il suffit d'ajouter </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">un nouvel index</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> à la table ou </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">d'inclure le champ quelque part</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dans l'existant, puis (magie-magie!) Toutes les requêtes utiliseront cet index efficacement. </font></font><br>
+<img src="https://habrastorage.org/webt/7f/ay/qh/7fayqhfcbpano3cagjluq6cxary.png"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tout d'abord, bien sûr, ils ne le seront pas, ou pas efficacement, ou pas tous. Deuxièmement, les index supplémentaires ajouteront uniquement des problèmes de performances lors de l'écriture. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Le plus souvent, de telles situations se produisent pendant le développement «à longue durée de jeu», lorsqu'un produit personnalisé n'est pas fabriqué selon le modèle «écrit une fois, donné, oublié», mais, comme dans notre cas, est créé</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">service avec un long cycle de vie</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Les améliorations se produisent de manière itérative par les forces de </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">nombreuses équipes réparties</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , qui sont réparties non seulement dans l'espace mais aussi dans le temps. </font><font style="vertical-align: inherit;">Et puis, ne connaissant pas toute l'histoire du développement du projet ou les caractéristiques de la distribution appliquée des données dans sa base de données, vous pouvez facilement "gâcher" les indices. </font><font style="vertical-align: inherit;">Mais les considérations et </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">les demandes de test sous la coupe</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> vous permettent de prévoir et de détecter une partie des problèmes à l'avance:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">index inutilisés</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">préfixe "clones"</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">horodatage «au milieu»</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">booléen indexable</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tableaux dans l'index</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Corbeille nulle</font></font></li>
+</ul><a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Le plus simple est de trouver des indices pour lesquels </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">il n'y a pas eu de passes du tout</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Il vous suffit de vous assurer que la réinitialisation des statistiques ( </font></font><code>pg_stat_reset()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) s'est produite il y a longtemps et vous ne souhaitez pas supprimer celui utilisé «rarement, mais avec justesse». </font><font style="vertical-align: inherit;">Nous utilisons la vue système </font></font><code>pg_stat_user_indexes</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> pg_stat_user_indexes <span class="hljs-keyword">WHERE</span> idx_scan = <span class="hljs-number">0</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mais même si l'index est utilisé et ne tombe pas dans cette sélection, cela ne signifie pas du tout qu'il est bien adapté à vos requêtes.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Quels indices ne conviennent pas</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Afin de comprendre pourquoi certaines requêtes «vont mal sur l'index», nous allons réfléchir à la </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">structure d'un </font><font style="vertical-align: inherit;">index </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">btree</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> normal</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , l'instance la plus fréquente dans la nature. </font><font style="vertical-align: inherit;">Les indices d'un seul champ ne posent généralement aucun problème, par conséquent, nous considérons les problèmes qui se posent sur un composite d'une paire de champs. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Une manière extrêmement simplifiée, comme on peut l'imaginer, est un «gâteau en couches», où dans chaque couche il y a des arbres ordonnés selon les valeurs du champ correspondant dans l'ordre. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/uc/nq/tu/ucnqtujhwddszfy7aj5gitnqona.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Maintenant , </font><font style="vertical-align: inherit;">il est clair que le champ </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A l' </font><font style="vertical-align: inherit;">échelle mondiale a </font><font style="vertical-align: inherit;">ordonné, et B - que dans une valeur spécifique A</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Examinons des exemples de conditions qui se produisent dans des requêtes réelles et comment elles "parcourent" l'index.</font></font><br>
+<br>
+<h4><font color="#008000"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Bon: état du préfixe</font></font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Notez que l'index </font></font><code>btree(A, B)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">comprend un «sous-index» </font></font><code>btree(A)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Cela signifie que toutes les règles décrites ci-dessous fonctionneront pour tout index de préfixe. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Autrement dit, si vous créez un index plus complexe que dans notre exemple, quelque chose du type </font></font><code>btree(A, B, C)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- vous pouvez supposer que votre base de données "apparaît" automatiquement:</font></font><br>
+<br>
+<ul>
+<li><code>btree(A, B, C)</code></li>
+<li><code>btree(A, B)</code></li>
+<li><code>btree(A)</code></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Et cela signifie que la présence «physique» de l'index des préfixes dans la base de données est redondante dans la plupart des cas. </font><font style="vertical-align: inherit;">Après tout, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">plus une table doit écrire d'index - pire c'est</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> pour PostgreSQL, car elle appelle Write Amplification - </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Uber s'en plaignait</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (et ici vous pouvez </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">trouver une analyse de leurs revendications</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Et si quelque chose empêche la base de bien vivre, cela vaut la peine de la trouver et de l'éliminer. </font><font style="vertical-align: inherit;">Regardons un exemple:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> tbl(A <span class="hljs-built_in">integer</span>, B <span class="hljs-built_in">integer</span>, val <span class="hljs-built_in">integer</span>);
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(A, B)
+  <span class="hljs-keyword">WHERE</span> val <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>;
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(A) <span class="hljs-comment">--  #1</span>
+  <span class="hljs-keyword">WHERE</span> val <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>;
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(A, B, val);
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(A); <span class="hljs-comment">--  #2</span></code></pre><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Requête de recherche d'index de préfixe</font></font></b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> sch <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span>
+    <span class="hljs-string">'public'</span>::<span class="hljs-built_in">text</span> sch <span class="hljs-comment">-- schema</span><font></font>
+)<font></font>
+, <span class="hljs-keyword">def</span> <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    clr.relname nmt<font></font>
+  , cli.relname nmi<font></font>
+  , pg_get_indexdef(cli.oid) <span class="hljs-keyword">def</span><font></font>
+  , cli.oid clioid<font></font>
+  , clr<font></font>
+  , cli<font></font>
+  , idx<font></font>
+, (<font></font>
+    <span class="hljs-keyword">SELECT</span>
+      array_agg(T::<span class="hljs-built_in">text</span> <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> f.i)
+    <span class="hljs-keyword">FROM</span><font></font>
+      (<font></font>
+        <span class="hljs-keyword">SELECT</span><font></font>
+          clr.oid rel<font></font>
+        , i<font></font>
+        , idx.indkey[i] ik<font></font>
+        <span class="hljs-keyword">FROM</span>
+          generate_subscripts(idx.indkey, <span class="hljs-number">1</span>) i<font></font>
+      ) f<font></font>
+    <span class="hljs-keyword">JOIN</span><font></font>
+      pg_attribute T<font></font>
+        <span class="hljs-keyword">ON</span> (T.attrelid, T.attnum) = (f.rel, f.ik)<font></font>
+  ) fld$<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    pg_class clr<font></font>
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_index idx<font></font>
+      <span class="hljs-keyword">ON</span> idx.indrelid = clr.oid <span class="hljs-keyword">AND</span>
+      idx.indexprs <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_class cli<font></font>
+      <span class="hljs-keyword">ON</span> cli.oid = idx.indexrelid
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_namespace nsp<font></font>
+      <span class="hljs-keyword">ON</span> nsp.oid = cli.relnamespace <span class="hljs-keyword">AND</span>
+      nsp.nspname = (<span class="hljs-keyword">TABLE</span> sch)
+  <span class="hljs-keyword">WHERE</span>
+    <span class="hljs-keyword">NOT</span> idx.indisunique <span class="hljs-keyword">AND</span>
+    idx.indisready <span class="hljs-keyword">AND</span><font></font>
+    idx.indisvalid<font></font>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span><font></font>
+    clr.relname, cli.relname<font></font>
+)<font></font>
+, fld <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  , <span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span><font></font>
+        (att::pg_attribute).attname<font></font>
+      <span class="hljs-keyword">FROM</span>
+        <span class="hljs-keyword">unnest</span>(fld$) att<font></font>
+    ) nmf$<font></font>
+  , <span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span><font></font>
+        (<font></font>
+          <span class="hljs-keyword">SELECT</span><font></font>
+            typname<font></font>
+          <span class="hljs-keyword">FROM</span><font></font>
+            pg_type<font></font>
+          <span class="hljs-keyword">WHERE</span>
+            <span class="hljs-keyword">oid</span> = (att::pg_attribute).atttypid<font></font>
+        )<font></font>
+      <span class="hljs-keyword">FROM</span>
+        <span class="hljs-keyword">unnest</span>(fld$) att<font></font>
+    ) tpf$<font></font>
+  , <span class="hljs-keyword">CASE</span>
+      <span class="hljs-keyword">WHEN</span> <span class="hljs-keyword">def</span> ~ <span class="hljs-string">' WHERE '</span> <span class="hljs-keyword">THEN</span> regexp_replace(<span class="hljs-keyword">def</span>, E<span class="hljs-string">'.* WHERE '</span>, <span class="hljs-string">''</span>)
+    <span class="hljs-keyword">END</span> wh
+  <span class="hljs-keyword">FROM</span>
+    <span class="hljs-keyword">def</span><font></font>
+)<font></font>
+, pre <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    nmt<font></font>
+  , wh<font></font>
+  , nmf$<font></font>
+  , tpf$<font></font>
+  , nmi<font></font>
+  , <span class="hljs-keyword">def</span>
+  <span class="hljs-keyword">FROM</span><font></font>
+    fld<font></font>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+    <span class="hljs-number">1</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">DISTINCT</span><font></font>
+  Y.*<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  pre X<font></font>
+<span class="hljs-keyword">JOIN</span><font></font>
+  pre Y<font></font>
+    <span class="hljs-keyword">ON</span> Y.nmi &lt;&gt; X.nmi <span class="hljs-keyword">AND</span>
+    (Y.nmt, Y.wh) <span class="hljs-keyword">IS</span> <span class="hljs-keyword">NOT</span> <span class="hljs-keyword">DISTINCT</span> <span class="hljs-keyword">FROM</span> (X.nmt, X.wh) <span class="hljs-keyword">AND</span><font></font>
+    (<font></font>
+      Y.nmf$[<span class="hljs-number">1</span>:array_length(X.nmf$, <span class="hljs-number">1</span>)] = X.nmf$ <span class="hljs-keyword">OR</span>
+      X.nmf$[<span class="hljs-number">1</span>:array_length(Y.nmf$, <span class="hljs-number">1</span>)] = Y.nmf$<font></font>
+    )<font></font>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>;
+</code></pre></div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Idéalement, vous devriez obtenir une sélection vide, mais regardez - ce sont nos groupes d'index suspects:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">nmt | wh            | nmf$      | tpf$             | nmi             | def<font></font>
+---------------------------------------------------------------------------------------<font></font>
+tbl | (val IS NULL) | {a}       | {int4}           | tbl_a_idx       | CREATE INDEX ...<font></font>
+tbl | (val IS NULL) | {a,b}     | {int4,int4}      | tbl_a_b_idx     | CREATE INDEX ...<font></font>
+tbl |               | {a}       | {int4}           | tbl_a_idx1      | CREATE INDEX ...<font></font>
+tbl |               | {a,b,val} | {int4,int4,int4} | tbl_a_b_val_idx | CREATE INDEX ...<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ensuite, vous décidez vous-même pour chaque groupe s'il valait la peine de supprimer l'index le plus court ou le plus long n'était pas nécessaire du tout.</font></font><br>
+<br>
+<h4><font color="#008000"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Bon: toutes les constantes sauf le dernier champ</font></font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Si les </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">valeurs de tous les champs de l'index, à l'exception du dernier, sont définies par des constantes</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (dans notre exemple, il s'agit du champ A), l'index peut être utilisé normalement. </font><font style="vertical-align: inherit;">Dans ce cas, la valeur du dernier champ peut être définie arbitrairement: constante, inégalité, intervalle, numérotation via </font></font><code>IN (...)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ou </font></font><code>= ANY(...)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Et il peut également être trié par celui-ci.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/xy/qt/2t/xyqt2tnwfc37wsztb96hzsp5ngu.png"><br>
+<br>
+<ul>
+<li><code>WHERE A = constA AND B <b>[op]</b> constB / <b>= ANY</b>(...) / <b>IN</b> (...)</code><br>
+<code>op : { =, &gt;, &gt;=, &lt;, &lt;= }</code></li>
+<li><code>WHERE A = constA AND B <b>BETWEEN</b> constB1 AND constB2</code></li>
+<li><code>WHERE A = constA <b>ORDER BY</b> B</code></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sur la base des index de préfixes décrits ci-dessus, cela fonctionnera bien:</font></font><br>
+<br>
+<ul>
+<li><code>WHERE A <b>[op]</b> const / <b>= ANY</b>(...) / <b>IN</b> (...)</code><br>
+<code>op : { =, &gt;, &gt;=, &lt;, &lt;= }</code></li>
+<li><code>WHERE A <b>BETWEEN</b> const1 AND const2</code></li>
+<li><code><b>ORDER BY</b> A</code></li>
+<li><code>WHERE (A, B) <b>[op]</b> (constA, constB) / <b>= ANY</b>(...) / <b>IN</b> (...)</code><br>
+<code>op : { =, &gt;, &gt;=, &lt;, &lt;= }</code></li>
+<li><code><b>ORDER BY</b> A, B</code></li>
+</ul><br>
+<h4><font color="#c04000"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mauvais: énumération complète de la "couche"</font></font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Avec une partie des requêtes, la seule </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">énumération du</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> mouvement dans l'index devient une </font><b><font style="vertical-align: inherit;">énumération</font></b><font style="vertical-align: inherit;"> complète </font><b><font style="vertical-align: inherit;">de toutes les valeurs</font></b><font style="vertical-align: inherit;"> dans l'une des «couches». </font><font style="vertical-align: inherit;">Il y a de la chance s'il existe une unité de telles valeurs - et s'il y en a des milliers?. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Habituellement, un tel problème se produit si une </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">inégalité est utilisée</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dans la requête </font><font style="vertical-align: inherit;">, la condition </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ne détermine pas</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> les champs </font><font style="vertical-align: inherit;">qui </font><i><b><font style="vertical-align: inherit;">sont précédents</font></b></i><font style="vertical-align: inherit;"> dans l'ordre d'index ou cet </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ordre est violé</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> pendant le tri.</font></font><br>
+<br>
+<ul>
+<li><code>WHERE A <b>&lt;&gt;</b> const</code></li>
+<li><code>WHERE B [op] const / = ANY(...) / IN (...)</code></li>
+<li><code>ORDER BY B</code></li>
+<li><code>ORDER BY B, A</code></li>
+</ul><br>
+<h4><font color="#c04000"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mauvais: l'intervalle ou l'ensemble n'est pas dans le dernier champ</font></font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En conséquence de la précédente - si vous devez trouver plusieurs valeurs ou leur plage sur une «couche» intermédiaire, puis filtrer ou trier par les champs situés «plus profondément» dans l'index, il y aura des problèmes si le nombre de valeurs uniques «au milieu» de l'index est génial.</font></font><br>
+<br>
+<ul>
+<li><code>WHERE A <b>BETWEEN</b> constA1 AND constA2 AND B <b>BETWEEN</b> constB1 AND constB2</code></li>
+<li><code>WHERE A <b>= ANY(...)</b> AND B = const</code></li>
+<li><code>WHERE A <b>= ANY(...)</b> ORDER BY B</code></li>
+<li><code>WHERE A <b>= ANY(...)</b> AND B = ANY(...)</code></li>
+</ul><br>
+<h4><font color="#c04000"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mauvais: expression au lieu du champ</font></font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Parfois, un développeur transforme inconsciemment une colonne d'une requête en autre chose - en une expression pour laquelle il n'y a pas d'index. </font><font style="vertical-align: inherit;">Cela peut être résolu en créant un index à partir de l'expression souhaitée ou en effectuant la transformation inverse:</font></font><br>
+<br>
+<ul>
+<li><code>WHERE <b>A - const1</b> [op] const2</code><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+réparer: </font></font><code>WHERE A [op] <b>const1 + const2</b></code></li>
+<li><code>WHERE <b>A::typeOfConst</b> = const</code><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+réparer: </font></font><code>WHERE A = <b>const::typeOfA</b></code></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nous prenons en compte la cardinalité des champs</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Supposons que </font><font style="vertical-align: inherit;">vous avez </font><font style="vertical-align: inherit;">besoin d' </font><font style="vertical-align: inherit;">un index </font></font><code>(A, B)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, et que </font><font style="vertical-align: inherit;">vous voulez </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">choisir uniquement par l' </font><font style="vertical-align: inherit;">égalité</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : </font></font><code>(A, B) = (constA, constB)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">L'utilisation d'un </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">index de hachage</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> serait idéale </font><font style="vertical-align: inherit;">, mais ... En plus de la non-journalisation (wal logging) de ces index jusqu'à la version 10, ils ne peuvent pas non plus exister sur plusieurs champs:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl <span class="hljs-keyword">USING</span> <span class="hljs-keyword">hash</span>(A, B);
+<span class="hljs-comment">-- ERROR:  access method "hash" does not support multicolumn indexes</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En général, vous avez choisi btree. </font><font style="vertical-align: inherit;">Alors, quelle est la meilleure façon d'organiser les colonnes en elle - </font></font><code>(A, B)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ou </font></font><code>(B, A)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">? </font><font style="vertical-align: inherit;">Pour répondre à cette question, il est nécessaire de prendre en compte un paramètre tel que la </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">cardinalité des données</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dans la colonne correspondante - c'est-à-dire le nombre de valeurs uniques qu'il contient. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Imaginons cela </font></font><code>A = {1,2}, B = {1,2,3,4}</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">et dessinons un contour de l'arborescence d'index pour les deux options: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/iu/bv/xx/iubvxx2xilnlkhkihtjnjacaekk.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En fait, chaque nœud de l'arborescence que nous dessinons est une page de l'index. </font><font style="vertical-align: inherit;">Et plus il y en a, plus l'espace disque sera occupé par l'index, plus il faudra de temps pour y lire. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dans notre exemple, l'option </font></font><code>(A, B)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">a 10 nœuds et </font></font><code>(B, A)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- 12. Autrement dit, il est plus rentable de mettre </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">les "champs" avec le moins de valeurs uniques possible "en premier"</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h4><font color="#c04000"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mauvais: beaucoup et hors de propos (horodatage "au milieu")</font></font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Exactement pour cette raison, cela semble toujours suspect si un champ avec une variabilité manifestement importante comme l' </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">horodatage [tz] n'est pas le dernier</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> de votre index </font><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">En règle générale, les valeurs du champ d'horodatage augmentent de façon monotone et les champs d'index suivants n'ont qu'une seule valeur à chaque instant.</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> tbl(A <span class="hljs-built_in">integer</span>, B <span class="hljs-built_in">timestamp</span>);
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(A, B);
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(B, A); <span class="hljs-comment">-- - </span></code></pre><br>
+<img src="https://habrastorage.org/webt/m_/-e/qm/m_-eqmqod5kyvkako8evgt-a98s.png"><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Requête de recherche d'index d'horodatage [tz] non final</font></font></b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> sch <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span>
+    <span class="hljs-string">'public'</span>::<span class="hljs-built_in">text</span> sch <span class="hljs-comment">-- schema</span><font></font>
+)<font></font>
+, <span class="hljs-keyword">def</span> <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    clr.relname nmt<font></font>
+  , cli.relname nmi<font></font>
+  , pg_get_indexdef(cli.oid) <span class="hljs-keyword">def</span><font></font>
+  , cli.oid clioid<font></font>
+  , clr<font></font>
+  , cli<font></font>
+  , idx<font></font>
+, (<font></font>
+    <span class="hljs-keyword">SELECT</span>
+      array_agg(T::<span class="hljs-built_in">text</span> <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> f.i)
+    <span class="hljs-keyword">FROM</span><font></font>
+      (<font></font>
+        <span class="hljs-keyword">SELECT</span><font></font>
+          clr.oid rel<font></font>
+        , i<font></font>
+        , idx.indkey[i] ik<font></font>
+        <span class="hljs-keyword">FROM</span>
+          generate_subscripts(idx.indkey, <span class="hljs-number">1</span>) i<font></font>
+      ) f<font></font>
+    <span class="hljs-keyword">JOIN</span><font></font>
+      pg_attribute T<font></font>
+        <span class="hljs-keyword">ON</span> (T.attrelid, T.attnum) = (f.rel, f.ik)<font></font>
+  ) fld$<font></font>
+, (<font></font>
+    <span class="hljs-keyword">SELECT</span>
+      array_agg(<span class="hljs-keyword">replace</span>(opcname::<span class="hljs-built_in">text</span>, <span class="hljs-string">'_ops'</span>, <span class="hljs-string">''</span>) <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> f.i)
+    <span class="hljs-keyword">FROM</span><font></font>
+      (<font></font>
+        <span class="hljs-keyword">SELECT</span><font></font>
+          clr.oid rel<font></font>
+        , i<font></font>
+        , idx.indclass[i] ik<font></font>
+        <span class="hljs-keyword">FROM</span>
+          generate_subscripts(idx.indclass, <span class="hljs-number">1</span>) i<font></font>
+      ) f<font></font>
+    <span class="hljs-keyword">JOIN</span><font></font>
+      pg_opclass T<font></font>
+        <span class="hljs-keyword">ON</span> T.oid = f.ik<font></font>
+  ) opc$<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    pg_class clr<font></font>
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_index idx<font></font>
+      <span class="hljs-keyword">ON</span> idx.indrelid = clr.oid
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_class cli<font></font>
+      <span class="hljs-keyword">ON</span> cli.oid = idx.indexrelid
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_namespace nsp<font></font>
+      <span class="hljs-keyword">ON</span> nsp.oid = cli.relnamespace <span class="hljs-keyword">AND</span>
+      nsp.nspname = (<span class="hljs-keyword">TABLE</span> sch)
+  <span class="hljs-keyword">WHERE</span>
+    <span class="hljs-keyword">NOT</span> idx.indisunique <span class="hljs-keyword">AND</span>
+    idx.indisready <span class="hljs-keyword">AND</span><font></font>
+    idx.indisvalid<font></font>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span><font></font>
+    clr.relname, cli.relname<font></font>
+)<font></font>
+, fld <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  , <span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span><font></font>
+        (att::pg_attribute).attname<font></font>
+      <span class="hljs-keyword">FROM</span>
+        <span class="hljs-keyword">unnest</span>(fld$) att<font></font>
+    ) nmf$<font></font>
+  , <span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span><font></font>
+        (<font></font>
+          <span class="hljs-keyword">SELECT</span><font></font>
+            typname<font></font>
+          <span class="hljs-keyword">FROM</span><font></font>
+            pg_type<font></font>
+          <span class="hljs-keyword">WHERE</span>
+            <span class="hljs-keyword">oid</span> = (att::pg_attribute).atttypid<font></font>
+        )<font></font>
+      <span class="hljs-keyword">FROM</span>
+        <span class="hljs-keyword">unnest</span>(fld$) att<font></font>
+    ) tpf$<font></font>
+  <span class="hljs-keyword">FROM</span>
+    <span class="hljs-keyword">def</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  nmt<font></font>
+, nmi<font></font>
+, <span class="hljs-keyword">def</span><font></font>
+, nmf$<font></font>
+, tpf$<font></font>
+, opc$<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  fld<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-string">'timestamp'</span> = <span class="hljs-keyword">ANY</span>(tpf$[<span class="hljs-number">1</span>:array_length(tpf$, <span class="hljs-number">1</span>) - <span class="hljs-number">1</span>]) <span class="hljs-keyword">OR</span>
+  <span class="hljs-string">'timestamptz'</span> = <span class="hljs-keyword">ANY</span>(tpf$[<span class="hljs-number">1</span>:array_length(tpf$, <span class="hljs-number">1</span>) - <span class="hljs-number">1</span>]) <span class="hljs-keyword">OR</span>
+  <span class="hljs-string">'timestamp'</span> = <span class="hljs-keyword">ANY</span>(opc$[<span class="hljs-number">1</span>:array_length(opc$, <span class="hljs-number">1</span>) - <span class="hljs-number">1</span>]) <span class="hljs-keyword">OR</span>
+  <span class="hljs-string">'timestamptz'</span> = <span class="hljs-keyword">ANY</span>(opc$[<span class="hljs-number">1</span>:array_length(opc$, <span class="hljs-number">1</span>) - <span class="hljs-number">1</span>])
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>, <span class="hljs-number">2</span>;
+</code></pre></div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ici, nous analysons immédiatement à la fois les types des champs d'entrée eux-mêmes et les classes d'opérateurs qui leur sont appliquées - car certaines fonctions timestamptz comme date_trunc peuvent se révéler être un champ d'index.</font></font><br>
+<br>
+<pre><code class="plaintext hljs">nmt | nmi         | def              | nmf$  | tpf$             | opc$<font></font>
+----------------------------------------------------------------------------------<font></font>
+tbl | tbl_b_a_idx | CREATE INDEX ... | {b,a} | {timestamp,int4} | {timestamp,int4}<font></font>
+</code></pre><br>
+<h4><font color="#c04000"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mauvais: trop peu (booléen)</font></font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+De l'autre côté de la même pièce, cela devient une situation où l'indice est </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">booléen-champ</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , qui ne peut prendre que 3 valeurs </font></font><code>NULL, FALSE, TRUE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Bien sûr, sa présence a un sens si vous souhaitez l'utiliser pour le tri appliqué - par exemple, en les désignant comme le type de nœud dans la hiérarchie arborescente - que ce soit un dossier ou une feuille («les dossiers d'abord»).</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> tbl(
+  <span class="hljs-keyword">id</span>
+    <span class="hljs-built_in">serial</span>
+      PRIMARY <span class="hljs-keyword">KEY</span><font></font>
+, leaf_pid<font></font>
+    <span class="hljs-built_in">integer</span><font></font>
+, leaf_type<font></font>
+    <span class="hljs-built_in">boolean</span>
+, <span class="hljs-keyword">public</span>
+    <span class="hljs-built_in">boolean</span><font></font>
+);<font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(leaf_pid, leaf_type); <span class="hljs-comment">--   </span>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(<span class="hljs-keyword">public</span>, <span class="hljs-keyword">id</span>); <span class="hljs-comment">-- - </span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mais, dans la plupart des cas, ce n'est pas le cas et les demandes sont accompagnées d'une valeur spécifique du champ booléen. </font><font style="vertical-align: inherit;">Et puis il devient possible de remplacer l'index par ce champ par sa version conditionnelle:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(<span class="hljs-keyword">id</span>) <span class="hljs-keyword">WHERE</span> <span class="hljs-keyword">public</span>;</code></pre><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Requête de recherche booléenne dans les index</font></font></b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> sch <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span>
+    <span class="hljs-string">'public'</span>::<span class="hljs-built_in">text</span> sch <span class="hljs-comment">-- schema</span><font></font>
+)<font></font>
+, <span class="hljs-keyword">def</span> <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    clr.relname nmt<font></font>
+  , cli.relname nmi<font></font>
+  , pg_get_indexdef(cli.oid) <span class="hljs-keyword">def</span><font></font>
+  , cli.oid clioid<font></font>
+  , clr<font></font>
+  , cli<font></font>
+  , idx<font></font>
+, (<font></font>
+    <span class="hljs-keyword">SELECT</span>
+      array_agg(T::<span class="hljs-built_in">text</span> <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> f.i)
+    <span class="hljs-keyword">FROM</span><font></font>
+      (<font></font>
+        <span class="hljs-keyword">SELECT</span><font></font>
+          clr.oid rel<font></font>
+        , i<font></font>
+        , idx.indkey[i] ik<font></font>
+        <span class="hljs-keyword">FROM</span>
+          generate_subscripts(idx.indkey, <span class="hljs-number">1</span>) i<font></font>
+      ) f<font></font>
+    <span class="hljs-keyword">JOIN</span><font></font>
+      pg_attribute T<font></font>
+        <span class="hljs-keyword">ON</span> (T.attrelid, T.attnum) = (f.rel, f.ik)<font></font>
+  ) fld$<font></font>
+, (<font></font>
+    <span class="hljs-keyword">SELECT</span>
+      array_agg(<span class="hljs-keyword">replace</span>(opcname::<span class="hljs-built_in">text</span>, <span class="hljs-string">'_ops'</span>, <span class="hljs-string">''</span>) <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> f.i)
+    <span class="hljs-keyword">FROM</span><font></font>
+      (<font></font>
+        <span class="hljs-keyword">SELECT</span><font></font>
+          clr.oid rel<font></font>
+        , i<font></font>
+        , idx.indclass[i] ik<font></font>
+        <span class="hljs-keyword">FROM</span>
+          generate_subscripts(idx.indclass, <span class="hljs-number">1</span>) i<font></font>
+      ) f<font></font>
+    <span class="hljs-keyword">JOIN</span><font></font>
+      pg_opclass T<font></font>
+        <span class="hljs-keyword">ON</span> T.oid = f.ik<font></font>
+  ) opc$<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    pg_class clr<font></font>
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_index idx<font></font>
+      <span class="hljs-keyword">ON</span> idx.indrelid = clr.oid
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_class cli<font></font>
+      <span class="hljs-keyword">ON</span> cli.oid = idx.indexrelid
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_namespace nsp<font></font>
+      <span class="hljs-keyword">ON</span> nsp.oid = cli.relnamespace <span class="hljs-keyword">AND</span>
+      nsp.nspname = (<span class="hljs-keyword">TABLE</span> sch)
+  <span class="hljs-keyword">WHERE</span>
+    <span class="hljs-keyword">NOT</span> idx.indisunique <span class="hljs-keyword">AND</span>
+    idx.indisready <span class="hljs-keyword">AND</span><font></font>
+    idx.indisvalid<font></font>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span><font></font>
+    clr.relname, cli.relname<font></font>
+)<font></font>
+, fld <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  , <span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span><font></font>
+        (att::pg_attribute).attname<font></font>
+      <span class="hljs-keyword">FROM</span>
+        <span class="hljs-keyword">unnest</span>(fld$) att<font></font>
+    ) nmf$<font></font>
+  , <span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span><font></font>
+        (<font></font>
+          <span class="hljs-keyword">SELECT</span><font></font>
+            typname<font></font>
+          <span class="hljs-keyword">FROM</span><font></font>
+            pg_type<font></font>
+          <span class="hljs-keyword">WHERE</span>
+            <span class="hljs-keyword">oid</span> = (att::pg_attribute).atttypid<font></font>
+        )<font></font>
+      <span class="hljs-keyword">FROM</span>
+        <span class="hljs-keyword">unnest</span>(fld$) att<font></font>
+    ) tpf$<font></font>
+  <span class="hljs-keyword">FROM</span>
+    <span class="hljs-keyword">def</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  nmt<font></font>
+, nmi<font></font>
+, <span class="hljs-keyword">def</span><font></font>
+, nmf$<font></font>
+, tpf$<font></font>
+, opc$<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  fld<font></font>
+<span class="hljs-keyword">WHERE</span><font></font>
+  (<font></font>
+    <span class="hljs-string">'bool'</span> = <span class="hljs-keyword">ANY</span>(tpf$) <span class="hljs-keyword">OR</span>
+    <span class="hljs-string">'bool'</span> = <span class="hljs-keyword">ANY</span>(opc$)<font></font>
+  ) <span class="hljs-keyword">AND</span>
+  <span class="hljs-keyword">NOT</span>(
+    <span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span>
+        nmf$[i:i+<span class="hljs-number">1</span>]::<span class="hljs-built_in">text</span>
+      <span class="hljs-keyword">FROM</span>
+        generate_series(<span class="hljs-number">1</span>, array_length(nmf$, <span class="hljs-number">1</span>) - <span class="hljs-number">1</span>) i<font></font>
+    ) &amp;&amp;<font></font>
+    <span class="hljs-built_in">ARRAY</span>[ <span class="hljs-comment">--  -  </span>
+      <span class="hljs-string">'{leaf_pid,leaf_type}'</span><font></font>
+    ]<font></font>
+  )<font></font>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>, <span class="hljs-number">2</span>;</code></pre></div></div><br>
+<pre><code class="plaintext hljs">nmt | nmi               | def              | nmf$        | tpf$        | opc$<font></font>
+------------------------------------------------------------------------------------<font></font>
+tbl | tbl_public_id_idx | CREATE INDEX ... | {public,id} | {bool,int4} | {bool,int4}<font></font>
+</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tableaux dans btree</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Un autre point est la tentative "d'indexer le tableau" en utilisant l'index btree. </font><font style="vertical-align: inherit;">Ceci est tout à fait possible car les </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">opérateurs correspondants</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> s'appliquent à eux </font><font style="vertical-align: inherit;">:</font></font><br>
+<blockquote><b> </b>  (<code>&lt;, &gt;, =</code>  . .)     ,       B-,       ,      .        (      ).     ,   ,         .</blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mais le problème est que d'utiliser quelque chose qu'il veut </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">opérateurs d'inclusion et d' </font><font style="vertical-align: inherit;">intersection</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : </font></font><code>&lt;@, @&gt;, &amp;&amp;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Bien sûr, cela ne fonctionne pas - car ils ont besoin d' </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">autres types d'index</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Comment un tel btree ne fonctionne pas pour la </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fonction d'accéder à</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> un élément spécifique </font></font><code>arr[i]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On apprend à trouver de tels:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> tbl(
+  <span class="hljs-keyword">id</span>
+    <span class="hljs-built_in">serial</span>
+      PRIMARY <span class="hljs-keyword">KEY</span><font></font>
+, pid<font></font>
+    <span class="hljs-built_in">integer</span>
+, <span class="hljs-keyword">list</span>
+    <span class="hljs-built_in">integer</span>[]<font></font>
+);<font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(pid);
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(<span class="hljs-keyword">list</span>); <span class="hljs-comment">-- - </span>
+</code></pre><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Recherche de tableau dans btree</font></font></b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> sch <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span>
+    <span class="hljs-string">'public'</span>::<span class="hljs-built_in">text</span> sch <span class="hljs-comment">-- schema</span><font></font>
+)<font></font>
+, <span class="hljs-keyword">def</span> <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    clr.relname nmt<font></font>
+  , cli.relname nmi<font></font>
+  , pg_get_indexdef(cli.oid) <span class="hljs-keyword">def</span><font></font>
+  , cli.oid clioid<font></font>
+  , clr<font></font>
+  , cli<font></font>
+  , idx<font></font>
+, (<font></font>
+    <span class="hljs-keyword">SELECT</span>
+      array_agg(T::<span class="hljs-built_in">text</span> <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> f.i)
+    <span class="hljs-keyword">FROM</span><font></font>
+      (<font></font>
+        <span class="hljs-keyword">SELECT</span><font></font>
+          clr.oid rel<font></font>
+        , i<font></font>
+        , idx.indkey[i] ik<font></font>
+        <span class="hljs-keyword">FROM</span>
+          generate_subscripts(idx.indkey, <span class="hljs-number">1</span>) i<font></font>
+      ) f<font></font>
+    <span class="hljs-keyword">JOIN</span><font></font>
+      pg_attribute T<font></font>
+        <span class="hljs-keyword">ON</span> (T.attrelid, T.attnum) = (f.rel, f.ik)<font></font>
+  ) fld$<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    pg_class clr<font></font>
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_index idx<font></font>
+      <span class="hljs-keyword">ON</span> idx.indrelid = clr.oid
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_class cli<font></font>
+      <span class="hljs-keyword">ON</span> cli.oid = idx.indexrelid
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_namespace nsp<font></font>
+      <span class="hljs-keyword">ON</span> nsp.oid = cli.relnamespace <span class="hljs-keyword">AND</span>
+      nsp.nspname = (<span class="hljs-keyword">TABLE</span> sch)
+  <span class="hljs-keyword">WHERE</span>
+    <span class="hljs-keyword">NOT</span> idx.indisunique <span class="hljs-keyword">AND</span>
+    idx.indisready <span class="hljs-keyword">AND</span>
+    idx.indisvalid <span class="hljs-keyword">AND</span><font></font>
+    cli.relam = (<font></font>
+      <span class="hljs-keyword">SELECT</span>
+        <span class="hljs-keyword">oid</span>
+      <span class="hljs-keyword">FROM</span><font></font>
+        pg_am<font></font>
+      <span class="hljs-keyword">WHERE</span>
+        amname = <span class="hljs-string">'btree'</span>
+      <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">1</span><font></font>
+    )<font></font>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span><font></font>
+    clr.relname, cli.relname<font></font>
+)<font></font>
+, fld <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  , <span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span><font></font>
+        (att::pg_attribute).attname<font></font>
+      <span class="hljs-keyword">FROM</span>
+        <span class="hljs-keyword">unnest</span>(fld$) att<font></font>
+    ) nmf$<font></font>
+  , <span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span><font></font>
+        (<font></font>
+          <span class="hljs-keyword">SELECT</span><font></font>
+            typname<font></font>
+          <span class="hljs-keyword">FROM</span><font></font>
+            pg_type<font></font>
+          <span class="hljs-keyword">WHERE</span>
+            <span class="hljs-keyword">oid</span> = (att::pg_attribute).atttypid<font></font>
+        )<font></font>
+      <span class="hljs-keyword">FROM</span>
+        <span class="hljs-keyword">unnest</span>(fld$) att<font></font>
+    ) tpf$<font></font>
+  <span class="hljs-keyword">FROM</span>
+    <span class="hljs-keyword">def</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  nmt<font></font>
+, nmi<font></font>
+, nmf$<font></font>
+, tpf$<font></font>
+, <span class="hljs-keyword">def</span>
+<span class="hljs-keyword">FROM</span><font></font>
+  fld<font></font>
+<span class="hljs-keyword">WHERE</span>
+  tpf$ &amp;&amp; <span class="hljs-built_in">ARRAY</span>(
+    <span class="hljs-keyword">SELECT</span><font></font>
+      typname<font></font>
+    <span class="hljs-keyword">FROM</span><font></font>
+      pg_type<font></font>
+    <span class="hljs-keyword">WHERE</span>
+      typname ~ <span class="hljs-string">'^_'</span><font></font>
+  )<font></font>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>, <span class="hljs-number">2</span>;</code></pre></div></div><br>
+<pre><code class="plaintext hljs">nmt | nmi          | nmf$   | tpf$    | def<font></font>
+--------------------------------------------------------<font></font>
+tbl | tbl_list_idx | {list} | {_int4} | CREATE INDEX ...<font></font>
+</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Entrées d'index NULL</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Le dernier problème assez courant est de «salir» l'index avec des entrées complètement NULL. </font><font style="vertical-align: inherit;">C'est-à-dire, enregistre où l'expression indexée </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dans chacune des colonnes est NULL</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">De tels enregistrements n'ont aucun avantage pratique, mais ils ajoutent du mal à chaque insert. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ils apparaissent généralement lorsque vous créez un champ FK ou une relation de valeur avec un remplissage facultatif dans le tableau. </font><font style="vertical-align: inherit;">Ensuite, lancez l'index pour que FK fonctionne rapidement ... et les voici. </font><font style="vertical-align: inherit;">Moins la connexion sera remplie, plus les «déchets» tomberont dans l'index. </font><font style="vertical-align: inherit;">Nous simulerons:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> tbl(
+  <span class="hljs-keyword">id</span>
+    <span class="hljs-built_in">serial</span>
+      PRIMARY <span class="hljs-keyword">KEY</span><font></font>
+, fk<font></font>
+    <span class="hljs-built_in">integer</span><font></font>
+);<font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(fk);<font></font>
+<font></font>
+<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> tbl(fk)
+<span class="hljs-keyword">SELECT</span>
+  <span class="hljs-keyword">CASE</span> <span class="hljs-keyword">WHEN</span> i % <span class="hljs-number">10</span> = <span class="hljs-number">0</span> <span class="hljs-keyword">THEN</span> i <span class="hljs-keyword">END</span>
+<span class="hljs-keyword">FROM</span>
+  generate_series(<span class="hljs-number">1</span>, <span class="hljs-number">1000000</span>) i;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dans la plupart des cas, un tel index peut être converti en index conditionnel, ce qui prend également moins:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(fk) <span class="hljs-keyword">WHERE</span> (fk) <span class="hljs-keyword">IS</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>;</code></pre><br>
+<pre><code class="plaintext hljs">_tmp=# \di+ tbl*<font></font>
+                               List of relations<font></font>
+ Schema |      Name      | Type  |  Owner   |  Table   |  Size   | Description<font></font>
+--------+----------------+-------+----------+----------+---------+-------------<font></font>
+ public | tbl_fk_idx     | index | postgres | tbl      | 36 MB   |<font></font>
+ public | tbl_fk_idx1    | index | postgres | tbl      | 2208 kB |<font></font>
+ public | tbl_pkey       | index | postgres | tbl      | 21 MB   |<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pour trouver de tels index, nous devons connaître la distribution réelle des données - c'est-à-dire, après tout, lire tout le contenu des tableaux et les superposer en fonction des conditions WHERE de l'occurrence (nous le ferons en utilisant </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dblink</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ), ce qui </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">peut prendre très longtemps</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Requête de recherche pour les entrées NULL dans les index</font></font></b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> sch <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span>
+    <span class="hljs-string">'public'</span>::<span class="hljs-built_in">text</span> sch <span class="hljs-comment">-- schema</span><font></font>
+)<font></font>
+, <span class="hljs-keyword">def</span> <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    clr.relname nmt<font></font>
+  , cli.relname nmi<font></font>
+  , pg_get_indexdef(cli.oid) <span class="hljs-keyword">def</span><font></font>
+  , cli.oid clioid<font></font>
+  , clr<font></font>
+  , cli<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    pg_class clr<font></font>
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_index idx<font></font>
+      <span class="hljs-keyword">ON</span> idx.indrelid = clr.oid
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_class cli<font></font>
+      <span class="hljs-keyword">ON</span> cli.oid = idx.indexrelid
+  <span class="hljs-keyword">JOIN</span><font></font>
+    pg_namespace nsp<font></font>
+      <span class="hljs-keyword">ON</span> nsp.oid = cli.relnamespace <span class="hljs-keyword">AND</span>
+      nsp.nspname = (<span class="hljs-keyword">TABLE</span> sch)
+  <span class="hljs-keyword">WHERE</span>
+    <span class="hljs-keyword">NOT</span> idx.indisprimary <span class="hljs-keyword">AND</span>
+    idx.indisready <span class="hljs-keyword">AND</span>
+    idx.indisvalid <span class="hljs-keyword">AND</span>
+    <span class="hljs-keyword">NOT</span> <span class="hljs-keyword">EXISTS</span>(
+      <span class="hljs-keyword">SELECT</span>
+        <span class="hljs-literal">NULL</span>
+      <span class="hljs-keyword">FROM</span><font></font>
+        pg_constraint<font></font>
+      <span class="hljs-keyword">WHERE</span><font></font>
+        conindid = cli.oid<font></font>
+      <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">1</span>
+    ) <span class="hljs-keyword">AND</span>
+    pg_relation_size(cli.oid) &gt; <span class="hljs-number">1</span> &lt;&lt; <span class="hljs-number">20</span> <span class="hljs-comment">--  1MB   </span>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span><font></font>
+    clr.relname, cli.relname<font></font>
+)<font></font>
+, fld <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  , regexp_replace(<font></font>
+      <span class="hljs-keyword">CASE</span>
+        <span class="hljs-keyword">WHEN</span> <span class="hljs-keyword">def</span> ~ <span class="hljs-string">' USING btree '</span> <span class="hljs-keyword">THEN</span>
+          regexp_replace(<span class="hljs-keyword">def</span>, E<span class="hljs-string">'.* USING btree (.*?)($| WHERE .*)'</span>, E<span class="hljs-string">'\\1'</span>)
+      <span class="hljs-keyword">END</span>
+    , E<span class="hljs-string">' ([a-z]*_pattern_ops|(ASC|DESC)|NULLS\\s?(?:FIRST|LAST))'</span>
+    , <span class="hljs-string">''</span>
+    , <span class="hljs-string">'ig'</span><font></font>
+    ) fld<font></font>
+  , <span class="hljs-keyword">CASE</span>
+      <span class="hljs-keyword">WHEN</span> <span class="hljs-keyword">def</span> ~ <span class="hljs-string">' WHERE '</span> <span class="hljs-keyword">THEN</span> regexp_replace(<span class="hljs-keyword">def</span>, E<span class="hljs-string">'.* WHERE '</span>, <span class="hljs-string">''</span>)
+    <span class="hljs-keyword">END</span> wh
+  <span class="hljs-keyword">FROM</span>
+    <span class="hljs-keyword">def</span><font></font>
+)<font></font>
+, q <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    nmt<font></font>
+  , $q$<span class="hljs-comment">-- $q$ || quote_ident(nmt) || $q$</span>
+      <span class="hljs-keyword">SET</span> search_path = $q$ || quote_ident((<span class="hljs-keyword">TABLE</span> sch)) || $q$, <span class="hljs-keyword">public</span>;
+      <span class="hljs-keyword">SELECT</span>
+        <span class="hljs-built_in">ARRAY</span>[
+          <span class="hljs-keyword">count</span>(*)<font></font>
+        $q$ || string_agg(<font></font>
+          <span class="hljs-string">', coalesce(sum(('</span> || <span class="hljs-keyword">coalesce</span>(wh, <span class="hljs-string">'TRUE'</span>) || <span class="hljs-string">')::integer), 0)'</span> || E<span class="hljs-string">'\n'</span> ||
+          <span class="hljs-string">', coalesce(sum((('</span> || <span class="hljs-keyword">coalesce</span>(wh, <span class="hljs-string">'TRUE'</span>) || <span class="hljs-string">') AND ('</span> || fld || <span class="hljs-string">' IS NULL))::integer), 0)'</span> || E<span class="hljs-string">'\n'</span>
+        , <span class="hljs-string">''</span> <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> nmi) || $q$<font></font>
+        ]<font></font>
+      <span class="hljs-keyword">FROM</span>
+        $q$ || quote_ident((<span class="hljs-keyword">TABLE</span> sch)) || $q$.$q$ || quote_ident(nmt) || $q$<font></font>
+    $q$ q<font></font>
+  , array_agg(clioid <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> nmi) <span class="hljs-keyword">oid</span>$<font></font>
+  , array_agg(nmi <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> nmi) idx$<font></font>
+  , array_agg(fld <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> nmi) fld$<font></font>
+  , array_agg(wh <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> nmi) wh$
+  <span class="hljs-keyword">FROM</span><font></font>
+    fld<font></font>
+  <span class="hljs-keyword">WHERE</span>
+    fld <span class="hljs-keyword">IS</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>
+  <span class="hljs-keyword">GROUP</span> <span class="hljs-keyword">BY</span>
+    <span class="hljs-number">1</span>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+    <span class="hljs-number">1</span><font></font>
+)<font></font>
+, res <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  , (<font></font>
+      <span class="hljs-keyword">SELECT</span><font></font>
+        qty<font></font>
+      <span class="hljs-keyword">FROM</span><font></font>
+        dblink(<font></font>
+          <span class="hljs-string">'dbname='</span> || current_database() || <span class="hljs-string">' port='</span> || current_setting(<span class="hljs-string">'port'</span>)<font></font>
+        , q<font></font>
+        ) T(qty <span class="hljs-built_in">bigint</span>[])<font></font>
+    ) qty<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    q<font></font>
+)<font></font>
+, iter <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  , generate_subscripts(idx$, <span class="hljs-number">1</span>) i
+  <span class="hljs-keyword">FROM</span><font></font>
+    res<font></font>
+)<font></font>
+, stat <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    nmt table_name<font></font>
+  , idx$[i] index_name<font></font>
+  , pg_relation_size(<span class="hljs-keyword">oid</span>$[i]) index_size<font></font>
+  , pg_size_pretty(pg_relation_size(<span class="hljs-keyword">oid</span>$[i])) index_size_humanize<font></font>
+  , regexp_replace(fld$[i], E<span class="hljs-string">'^\\((.*)\\)$'</span>, E<span class="hljs-string">'\\1'</span>) index_fields<font></font>
+  , regexp_replace(wh$[i], E<span class="hljs-string">'^\\((.*)\\)$'</span>, E<span class="hljs-string">'\\1'</span>) index_cond<font></font>
+  , qty[<span class="hljs-number">1</span>] table_rec_count<font></font>
+  , qty[i * <span class="hljs-number">2</span>] index_rec_count<font></font>
+  , qty[i * <span class="hljs-number">2</span> + <span class="hljs-number">1</span>] index_rec_count_null
+  <span class="hljs-keyword">FROM</span><font></font>
+    iter<font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+, <span class="hljs-keyword">CASE</span>
+    <span class="hljs-keyword">WHEN</span> table_rec_count &gt; <span class="hljs-number">0</span>
+      <span class="hljs-keyword">THEN</span> index_rec_count::<span class="hljs-keyword">double</span> <span class="hljs-keyword">precision</span> / table_rec_count::<span class="hljs-keyword">double</span> <span class="hljs-keyword">precision</span> * <span class="hljs-number">100</span>
+    <span class="hljs-keyword">ELSE</span> <span class="hljs-number">0</span>
+  <span class="hljs-keyword">END</span>::<span class="hljs-built_in">numeric</span>(<span class="hljs-number">32</span>,<span class="hljs-number">2</span>) index_cover_prc<font></font>
+, <span class="hljs-keyword">CASE</span>
+    <span class="hljs-keyword">WHEN</span> index_rec_count &gt; <span class="hljs-number">0</span>
+      <span class="hljs-keyword">THEN</span> index_rec_count_null::<span class="hljs-keyword">double</span> <span class="hljs-keyword">precision</span> / index_rec_count::<span class="hljs-keyword">double</span> <span class="hljs-keyword">precision</span> * <span class="hljs-number">100</span>
+    <span class="hljs-keyword">ELSE</span> <span class="hljs-number">0</span>
+  <span class="hljs-keyword">END</span>::<span class="hljs-built_in">numeric</span>(<span class="hljs-number">32</span>,<span class="hljs-number">2</span>) index_null_prc
+<span class="hljs-keyword">FROM</span><font></font>
+  stat<font></font>
+<span class="hljs-keyword">WHERE</span>
+  index_rec_count_null * <span class="hljs-number">4</span> &gt; index_rec_count <span class="hljs-comment">--   NULL-</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>, <span class="hljs-number">2</span>;</code></pre></div></div><br>
+<pre><code class="plaintext hljs">-[ RECORD 1 ]--------+--------------<font></font>
+table_name           | tbl<font></font>
+index_name           | tbl_fk_idx<font></font>
+index_size           | 37838848<font></font>
+index_size_humanize  | 36 MB<font></font>
+index_fields         | fk<font></font>
+index_cond           |<font></font>
+table_rec_count      | 1000000<font></font>
+index_rec_count      | 1000000<font></font>
+index_rec_count_null | 900000<font></font>
+index_cover_prc      | 100.00 -- 100%    <font></font>
+index_null_prc       | 90.00  --   90% NULL-""<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+J'espère que certaines des requêtes de cet article vous aideront.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr488088/index.html">Comment Habr interagit avec les organes de l'État et les autres candidats. Rapport de transparence pour toutes les années</a></li>
+<li><a href="../fr488092/index.html">Hackathons. Comment tirer le meilleur parti et survivre</a></li>
+<li><a href="../fr488096/index.html">400g. Vue depuis le côté de la transmission. ZR / ZR +</a></li>
+<li><a href="../fr488098/index.html">Comment créer un projet Django à partir d'un modèle</a></li>
+<li><a href="../fr488102/index.html">La relation entre C # et C #: REST, gRPC et tout le reste</a></li>
+<li><a href="../fr488108/index.html">SAP HANA Lab dans Azure</a></li>
+<li><a href="../fr488112/index.html">Comprendre les itérateurs en Python</a></li>
+<li><a href="../fr488116/index.html">Cinq leçons importantes sur l'équilibre du jeu</a></li>
+<li><a href="../fr488118/index.html">Rapport de situation d'hiver Haxe</a></li>
+<li><a href="../fr488120/index.html">Pourquoi vaut-il la peine d'installer un système d'exploitation 64 bits sur le Raspberry Pi4</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

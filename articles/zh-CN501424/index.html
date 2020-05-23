@@ -1,0 +1,491 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧑🏽‍🤝‍🧑🏻 👩‍👧‍👧 🈶 从Kubernetes的生活中看：我们如何将DBMS（不仅是从评论环境）删除为静态 🎀 👂🏿 🤸</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="注意：本文并不声称是最佳实践。它描述了使用Kubernetes和Helm进行基础架构任务的特定实施的经验，这对于解决相关问题很有用。
+ 
+ 对于开发人员和系统工程师而言，在CI / CD中使用审阅环境可能非常有用。让我们首先同步有关它们的一般想法：
+ 
+ 
+
+1. 可以从开发人员定义的Git存储库中...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>从Kubernetes的生活中看：我们如何将DBMS（不仅是从评论环境）删除为静态</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/501424/"><img src="https://habrastorage.org/webt/ae/yu/zw/aeyuzw9pz0k6d0pbc0g86pxkfd0.png"><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：本文并不声称是最佳实践。</font><font style="vertical-align: inherit;">它描述了使用Kubernetes和Helm进行基础架构任务的特定实施的经验，这对于解决相关问题很有用。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于开发人员和系统工程师而言，在CI / CD中使用审阅环境可能非常有用。</font><font style="vertical-align: inherit;">让我们首先同步有关它们的一般想法：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 可以从开发人员定义的Git存储库中的独立分支（所谓的功能分支）中创建评论环境。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">它们可以具有单独的DBMS实例，队列处理器，缓存服务等。</font><font style="vertical-align: inherit;">-总的来说，一切都是为了充分再现生产环境。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">它们允许并行开发，从而大大加速了应用程序中新功能的发布。</font><font style="vertical-align: inherit;">同时，每天可能需要数十个这样的环境，这就是为什么它们的创建速度至关重要的原因。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在第二点和第三点的交汇处，经常会遇到困难：由于基础结构非常不同，因此其组件可以长时间部署。</font><font style="vertical-align: inherit;">例如，此时间包括从已经准备好的备份*中还原数据库。</font><font style="vertical-align: inherit;">这篇文章是关于我们曾经去解决这个问题的迷人方式。</font></font><a name="habracut"></a><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">*顺便说一句，特别是在这种情况下，关于大型数据库转储，我们已经在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">材料中</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">写过</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">有关加速引导数据库的信息</font></a><font style="vertical-align: inherit;">。）</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">问题和解决方法</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在其中一个项目中，我们的任务是“为开发人员和质量检查工程师创建一个单一的入口点”。</font><font style="vertical-align: inherit;">此公式在技术上隐藏了以下内容：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为了简化质量检查工程师和其他一些员工的工作，请在单独的静态环境中删除审阅中使用的所有数据库（和相应的虚拟主机）。</font><font style="vertical-align: inherit;">由于项目中普遍存在的原因，这种与他们互动的方式是最佳的。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">减少审查环境的创建时间。</font><font style="vertical-align: inherit;">从头开始暗示了它们创建的整个过程。</font><font style="vertical-align: inherit;">包括数据库克隆，迁移等。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从实现的角度来看，主要问题归结为确保创建和删除审阅环境时的幂等性。为此，我们首先通过将</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQL，MongoDB和RabbitMQ服务</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">迁移</font><font style="vertical-align: inherit;">到静态环境</font><font style="vertical-align: inherit;">，从而更改了创建审阅环境的机制</font><font style="vertical-align: inherit;">。静态是指不会根据用户的请求创建的“永久”环境（与审阅环境一样）。</font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">重要！</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">静态环境下的方法</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">远非理想</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -有关其特定缺点，请参见本文结尾。但是，我们将详细分享这种经验，因为它或多或少可以适用于其他任务，并且同时在讨论基础结构设计问题时也可以作为一个论据。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，执行中的动作顺序为：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">创建审阅环境时，应执行以下操作一次：在两个DBMS（MongoDB和PostgreSQL）中创建数据库，从备份/模板还原数据库，以及在RabbitMQ中创建vhost。</font><font style="vertical-align: inherit;">这将需要一种方便的方式来加载当前转储。</font><font style="vertical-align: inherit;">（如果您之前有审查环境，那么很可能已经有一个现成的解决方案。）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 查看环境完成后，必须删除RabbitMQ中的数据库和虚拟主机。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在我们的案例中，基础架构在Kubernetes（使用Helm）的框架内运行。</font><font style="vertical-align: inherit;">因此，对于执行上述任务，</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Helm hooks非常</font></font></b></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">好</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">它们既可以在Helm版本中创建所有其他组件之前，也可以在删除它们之后执行。</font><font style="vertical-align: inherit;">因此：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对于初始化任务，我们将</font></font><code>pre-install</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在创建发行版中的所有资源之前</font><font style="vertical-align: inherit;">使用挂钩</font><font style="vertical-align: inherit;">启动它；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对于删除任务，使用一个hook </font></font><code>post-delete</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们继续执行细节。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实际实施</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在原始版本中，该项目仅使用一个Job，由三个容器组成。</font><font style="vertical-align: inherit;">当然，这并不完全方便，因为结果是一个很大的清单，很难读懂。</font><font style="vertical-align: inherit;">因此，我们将其分为三个小工作。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下是PostgreSQL的清单，另外两个清单（MongoDB和RabbitMQ）的清单结构相同：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">{{- if .Values.global.review }}<font></font>
+---<font></font>
+apiVersion: batch/v1<font></font>
+kind: Job<font></font>
+metadata:<font></font>
+  name: db-create-postgres-database<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "5"<font></font>
+spec:<font></font>
+  template:<font></font>
+    metadata:<font></font>
+      name: init-db-postgres<font></font>
+    spec:<font></font>
+      volumes:<font></font>
+      - name: postgres-scripts<font></font>
+        configMap:<font></font>
+          defaultMode: 0755<font></font>
+          name: postgresql-configmap<font></font>
+      containers:<font></font>
+      - name: init-postgres-database<font></font>
+        image: private-registry/postgres <font></font>
+        command: ["/docker-entrypoint-initdb.d/01-review-load-dump.sh"]<font></font>
+        volumeMounts:<font></font>
+        - name: postgres-scripts<font></font>
+          mountPath: /docker-entrypoint-initdb.d/01-review-load-dump.sh<font></font>
+          subPath: review-load-dump.sh<font></font>
+        env:<font></font>
+{{- include "postgres_env" . | indent 8 }}<font></font>
+      restartPolicy: Never<font></font>
+{{- end }}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对清单内容的评论：</font></font><br>
+<br>
+<ol>
+<li> Job    review-.  review   CI/CD       Helm- (. <code>if</code>  <code>.Values.global.review</code>    ).</li>
+<li>  Job      — , ConfigMap.       ,  ,       .       ,  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>hook-weight</code></a>.</li>
+<li>      cURL   ,        PostgreSQL,       .</li>
+<li>      PostgreSQL    :     ,     shell- .</li>
+</ol><br>
+<h3>PostgreSQL</h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最有趣的是清单中已经提到的shell脚本（</font></font><code>review-load-dump.sh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font><font style="vertical-align: inherit;">在PostgreSQL中还原数据库有哪些常规选项？</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 从备份中“标准”恢复；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">模板进行</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">恢复</font><font style="vertical-align: inherit;">。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在我们的案例中，两种方法之间的差异主要在于为新环境创建数据库的速度。</font><font style="vertical-align: inherit;">首先，我们加载数据库转储并使用还原它</font></font><code>pg_restore</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">与我们相比，这发生的速度比第二种方法慢，因此做出了相应的选择。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用第二个选项（</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用模板进行恢复</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">），您可以在物理级别克隆数据库，而无需在另一个环境中从容器远程向数据库发送数据-这样可以减少恢复时间。</font><font style="vertical-align: inherit;">但是，有一个局限性：您无法克隆保留活动连接的数据库。</font><font style="vertical-align: inherit;">由于我们将舞台用作静态环境（而不是单独的审阅环境），因此我们需要创建第二个数据库并将其转换为模板，并每天进行更新（例如，上午）。</font><font style="vertical-align: inherit;">为此准备了一个小的CronJob：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: batch/v1beta1<font></font>
+kind: CronJob<font></font>
+metadata:<font></font>
+  name: update-postgres-template<font></font>
+spec:<font></font>
+  schedule: "50 4 * * *"<font></font>
+  concurrencyPolicy: Forbid<font></font>
+  successfulJobsHistoryLimit: 3<font></font>
+  failedJobsHistoryLimit: 3<font></font>
+  startingDeadlineSeconds: 600<font></font>
+  jobTemplate:<font></font>
+    spec:<font></font>
+      template:<font></font>
+        spec:<font></font>
+          restartPolicy: Never<font></font>
+          imagePullSecrets:<font></font>
+          - name: registrysecret<font></font>
+          volumes:<font></font>
+          - name: postgres-scripts<font></font>
+            configMap:<font></font>
+              defaultMode: 0755<font></font>
+              name: postgresql-configmap-update-cron<font></font>
+          containers:<font></font>
+          - name: cron<font></font>
+            command: ["/docker-entrypoint-initdb.d/update-postgres-template.sh"]<font></font>
+          image: private-registry/postgres <font></font>
+            volumeMounts:<font></font>
+            - name: postgres-scripts<font></font>
+              mountPath: /docker-entrypoint-initdb.d/update-postgres-template.sh<font></font>
+              subPath: update-postgres-template.sh<font></font>
+            env:<font></font>
+{{- include "postgres_env" . | indent 8 }}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+包含脚本的完整ConfigMap清单很可能没有多大意义（如果不是这种情况，请在注释中进行报告）。</font><font style="vertical-align: inherit;">相反，我将提供最重要的内容-bash脚本：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-comment">#!/bin/bash -x</span><font></font>
+<font></font>
+CREDENTIALS=<span class="hljs-string">"postgresql://<span class="hljs-variable">${POSTGRES_USER}</span>:<span class="hljs-variable">${POSTGRES_PASSWORD}</span>@<span class="hljs-variable">${POSTGRES_HOST}</span>/postgres"</span><font></font>
+<font></font>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"REVOKE CONNECT ON DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span> FROM public"</span>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '<span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span>'"</span><font></font>
+<font></font>
+curl --fail -vsL <span class="hljs-variable">${HOST_FORDEV}</span>/latest_<span class="hljs-variable">${POSTGRES_DB_STAGE}</span>.psql -o /tmp/<span class="hljs-variable">${POSTGRES_DB}</span>.psql<font></font>
+<font></font>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"ALTER DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span> WITH is_template false allow_connections true;"</span>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"DROP DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span>;"</span> || <span class="hljs-literal">true</span>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"CREATE DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span>;"</span> || <span class="hljs-literal">true</span>
+pg_restore -U <span class="hljs-variable">${POSTGRES_USER}</span> -h <span class="hljs-variable">${POSTGRES_HOST}</span> -w -j 4 -d <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span> /tmp/<span class="hljs-variable">${POSTGRES_DB}</span>.psql<font></font>
+<font></font>
+psql -d <span class="hljs-string">"<span class="hljs-variable">${CREDENTIALS}</span>"</span> -w -c <span class="hljs-string">"ALTER DATABASE <span class="hljs-variable">${POSTGRES_DB_TEMPLATE}</span> WITH is_template true allow_connections false;"</span><font></font>
+<font></font>
+rm -v /tmp/<span class="hljs-variable">${POSTGRES_DB}</span>.psql</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以从一个模板一次还原多个数据库，而不会发生任何冲突。</font><font style="vertical-align: inherit;">最主要的是应该禁止数据库连接，并且数据库本身应该是模板。</font><font style="vertical-align: inherit;">这是倒数第二个步骤。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+包含用于还原数据库的Shell脚本的清单如下所示：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: postgresql-configmap<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded<font></font>
+data:<font></font>
+  review-load-dump.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+    <font></font>
+ <font></font>
+ <font></font>
+    CREDENTIALS="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/postgres"<font></font>
+<font></font>
+    if [ "$( psql -d "${CREDENTIALS}" -tAc "SELECT CASE WHEN EXISTS (SELECT * FROM pg_stat_activity WHERE datname = '${POSTGRES_DB}' LIMIT 1) THEN 1 ELSE 0 END;" )" = '1' ]<font></font>
+      then<font></font>
+          echo "Open connections has been found in ${POSTGRES_DB} database, will drop them"<font></font>
+          psql -d "${CREDENTIALS}" -c "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '${POSTGRES_DB}' -- AND pid &lt;&gt; pg_backend_pid();"<font></font>
+      else<font></font>
+          echo "No open connections has been found ${POSTGRES_DB} database, skipping this stage"<font></font>
+    fi<font></font>
+<font></font>
+    psql -d "${CREDENTIALS}" -c "DROP DATABASE ${POSTGRES_DB}"<font></font>
+<font></font>
+    if [ "$( psql -d "${CREDENTIALS}" -tAc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB}'" )" = '1' ]<font></font>
+      then<font></font>
+          echo "Database ${POSTGRES_DB} still exists, delete review job failed"<font></font>
+          exit 1<font></font>
+      else<font></font>
+          echo "Database ${POSTGRES_DB} does not exist, skipping"<font></font>
+    fi<font></font>
+<font></font>
+<font></font>
+    psql ${CREDENTIALS} -d postgres -c 'CREATE DATABASE ${POSTGRES_DB} TEMPLATE "loot-stage-copy"'</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+显然，他们参与了这里</font></font><code>hook-delete-policy</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">这些策略的应用细节在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">此处</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">编写</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">在给定的清单中，我们使用</font></font><code>before-hook-creation,hook-succeeded</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">它来满足以下要求：在创建新的挂钩之前删除先前的对象，并仅在挂钩成功时才删除。</font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们将在此ConfigMap中删除数据库：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: postgresql-configmap-on-delete<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "post-delete, pre-delete"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation<font></font>
+data:<font></font>
+  review-delete-db.sh: |<font></font>
+    #!/bin/bash -e<font></font>
+<font></font>
+    CREDENTIALS="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/postgres"<font></font>
+<font></font>
+    psql -d "${CREDENTIALS}" -w postgres -c "DROP DATABASE ${POSTGRES_DB}"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+尽管我们将其移至单独的ConfigMap，但可以将其放置在常规ConfigMap中</font></font><code>command</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">毕竟，它可以做成单线而不会使清单本身的外观复杂化。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果PostgreSQL模板的选项由于某种原因不合适或不合适，则可以</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用backup</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">返回上述的</font><b><font style="vertical-align: inherit;">“标准”恢复路径</font></b><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">该算法将很简单：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 每天晚上，都会进行数据库备份，以便可以从群集的本地网络下载它。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 在创建审阅环境时，将从转储中加载和还原数据库。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 部署转储后，将执行所有其他操作。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在这种情况下，恢复脚本将大致如下所示：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: postgresql-configmap<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded<font></font>
+data:<font></font>
+  review-load-dump.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    CREDENTIALS="postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}/postgres"<font></font>
+    psql -d "${CREDENTIALS}" -w -c "DROP DATABASE ${POSTGRES_DB}" || true<font></font>
+    psql -d "${CREDENTIALS}" -w -c "CREATE DATABASE ${POSTGRES_DB}"<font></font>
+<font></font>
+    curl --fail -vsL ${HOST_FORDEV}/latest_${POSTGRES_DB_STAGE}.psql -o /tmp/${POSTGRES_DB}.psql<font></font>
+<font></font>
+    psql psql -d "${CREDENTIALS}" -w -c "CREATE EXTENSION ip4r;"<font></font>
+    pg_restore -U ${POSTGRES_USER} -h ${POSTGRES_HOST} -w -j 4 -d ${POSTGRES_DB} /tmp/${POSTGRES_DB}.psql<font></font>
+    rm -v /tmp/${POSTGRES_DB}.psql</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该过程对应于上面已经描述的过程。唯一的更改是在添加所有工作之后删除psql文件。</font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：在恢复脚本和卸载脚本中，每次都会删除数据库。这样做是为了避免在重新创建审阅期间可能发生的冲突：您需要确保确实删除了数据库。同样，可以通过</font></font><code>--clean</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在实用程序中</font><font style="vertical-align: inherit;">添加一个标志来解决此问题</font></font><code>pg_restore</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，但要小心：此标志仅清除转储本身中那些元素的数据，因此在本例中此选项不起作用。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+结果，我们得到了一个需要进一步改进的工作机制（直到用更优雅的代码替换Bash脚本）。</font><font style="vertical-align: inherit;">我们将把它们放在本文的讨论范围之外（尽管当然欢迎对此主题发表评论）。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mongodb</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下一个组件是MongoDB。</font><font style="vertical-align: inherit;">这样做的主要困难在于，对于该DBMS，名义上存在复制数据库的选项（例如在PostgreSQL中），因为：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">他已经</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">过时了</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">根据我们的测试结果，我们发现数据库恢复时间与通常的恢复时间没有太大的不同</font></font><code>mongo_restore</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">但是，我注意到测试是作为一个项目的一部分进行的-在您的情况下，结果可能会完全不同。</font></font></i></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事实证明，在数据库容量很大的情况下，可能会出现一个严重的问题：我们节省了在PgSQL中恢复数据库的时间，但同时又在Mongo中恢复了很长时间。</font><font style="vertical-align: inherit;">在撰写本文时，在现有基础架构的框架内，我们看到了三种方式（顺便说一下，它们可以组合在一起）：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">例如，如果您的DBMS位于网络文件系统上（对于</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">没有</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">生产环境的情况）</font><font style="vertical-align: inherit;">，则恢复可能会花费很长时间</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">然后，您可以简单地将DBMS从舞台转移到单独的节点并使用本地存储。</font><font style="vertical-align: inherit;">由于这不是正式产品，因此创建评论的速度对我们而言更为关键。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您可以将每个作业恢复带到一个单独的容器中，从而允许您预先执行迁移和依赖于DBMS操作的其他过程。</font><font style="vertical-align: inherit;">因此，我们通过提前完成它们来节省时间。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有时，您可以通过删除旧的/不相关的数据来减小转储的大小-在一定程度上足以仅保留数据库结构。</font><font style="vertical-align: inherit;">当然，这不适用于需要完全转储的情况（例如，对于QA测试任务）。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果不需要快速创建审阅环境，则可以忽略所有描述的困难。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们无法像PgSQL一样复制数据库，将采用第一种方法，即 </font><font style="vertical-align: inherit;">从备份中进行标准恢复。</font><font style="vertical-align: inherit;">该算法与PgSQL相同。</font><font style="vertical-align: inherit;">如果查看清单，这很容易看到：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: mongodb-scripts-on-delete<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "post-delete, pre-delete"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation<font></font>
+data:<font></font>
+  review-delete-db.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    mongo ${MONGODB_NAME} --eval "db.dropDatabase()" --host ${MONGODB_REPLICASET}/${MONGODB_HOST}<font></font>
+---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: mongodb-scripts<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded<font></font>
+data:<font></font>
+  review-load-dump.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    curl --fail -vsL ${HOST_FORDEV}/latest_${MONGODB_NAME_STAGE}.gz -o /tmp/${MONGODB_NAME}.gz<font></font>
+<font></font>
+    mongo ${MONGODB_NAME} --eval "db.dropDatabase()" --host ${MONGODB_REPLICASET}/${MONGODB_HOST}<font></font>
+    mongorestore --gzip --nsFrom "${MONGODB_NAME_STAGE}.*" --nsTo "${MONGODB_NAME}.*" --archive=/tmp/${MONGODB_NAME}.gz --host ${MONGODB_REPLICASET}/${MONGODB_HOST}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这里有一个重要的细节。在我们的例子中，MongoDB在集群中，您需要确保</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">连接始终发生在Primary节点上</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。例如，如果您指定仲裁中的第一台主机，则一段时间后，它可能会从“主要”切换到“辅助”，这将阻止创建数据库。因此，您不需要连接到一台主机，而是立即连接到</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ReplicaSet</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，列出其中的所有主机。仅出于这个原因，您需要将MongoDB设置为StatefulSet，以便主机名始终相同（更不用说MongoDB本质上是有状态的应用程序）。使用此选项，可以确保连接到主节点。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于MongoDB，我们还会在创建审阅之前删除数据库-这样做的原因与PostgreSQL中相同。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最后一个细微差别：由于要检查的数据库与舞台处于同一环境中，因此克隆的数据库需要一个单独的名称。</font><font style="vertical-align: inherit;">如果转储不是BSON文件，则会发生以下错误：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">the --db and --collection args should only be used when restoring from a BSON file. Other uses are deprecated and will not exist in the future; use --nsInclude instead</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，在上述示例中，使用</font></font><code>--nsFrom</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><code>--nsTo</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们没有遇到其他恢复问题。</font><font style="vertical-align: inherit;">最后，我只补充说</font></font><code>copyDatabase</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MongoDB </font><font style="vertical-align: inherit;">的文档</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在这里</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">可用</font><font style="vertical-align: inherit;">，以防您尝试此选项。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rabbitmq</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们需求列表中的最后一个应用是RabbitMQ。</font><font style="vertical-align: inherit;">它很简单：您需要代表应用程序将连接到的用户创建一个新的虚拟主机。</font><font style="vertical-align: inherit;">然后删除它。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+创建和删除虚拟主机的宣言：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: rabbitmq-configmap<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "pre-install"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded<font></font>
+data:<font></font>
+  rabbitmq-setup-vhost.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    /usr/local/bin/rabbitmqadmin -H ${RABBITMQ_HOST} -u ${RABBITMQ_USER} -p ${RABBITMQ_PASSWORD} declare vhost name=${RABBITMQ_VHOST}<font></font>
+---<font></font>
+apiVersion: v1<font></font>
+kind: ConfigMap<font></font>
+metadata:<font></font>
+  name: rabbitmq-configmap-on-delete<font></font>
+  annotations:<font></font>
+    "helm.sh/hook": "post-delete, pre-delete"<font></font>
+    "helm.sh/hook-weight": "1"<font></font>
+    "helm.sh/hook-delete-policy": before-hook-creation<font></font>
+data:<font></font>
+  rabbitmq-delete-vhost.sh: |<font></font>
+    #!/bin/bash -x<font></font>
+<font></font>
+    /usr/local/bin/rabbitmqadmin -H ${RABBITMQ_HOST} -u ${RABBITMQ_USER} -p ${RABBITMQ_PASSWORD} delete vhost name=${RABBITMQ_VHOST}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在RabbitMQ中遇到了很大的困难，我们（到目前为止？）还没有遇到过。</font><font style="vertical-align: inherit;">通常，相同的方法可以应用于对数据没有严格要求的任何其他服务。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">缺点</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为什么这个决定不声称是“最佳实践”？</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 它以阶段环境的形式证明了单点故障。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如果舞台环境中的应用程序仅在一个副本中运行，那么我们将更加依赖于该应用程序在其上运行的主机。</font><font style="vertical-align: inherit;">因此，随着查看环境数量的增加，节点上的负载会成比例地增加，而无法平衡该负载。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+考虑到特定项目的基础架构的功能，不可能完全解决这两个问题，但是，可以通过群集（添加新节点）和垂直扩展来最大程度地减少潜在的损害。 </font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结论</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+随着应用程序的发展以及开发人员数量的增加，审核环境的迟早会增加负荷，并向其中添加新的要求。对于开发人员来说，尽快交付生产中的下一个更改很重要，但是要实现这一点，我们需要使开发“平行”的动态审查环境。结果，基础架构上的负载不断增加，创建此类环境的时间也在增加。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这篇文章是根据真实而具体的经验写的。仅在特殊情况下，我们才会在静态环境中隔离任何服务，在此专门针对他。由于具有从头开始快速创建审阅环境的能力，这种必要的措施使我们能够加快应用程序的开发和调试。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当我们开始执行此任务时，它看起来非常简单，但是在我们进行这项工作时，我们发现了许多细微差别。</font><font style="vertical-align: inherit;">在最后一篇文章中聚集了他们：尽管它们不是通用的，但是它们可以作为他们自己在加速审核环境中做出决定的基础/灵感的榜样。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">聚苯乙烯</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+另请参阅我们的博客：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes提示和技巧：加快大型数据库的引导速度</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">畅通无阻的RabbitMQ迁移到Kubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“将</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MongoDB顺利迁移到Kubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“正在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">运行的团队正在向Kubernetes提供新的应用程序发布</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。”</font></font></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN501412/index.html">PyTorch上的移动眼动追踪</a></li>
+<li><a href="../zh-CN501414/index.html">为Django项目配置Debian，Nginx和Gunicorn</a></li>
+<li><a href="../zh-CN501416/index.html">关于WebRTC的一些知识：使用方法和实践案例</a></li>
+<li><a href="../zh-CN501418/index.html">第四周马拉松：动力</a></li>
+<li><a href="../zh-CN501420/index.html">在线Mitapas和YouTube节目：JUG Ru小组直播周</a></li>
+<li><a href="../zh-CN501426/index.html">Unison：在两个服务器上设置并自动执行目录的双向同步</a></li>
+<li><a href="../zh-CN501430/index.html">网站内容设计和规划指南</a></li>
+<li><a href="../zh-CN501432/index.html">JDBC的两种选择</a></li>
+<li><a href="../zh-CN501434/index.html">安全周刊20：通过Thunderbolt入侵计算机</a></li>
+<li><a href="../zh-CN501436/index.html">具有第二种错误可能性的图像上的数字识别算法</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
