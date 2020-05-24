@@ -1,0 +1,212 @@
+<!doctype html>
+<html class="no-js" lang="pt">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⌚️ 👨‍🎤 ⛷️ ProxySQL - uma ferramenta para desmultiplexar conexões 🌡️ 👧🏻 🤾🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Olá, meu nome é Alexander Yakovlev, trabalho na Citimobil e opero. Hoje vou falar sobre um produto muito interessante ProxySQL - é um MySQL Proxy de a...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>ProxySQL - uma ferramenta para desmultiplexar conexões</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/citymobil/blog/501730/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Olá, meu nome é Alexander Yakovlev, trabalho na Citimobil e opero. </font><font style="vertical-align: inherit;">Hoje vou falar sobre um produto muito interessante ProxySQL - é um MySQL Proxy de alto desempenho que pode fazer muitas coisas - capturar e matar solicitações por máscara, com ele você pode procurar por injeção de sql, duplicar a carga e muito mais. </font><font style="vertical-align: inherit;">Vou falar sobre a nossa experiência com ele.</font></font><a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mais cedo ou mais tarde, qualquer grande projeto de TI, cujo desenvolvimento começou com um par de servidores, encontrará a situação descrita abaixo. Imagine que o projeto inicialmente tivesse apenas um banco de dados - o servidor mestre. Gradualmente, um monte de escravos foram adicionados a ele. Então eles introduziram o sharding. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+E um belo dia, a carga aumenta repentinamente 10 vezes. Por exemplo, porque seu principal concorrente caiu e os clientes correram para você. Neste ponto, parece-lhe que você pode simplesmente escalar a carga adicionando servidores da web. Mas depois de fazer isso, surge uma situação desagradável.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Considere o exemplo de um assistente. Digamos que você tenha 50 servidores da Web e a cada 200 processos de php-fpm. Então 50 * 200 conexões chegarão ao mestre, e 50 * 200 / número de escravos chegarão a cada escravo (se, é claro, o roundrobin estiver configurado em haproxy) - veja a figura abaixo. Obviamente, 10 mil conexões com o mestre são muitas, mas ainda suportáveis, e se houver 200 sites, o número de conexões será ainda maior e uma conexão = um encadeamento. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Foi nesse gargalo que encontramos. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/7b2/bb3/e2b/7b2bb3e2b3ff265076397aece6d0da81.jpg" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Então começamos a discutir: a conexão com o assistente está sempre instalada no código, mas é necessária para todos os processos fpm? Provavelmente não. Percebemos que um grande número de conexões persistentes com o mestre simplesmente fica suspenso. E eles decidiram que precisamos de desmultiplexação.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/df8/8e7/595/df88e75958437543e14e00a08603a7b8.jpg" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para isso, chamamos a atenção para um produto chamado ProxySQL. Funciona como um proxy reverso normal: as conexões são estabelecidas e redistribui o tráfego de acordo com certas regras especificadas na configuração. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Instalamos o ProxySQL em todos os nossos servidores da web e, na configuração do aplicativo, especificamos que a chamada para o banco de dados mestre é realizada no endereço 127.0.0.1. Se antes de 200 funcionários do FPM em cada servidor da Web significavam 200 conexões com a base mestre dessa máquina, agora a situação mudou. Essas 200 conexões são fornecidas no ProxySQL e 50-70 são desativadas em momentos diferentes. Ou seja, o ProxySQL pode reutilizar conexões existentes.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Graças à desmultiplexação, reduzimos o número de conexões de 3 a 10 vezes em todos os mestres, veja o gráfico de conexões atuais de um dos mestres abaixo. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/87b/285/e02/87b285e02729e752ccf931994d4253e6.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Graças ao ProxySQL, nos livramos do gargalo acima. Mas este não é o único fluxo de trabalho que aprimoramos com esta ferramenta. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ainda não concluímos o segundo processo, mas estamos muito próximos da conclusão. Usando o ProxySQL, planejamos duplicar a carga real no ambiente de teste. Isso é necessário para verificar novos recursos com o tráfego de combate. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como isso será implementado? O aplicativo vai para o ProxySQL e envia tráfego por duas rotas: para os bancos de dados de batalha para o aplicativo funcionar e para o ambiente de teste para verificar novos recursos sob carga.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Um recurso do ProxySQL é que existe sua configuração, que no nosso caso é implementada através do puppet (para o puppet existe um módulo ProxySQL), mas também existe o conceito de zona de tempo de execução quando, para fazer uma alteração (adicionar servidor, adicionar usuário, excluir servidor e usuário) ), você não precisa reiniciar / recarregar normalmente. Tudo é feito através do console ProxySQL, por exemplo, como este.</font></font><br>
+<br>
+<pre><code class="plaintext hljs">mysql -ulogin -ppassword -h 127.0.0.1 -P6032 -e "INSERT INTO mysql_users(username,password,default_hostgroup) VALUES ('sm_username','pass',1);;LOAD MYSQL USERS TO RUNTIME;SAVE MYSQL USERS TO DISK;"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em mais detalhes, é claro, na documentação oficial </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">proxysql.com/documentation</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Agradecemos sua atenção. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nossa configuração, com a qual resolvemos o problema descrito acima, veja abaixo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nossa configuração</font></font><br>
+<br>
+<pre><code class="plaintext hljs">datadir="/var/lib/proxysql"<font></font>
+<font></font>
+admin_variables=<font></font>
+{<font></font>
+    admin_credentials="user:pass"<font></font>
+    mysql_ifaces="0.0.0.0:6032"<font></font>
+    refresh_interval=2000<font></font>
+    web_enabled=true<font></font>
+    web_port=6080<font></font>
+    stats_credentials="stats:admin"<font></font>
+}<font></font>
+<font></font>
+mysql_variables =<font></font>
+{<font></font>
+    threads = 1000<font></font>
+    max_connections = 2000<font></font>
+    default_query_delay= 0<font></font>
+    default_query_timeout=1<font></font>
+    have_compress=true<font></font>
+    poll_timeout=2000<font></font>
+    interfaces="0.0.0.0:6033;/tmp/proxysql.sock"<font></font>
+    default_schema="information_schema"<font></font>
+    stacksize=1048576<font></font>
+    server_version="5.7.22"<font></font>
+    connect_timeout_server=10000<font></font>
+    monitor_history=60000<font></font>
+    monitor_connect_interval=200000<font></font>
+    monitor_ping_interval=200000<font></font>
+    ping_interval_server_msec=5000<font></font>
+    ping_timeout_server=200<font></font>
+    commands_stats=true<font></font>
+    sessions_sort=true<font></font>
+    monitor_username="root"<font></font>
+    monitor_password="password"<font></font>
+    monitor_galera_healthcheck_interval=200<font></font>
+    monitor_galera_healthcheck_timeout=80<font></font>
+}<font></font>
+<font></font>
+mysql_servers =<font></font>
+(<font></font>
+  {<font></font>
+    address = "ip_real_mysql_server",<font></font>
+    port = 3306,<font></font>
+    max_connections = 10000,<font></font>
+    host_group = 1,<font></font>
+  })<font></font>
+mysql_users =<font></font>
+(<font></font>
+  {<font></font>
+    username = "user",<font></font>
+    password = "pass",<font></font>
+    default_hostgroup = 1,<font></font>
+    transaction_persistent = 0,<font></font>
+    active = 1,<font></font>
+  })<font></font>
+</code></pre></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt501712/index.html">Falando sobre testes: algumas histórias e uma pesquisa</a></li>
+<li><a href="../pt501714/index.html">Escola 42 como a principal resposta para a vida em TI, o universo da programação e tudo o mais</a></li>
+<li><a href="../pt501716/index.html">Desafio aceito ou que tarefas os engenheiros da Lamoda resolvem</a></li>
+<li><a href="../pt501722/index.html">Comet - framework PHP para APIs REST rápidas</a></li>
+<li><a href="../pt501724/index.html">Trabalhando com cookies em JavaScript puro sem dor de cabeça</a></li>
+<li><a href="../pt501734/index.html">[Estilo Geektimes] Nosso futuro tecnológico: previsões de especialistas</a></li>
+<li><a href="../pt501736/index.html">Como mudamos para udalenka há seis meses devido à óptica cortada</a></li>
+<li><a href="../pt501738/index.html">13 de maio - Java Digest</a></li>
+<li><a href="../pt501742/index.html">Transporte em 13 de maio: uiiii, ocupamos o segundo lugar em termos de número de pacientes, é hora de remover as restrições</a></li>
+<li><a href="../pt501744/index.html">Não é o designer que pinta lindamente, é quem ajuda a empresa a entender o usuário</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

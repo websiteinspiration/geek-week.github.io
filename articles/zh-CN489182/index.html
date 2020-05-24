@@ -1,0 +1,300 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✊🏿 🆓 ⛹🏾 varchar（max）-varchar（max）和生产中 🦗 🙎🏼 👩🏾‍🚀</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="我最近参加了有关在nvarchar列中指定长度对性能的影响的讨论。双方的论点都是合理的，并且由于我有空闲时间，所以我决定进行一些测试。结果就是这个帖子。
+ 
+ 剧透-不是那么简单。
+ 
+ 所有测试均在SQL Server 2014 Developer Edition上进行，在SQL Server 2...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>varchar（max）-varchar（max）和生产中</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/489182/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我最近参加了有关在nvarchar列中指定长度对性能的影响的讨论。双方的论点都是合理的，并且由于我有空闲时间，所以我决定进行一些测试。结果就是这个帖子。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+剧透-不是那么简单。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+所有测试均在SQL Server 2014 Developer Edition上进行，在SQL Server 2016上获得的结果大致相同（略有不同）。以下内容应与SQL Server 2005-2016相关（并且必须在2017/2019年进行测试，因为那里出现了Adaptive Memory Grants，这可以在某种程度上纠正这种情况）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们需要来自Erik Darling </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sp_pressure_detector</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的存储过程，该存储过程</font><font style="vertical-align: inherit;">使您可以获取有关系统当前状态的大量信息，以及</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SQL Query Stress</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">是一个非常酷的开源实用程序Adam Machanic / Erik Ejlskov Jensen，用于负载测试MS SQL Server。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们在谈论什么呢</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我要回答的问题是（n）varchar字段长度的选择是否会影响性能（此后只是varchar，尽管所有内容都与nvarchar相关），或者您可以使用varchar（max）而不是Steam，因为如果字符串长度&lt;8000 （对于nvarchar为4000）字符，然后将varchar（max）和varchar（N）存储在行中。</font></font><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">烹饪架</font></font></h3><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##v10  (i int, d datetime, v varchar(10));</span>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##v100 (i int, d datetime, v varchar(100));</span>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##vmax (i int, d datetime, v varchar(max));</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们创建了三个表，每个表包含三个字段，不同之处仅在于varchar的长度：10/100 / max。</font><font style="vertical-align: inherit;">并用相同的数据填充它们：</font></font><br>
+<br>
+<pre><code class="sql hljs">;<span class="hljs-keyword">with</span> x <span class="hljs-keyword">as</span> (<span class="hljs-keyword">select</span> <span class="hljs-number">1</span> x <span class="hljs-keyword">union</span> <span class="hljs-keyword">all</span> <span class="hljs-keyword">select</span> <span class="hljs-number">1</span>)<font></font>
+, xx <span class="hljs-keyword">as</span> (<span class="hljs-keyword">select</span> <span class="hljs-number">1</span> x <span class="hljs-keyword">from</span> x x1, x x2)<font></font>
+, xxx <span class="hljs-keyword">as</span> (<span class="hljs-keyword">select</span> <span class="hljs-number">1</span> x <span class="hljs-keyword">from</span> xx x1, xx x2, xx x3)<font></font>
+, xxxx <span class="hljs-keyword">as</span> (
+	<span class="hljs-keyword">select</span> row_number() <span class="hljs-keyword">over</span>(<span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> (<span class="hljs-keyword">select</span> <span class="hljs-literal">null</span>)) i<font></font>
+		, <span class="hljs-keyword">dateadd</span>(<span class="hljs-keyword">second</span>, row_number() <span class="hljs-keyword">over</span>(<span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> (<span class="hljs-keyword">select</span> <span class="hljs-literal">null</span>)), <span class="hljs-string">'20200101'</span>) d<font></font>
+		, <span class="hljs-keyword">cast</span> (row_number() <span class="hljs-keyword">over</span>(<span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> (<span class="hljs-keyword">select</span> <span class="hljs-literal">null</span>)) <span class="hljs-keyword">as</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-number">10</span>))  v 		
+	<span class="hljs-keyword">from</span> xxx x1, xxx x2, xxx x3<font></font>
+) <span class="hljs-comment">--262144 </span>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##v10			--varchar(10)</span>
+<span class="hljs-keyword">select</span> i, d, v <span class="hljs-keyword">from</span> xxxx;	<font></font>
+<font></font>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##v100			--varchar(100)</span>
+<span class="hljs-keyword">select</span> i, d, v <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10;</span><font></font>
+<font></font>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##vmax			--varchar(max)</span>
+<span class="hljs-keyword">select</span> i, d, v <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10;</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+结果，每个表将包含262144行。</font><font style="vertical-align: inherit;">第一列（整数）包含从1到262145的非重复数字；</font><font style="vertical-align: inherit;">d（日期时间）唯一的日期和v（varchar）-强制转换（我为varchar（10））。</font><font style="vertical-align: inherit;">为了使其更接近真实生活，请在i上创建一个唯一的群集索引：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">unique</span> clustered <span class="hljs-keyword">index</span> <span class="hljs-comment">#cidx10 on ##v10(i);</span>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">unique</span> clustered <span class="hljs-keyword">index</span> <span class="hljs-comment">#cidx100 on ##v100(i);</span>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">unique</span> clustered <span class="hljs-keyword">index</span> <span class="hljs-comment">#cidxmax on ##vmax(i);</span></code></pre><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">走</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，让我们看一下执行不同请求的计划。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，检查由varchar选择的字段不取决于其长度（如果在其中存储了&lt;8000个字符）。</font><font style="vertical-align: inherit;">我们包括一个有效的执行计划，并查看：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10 where v = '123';</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v100 where v = '123';</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where v = '123';</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/jm/ae/ge/jmaegeqd37k-dqa1xelhluv0p7y.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+奇怪的是，差异虽然很小，但仍然存在。</font><font style="vertical-align: inherit;">带有varchar（max）的查询计划首先选择所有行，然后将其过滤掉，并且varchar（10）和varchar（100）在扫描聚簇索引时检查是否匹配。</font><font style="vertical-align: inherit;">因此，扫描耗时几乎是原来的三倍-0.068秒，而varchar（10）则为0.022秒。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在让我们看看如果仅显示varchar列并通过集群索引键选择数据会发生什么：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10  where i between 200000 and 201000;</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v100 where i between 200000 and 201000;</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where i between 200000 and 201000; </span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/cf/-s/kb/cf-skbsef6akggupmzetfl2p8go.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这里的一切都很清楚-这些请求没有区别。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在开始有趣的部分。</font><font style="vertical-align: inherit;">在上一个请求中，我们只有1001行，现在我们要按非索引列对它们进行排序。</font><font style="vertical-align: inherit;">我们尝试：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10  where i between 200000 and 201000 order by d;</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v100 where i between 200000 and 201000 order by d;</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where i between 200000 and 201000 order by d;</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/yj/do/49/yjdo497l7navh17mbg02_gqx8us.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+哦，那是什么黄色？</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ey/me/42/eyme42eioy1wftu3xupiblsy4i8.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+好笑，即 </font><font style="vertical-align: inherit;">该请求请求并接收了6.5 MB的RAM用于排序，并且仅使用了96 KB。</font><font style="vertical-align: inherit;">如果有更多行，情况会变得更糟。</font><font style="vertical-align: inherit;">好吧，让它不是1000，而是100000：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/4e/m9/yj/4em9yjzwjh3nnoqfgfyx54rsing.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是，这更加严重。</font><font style="vertical-align: inherit;">此外，使用最小varchar（10）的第一个请求也对以下内容不满意：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/q8/ni/cq/q8nicqpp2upyxdn1tqkkrj9pmiw.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+左侧有最后一个请求的警告：已请求500兆字节，而仅使用9.5兆字节。</font><font style="vertical-align: inherit;">右边是排序警告：请求了8840 KB，但还不够，另外还写入了360页（每个8 kb）并从tempdb中读取。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这里的问题是：WTF？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+答案是SQL Server查询优化器如何工作。要对某些内容进行排序，您首先需要将某些内容存储到内存中。如何了解需要多少内存？通常，我们知道哪种类型的数据会占用多少空间。但是可变长度字符串呢？但是对他们来说更有趣。在为/哈希联接排序分配内存时，SQL Server认为它们平均已满。并为其分配内存为（大小/ 2）*预期的行数。但是varchar（max）最多可以存储2GB-要分配多少？ SQL Server认为将有varchar（8000）的一半-即每行大约4 kb。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有趣的是-这种内存分配不仅会导致varchar（max）出现问题，而且-如果精心选择了varchars的大小，使它们中的大多数都变满了一半，那么这也会导致问题。</font><font style="vertical-align: inherit;">计划不同的问题，但同样严重。</font><font style="vertical-align: inherit;">上图中有一个描述-SQL Server无法正确分配内存以对小的varchar进行排序，并使用tempdb来存储中间结果。</font><font style="vertical-align: inherit;">如果tempdb位于慢速磁盘上，或者被其他请求主动使用，则这可能会成为瓶颈。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SQL查询压力</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，让我们看看执行批量查询时会发生什么。</font><font style="vertical-align: inherit;">运行SQL查询压力，将其连接到我们的服务器，并说要在50个线程中执行所有这些查询10次。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第一个查询的结果：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/qv/9r/q8/qv9rq8c7z6tbyqb9k7jqck2yhae.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/_9/vw/he/_9vwhedfjdaa22mkptjacumozfa.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/5c/um/uv/5cumuvx4-sfl5nojbis65jcdapo.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有趣的是，但没有索引，在搜索时，varchar（max）表现得比任何人都差，并且就迭代和整体运行时的处理器时间而言，它的确差得多。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+sp_pressure_detector在这里没有显示任何有趣的内容，因此我不引用其输出。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第二个查询的结果：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/om/nz/yo/omnzyo0dirov8grjqv_xknozi8a.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/um/l8/ck/uml8ckphegosxfz61vucy5cdhmc.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/jp/gc/qw/jpgcqwftgnarvin2dubbszhlb0e.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一切都在这里-同样好。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在开始有趣的部分。</font><font style="vertical-align: inherit;">一个查询，对结果的千行进行排序：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/nk/s3/7g/nks37ghsmhyoeu2ufnwjtucspng.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/v5/k8/md/v5k8mduwaak5levom_53ew9tb-c.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ur/dt/cm/urdtcmhikdmqqn17is5z7lgwnom.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事实证明，所有内容都与上一个请求完全相同-行不多，排序不会引起问题。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，最后一个查询对许多行进行了不合理的排序（我在其中添加了前1000个，以免拉出整个排序后的列表）：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/so/qf/4x/soqf4xayshv3s96prh41gbho98o.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/2d/mo/xz/2dmoxznaetv7dae_o8yfwqewgx0.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ap/s5/0n/aps50nstvvlezyr4qq16jjw8xmu.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是sp_pressure_detector的输出：</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><div style="text-align:center;"><img src="https://habrastorage.org/webt/ta/-d/5v/ta-d5vvomd180-etwq7kvvkplyy.png"></div></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+他告诉我们什么？</font><font style="vertical-align: inherit;">所有会话每个请求489 MB（用于排序），但其中只有22个具有足够的内存用于SQL Server，即使考虑到这22个会话每个仅使用9 MB！</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+总共有11 GB的可用内存，每个489.625分配了229个会话，而SQL Server只有258 MB的可用空间，他们还希望获得489个新的会话。我该怎么办？</font><font style="vertical-align: inherit;">等到内存可用后再等待-他们等待，甚至没有开始运行。</font><font style="vertical-align: inherit;">如果在会话中发出此类请求，用户将怎么办？</font><font style="vertical-align: inherit;">太等了。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+顺便说一句，请注意使用varchar（10）的图形-使用varchar（10）的请求要比使用varchar（100）的请求花费更长的时间-而且尽管我的tempdb在非常快的磁盘上，但事实如此。</font><font style="vertical-align: inherit;">tempdb下的驱动器越差，查询运行就越慢。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SQL Server 2012/2014的单独说明</font></font></b><div class="spoiler_text"> SQL Server 2012/2014       sort spills.      char/nchar –     spill’  tempdb. <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">MS    </a>,        ,       .<br>
+<br>
+ :<br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##c6  (i int, d datetime, v char(6));</span>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##c6 (i, d, v)</span>
+<span class="hljs-keyword">select</span> i, d, v
+<span class="hljs-keyword">from</span> <span class="hljs-comment">##v10</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##c6 where i between 100000 and 200000 order by d;</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ui/f4/b8/uif4b8p9mykxr4vt6nzawwr67_e.png"></div><br>
+    (      ):<br>
+<br>
+<pre><code class="sql hljs">DBCC TRACEON (7470, -1);</code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/wy/re/lk/wyrelkcbyfaybdahpngtbvakkla.png"></div><br>
+    , spill’  .<br>
+</div></div><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">发现</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在具有（n）个varchar列的查询中进行排序时要格外小心。如果仍然需要排序，则非常希望排序列具有索引。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+请注意，为了获得排序，没有必要显式使用order by-例如，合并合并也可以使用order by。散列连接也可能出现与内存分配相同的问题，例如，使用varchar（max）：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> top <span class="hljs-number">100</span> * 
+<span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax v1</span>
+<span class="hljs-keyword">inner</span> <span class="hljs-keyword">hash</span> <span class="hljs-keyword">join</span> <span class="hljs-comment">##v10 v2 on v1.i = v2.i</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ui/zw/65/uizw65mjcy5wysloq-ujohovj1o.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+分配了2.5 GB的内存，已使用25 MB！</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对我来说，主要结论是</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：（n）varchar列的大小-重要！如果大小太小，则可能会在tempdb中溢出；如果大小太大，则内存请求太大。如果存在排序，明智的做法是将varchar长度声明为平均记录长度* 2，对于SQL Server 2012/2014，甚至还要更多。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对我来说，出乎意料的结论是</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：varchar（max）包含少于8000个字符，实际上运行起来较慢，并且带有过滤器。我尚不知道如何解释-我会做更多说明。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为我提取奖金</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：几乎已经单击“发布”，我认为即使使用varchar（max），您也可以遇到“小varchar'a”问题。</font><font style="vertical-align: inherit;">实际上，当存储在varchar（最大）中超过4000个字符（nvarchar为2000个字符）时，排序可能会成为问题。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##vmax(i, d, v)</span>
+<span class="hljs-keyword">select</span> i, d, <span class="hljs-keyword">replicate</span>(<span class="hljs-string">'a'</span>, <span class="hljs-number">4000</span>) v
+<span class="hljs-keyword">from</span> <span class="hljs-comment">##v10;</span><font></font>
+<font></font>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where i between 200000 and 201000 order by d;</span>
+</code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/1r/al/gj/1ralgj_dructufbdmv9okrtarqu.png"></div><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">truncate</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##vmax;</span><font></font>
+<font></font>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##vmax(i, d, v)</span>
+<span class="hljs-keyword">select</span> i, d, <span class="hljs-keyword">replicate</span>(<span class="hljs-string">'a'</span>, <span class="hljs-number">4100</span>) v
+<span class="hljs-keyword">from</span> <span class="hljs-comment">##v10;</span><font></font>
+<font></font>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where i between 200000 and 201000 order by d;</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/wa/hp/s7/wahps7atcyg7xmdkuo0rg6-ojhu.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为什么我一开始就写道并非所有的事情都这么简单？</font><font style="vertical-align: inherit;">因为，例如，在我的带有半死磁盘的家用笔记本电脑上，当对“小型” varchar进行排序时，tempdb溢出，导致这样的事实：与使用varchar（max）的类似请求相比，此类请求的执行速度较慢。</font><font style="vertical-align: inherit;">如果您具有良好的硬件，它们可能不是问题，但您不应忘记它们。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+更有意思的是，看看是否由于其他DBMS中的varchars太大/太小而出现任何问题。</font><font style="vertical-align: inherit;">如果您有机会查看-我很高兴与您分享。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">小奖金</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+不幸的是，使用查询计划缓存无法捕获此类问题。</font><font style="vertical-align: inherit;">以下是缓存中计划的示例：,，其中没有警告。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/eu/g5/kg/eug5kgej0aai31sbnd3ukzp31qm.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/su/vg/yp/suvgypz4s5ejzxv_9zootujvoim.png"></div></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN489164/index.html">Kubernetes集群升级而无需停机</a></li>
+<li><a href="../zh-CN489166/index.html">关于使用Windows 10和键盘第2部分示例的PC的操作</a></li>
+<li><a href="../zh-CN489172/index.html">我们使用Keycloak将ActiveDirectory授权紧固到Kubernetes</a></li>
+<li><a href="../zh-CN489174/index.html">Laravel的单一责任原则（SRP）</a></li>
+<li><a href="../zh-CN489178/index.html">GSMout-接收短信并“在家”拨打电话</a></li>
+<li><a href="../zh-CN489188/index.html">在实践中登录微服务.Net环境</a></li>
+<li><a href="../zh-CN489190/index.html">RedHat研究：开源取代了企业领域的专有软件</a></li>
+<li><a href="../zh-CN489192/index.html">在FizTech基本组织中，Smart Engines进入FWCI排名的前三名</a></li>
+<li><a href="../zh-CN489194/index.html">OpenShift如何改变IT组织的组织结构。转向PaaS时组织模型的演变</a></li>
+<li><a href="../zh-CN489196/index.html">Magic Smoke：微控制器与线性稳压器</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

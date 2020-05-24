@@ -1,0 +1,321 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👧🏼 😒 🔸 在繁忙的项目中与Ceph合作的提示和技巧 🎋 📘 👂🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在不同的工作负载项目中使用Ceph作为网络存储，我们可能会遇到乍一看似乎并不简单或琐碎的各种任务。例如：
+ 
+ 
+
+- 从旧的Ceph到新的数据迁移，部分使用新集群中的先前服务器；
+- Ceph中磁盘空间分配问题的解决方案。
+ 处理此类任务时，我们面临着正确提取OSD而又不丢失数据的需求，这对于大量...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>在繁忙的项目中与Ceph合作的提示和技巧</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/495870/"><img src="https://habrastorage.org/webt/ph/1x/bv/ph1xbvwvoynsjkdr3h_l_gxwoxe.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在不同的工作负载项目中使用Ceph作为网络存储，我们可能会遇到乍一看似乎并不简单或琐碎的各种任务。</font><font style="vertical-align: inherit;">例如：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 从旧的Ceph到新的数据迁移，部分使用新集群中的先前服务器；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Ceph中磁盘空间分配问题的解决方案。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+处理此类任务时，我们面临着正确提取OSD而又不丢失数据的需求，这对于大量数据尤其如此。</font><font style="vertical-align: inherit;">这将在本文中讨论。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下述方法与任何版本的Ceph有关。</font><font style="vertical-align: inherit;">此外，还将考虑到大量数据可以存储在Ceph中的事实：为了防止数据丢失和其他问题，某些操作将被“拆分”为其他几个操作。</font></font><a name="habracut"></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OSD前言</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于正在考虑的三个配方中有两个是专用于OSD（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对象存储守护程序</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）的，因此在进入实际部分之前-简要介绍一下Ceph中的含义以及为什么它如此重要。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，应该说整个Ceph集群由许多OSD组成。数量越多，Ceph中的可用数据量就越大。从这里可以轻松了解</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OSD</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的</font><b><font style="vertical-align: inherit;">主要功能</font></b><font style="vertical-align: inherit;">：它将Ceph对象数据保存在所有群集节点的文件系统上，并提供对它们的网络访问权限（用于读取，写入和其他请求）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在同一级别，通过在不同OSD之间复制对象来设置复制参数。在这里您会遇到各种问题，稍后将讨论其解决方案。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">案号1。</font><font style="vertical-align: inherit;">从Ceph集群安全地检索OSD，而不会丢失数据</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+删除OSD的原因可能是服务器从群集中退出（例如，用另一台服务器替换它），这种情况是我们发生的，从而引起了本文的撰写。</font><font style="vertical-align: inherit;">因此，操纵的最终目标是提取给定服务器上的所有OSD和货币，以便可以将其停止。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了方便起见，并消除了在执行命令的过程中会错误指出必需的OSD的情况，我们将设置一个单独的变量，其值将是要删除的OSD的编号。</font><font style="vertical-align: inherit;">我们将其称为</font></font><code>${ID}</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-在下文中，这样的变量将代替我们使用的OSD号。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在开始工作之前，让我们看一下情况：</font></font><br>
+<br>
+<pre><code class="bash hljs">root@hv-1 ~ <span class="hljs-comment"># ceph osd tree</span><font></font>
+ID CLASS WEIGHT  TYPE NAME      STATUS REWEIGHT PRI-AFF<font></font>
+-1       0.46857 root default<font></font>
+-3       0.15619      host hv-1<font></font>
+-5       0.15619      host hv-2<font></font>
+ 1   ssd 0.15619      osd.1     up     1.00000  1.00000<font></font>
+-7       0.15619      host hv-3<font></font>
+ 2   ssd 0.15619      osd.2     up     1.00000  1.00000</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要开始删除OSD，您需要</font></font><code>reweight</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在其上</font><font style="vertical-align: inherit;">平稳执行</font><font style="vertical-align: inherit;">到零。因此，我们通过与其他OSD平衡来减少OSD中的数据量。为此，执行以下命令：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd reweight osd.<span class="hljs-variable">${ID}</span> 0.98<font></font>
+ceph osd reweight osd.<span class="hljs-variable">${ID}</span> 0.88<font></font>
+ceph osd reweight osd.<span class="hljs-variable">${ID}</span> 0.78</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+...以此类推为零。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">更新</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：这篇文章的评论用</font></font><code>norebalance</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">+ </font><font style="vertical-align: inherit;">讲述了该方法</font></font><code>backfill</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。该解决方案是正确的，但是首先您需要查看这种情况，因为</font></font><code>norebalance</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们在不希望任何OSD引起网络负载时使用它。</font></font><code>osd_max_backfill</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在需要限制重新平衡速度的情况下使用。结果，重新平衡将变慢并且导致较少的网络负载。</font><font style="vertical-align: inherit;">为了避免丢失数据，</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">必须进行平稳的平衡</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。如果OSD包含大量数据，则尤其如此。为了确保在执行命令后</font></font><code>reweight</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一切都成功，您可以执行它，也可以</font></font><code>ceph -s</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在单独的终端窗口中</font><font style="vertical-align: inherit;">运行</font><font style="vertical-align: inherit;">它</font></font><code>ceph -w</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为了实时观察变化。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+OSD为“空”时，可以开始标准操作以将其删除。</font><font style="vertical-align: inherit;">为此，将所需的OSD置于状态</font></font><code>down</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd down osd.<span class="hljs-variable">${ID}</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从群集中“拉出” OSD：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd out osd.<span class="hljs-variable">${ID}</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+停止OSD服务并在FS中卸载其分区：</font></font><br>
+<br>
+<pre><code class="bash hljs">systemctl stop ceph-osd@<span class="hljs-variable">${ID}</span>
+umount /var/lib/ceph/osd/ceph-<span class="hljs-variable">${ID}</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CRUSH映射中</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">删除OSD </font><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd crush remove osd.<span class="hljs-variable">${ID}</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+删除OSD用户：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph auth del osd.<span class="hljs-variable">${ID}</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最后，删除OSD本身：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd rm osd.<span class="hljs-variable">${ID}</span></code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：如果您使用的是Ceph Luminous或更高版本，则删除OSD的上述步骤可以简化为两个命令：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd out osd.<span class="hljs-variable">${ID}</span>
+ceph osd purge osd.<span class="hljs-variable">${ID}</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在执行上述步骤之后，如果执行了该命令</font></font><code>ceph osd tree</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，则应该看到执行工作的服务器不再具有执行了上述操作的OSD：</font></font><br>
+<br>
+<pre><code class="bash hljs">root@hv-1 ~ <span class="hljs-comment"># ceph osd tree</span><font></font>
+ID CLASS WEIGHT  TYPE NAME     STATUS REWEIGHT PRI-AFF<font></font>
+-1       0.46857      root default<font></font>
+-3       0.15619      host hv-1<font></font>
+-5       0.15619      host hv-2<font></font>
+-7       0.15619      host hv-3<font></font>
+ 2   ssd 0.15619      osd.2    up     1.00000  1.00000</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在此过程中，我们注意到Ceph集群的状态将进入</font></font><code>HEALTH_WARN</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，并且OSD的数量和可用磁盘空间的数量也会减少。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接下来，将描述如果您要完全停止服务器，并因此将其从Ceph中删除，将需要执行的步骤。</font><font style="vertical-align: inherit;">在这种情况下，请务必记住，</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在关闭服务器之前，必须提取</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">该服务器上的</font><b><font style="vertical-align: inherit;">所有OSD</font></b><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果此服务器上没有剩余的OSD，则在卸下它们后，需要通过</font></font><code>hv-2</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">运行以下命令</font><font style="vertical-align: inherit;">将服务器从OSD卡中排除</font><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd crush rm hv-2</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们</font><font style="vertical-align: inherit;">通过在另一台服务器（即本例中的on </font><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">上运行以下命令，</font><font style="vertical-align: inherit;">将其</font></font><code>mon</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从服务器中</font><font style="vertical-align: inherit;">删除</font><font style="vertical-align: inherit;">：</font></font><code>hv-2</code><font style="vertical-align: inherit;"></font><code>hv-1</code><font style="vertical-align: inherit;"></font><br>
+<br>
+<pre><code class="bash hljs">ceph-deploy mon destroy hv-2</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+之后，您可以停止服务器并继续执行后续操作（重新部署服务器等）。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">案号2。</font><font style="vertical-align: inherit;">已经创建的Ceph集群中的磁盘空间分配</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第二个故事以有关PG（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">布置组</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">的序言开始</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">PG在Ceph中的主要作用主要是Ceph对象的聚集以及OSD中的进一步复制。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Ceph文档</font><font style="vertical-align: inherit;">的</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">相应部分中，</font></a><font style="vertical-align: inherit;">可以找到用于计算所需PG数量的公式</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">在同一地方，还通过具体示例分析了此问题。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此：Ceph操作过程中的常见问题之一是Ceph中的池之间OSD和PG的数量不平衡。</font><font style="vertical-align: inherit;">通常，正确选择PG的值是群集可靠运行的关键，然后我们将考虑相反情况下可能发生的情况。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+选择适量的PG的困难在于两点：</font></font><br>
+<br>
+<ol>
+<li>       PG,   , ,     chunk'.</li>
+<li>   , ,   PG,      .</li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+实际上，会遇到一个更严重的问题：其中一个OSD中发生数据溢出。原因是Ceph在计算可用数据量（您可以</font></font><code>MAX AVAIL</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在</font></font><code>ceph df</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">每个池</font><font style="vertical-align: inherit;">的命令输出中分别</font><font style="vertical-align: inherit;">找到它</font><font style="vertical-align: inherit;">）时，依赖于OSD中的可用数据量。如果至少一个OSD中没有足够的空间，则在所有OSD之间正确分配数据之前，无法写入更多数据。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+值得澄清的是，这些问题</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在Ceph集群的配置阶段已基本解决</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。您可以使用的一种工具是</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ceph PGCalc</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。借助它，可以直观地计算出必需的PG量。但是，您可以在Ceph集群</font><i><font style="vertical-align: inherit;">已经</font></i><font style="vertical-align: inherit;">存在的情况下使用它</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">配置不正确。在此需要说明的是，作为更正工作的一部分，您很可能需要减少PG的数量，并且该功能在较旧的Ceph版本中不可用（仅从</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nautilus</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">版本出现</font><font style="vertical-align: inherit;">）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，让我们想象一下下图：</font></font><code>HEALTH_WARN</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">由于OSD之一中位置的结束，</font><font style="vertical-align: inherit;">群集的状态</font><font style="vertical-align: inherit;">。一个错误将证明这一点</font></font><code>HEALTH_WARN: 1 near full osd</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。下面是克服这种情况的算法。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，您需要在OSD的其余部分之间分发可用数据。在第一种情况下，当我们“排干”结时，我们已经执行了类似的操作-现在唯一的区别是需要稍微减小</font></font><code>reweight</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。例如，在0.95之前：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd reweight osd.<span class="hljs-variable">${ID}</span> 0.95</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这样可以释放OSD中的磁盘空间，并修复ceph运行状况中的错误。</font><font style="vertical-align: inherit;">但是，正如已经提到的，此问题主要是由于初始阶段的Ceph设置不正确而引起的：重新配置非常重要，这样将来就不会出现。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在我们的特定情况下，一切都取决于：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"></font><code>replication_count</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在其中一个游泳池中</font><font style="vertical-align: inherit;">太重要</font><font style="vertical-align: inherit;">了</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 一个池中的PG过多，而另一个池中的PG太小。 </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们将使用已经提到的计算器。它清楚地显示了需要输入的内容，原则上没有什么复杂的。设置了必要的参数后，我们得到以下建议：</font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：如果您从头开始配置Ceph集群，计算器的另一个有用功能是生成命令，这些命令将使用表中列出的参数从头开始创建池。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+最后一栏“ </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">建议的PG计数”</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">可帮助您</font><i><font style="vertical-align: inherit;">进行导航</font></i><font style="vertical-align: inherit;">。在我们的例子中，第二个也是有用的，其中指示了复制参数，因为我们决定更改复制因子。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，首先您需要更改复制设置-首先值得这样做，因为通过减少乘法器，我们可以释放磁盘空间。</font><font style="vertical-align: inherit;">在执行命令期间，您会注意到可用磁盘空间的值将增加：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd pool <span class="hljs-variable">$pool_name</span> <span class="hljs-built_in">set</span> <span class="hljs-variable">$replication_size</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+它的建成后-我们改变参数的值</font></font><code>pg_num</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，并</font></font><code>pgp_num</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如下：</font></font><br>
+<br>
+<pre><code class="bash hljs">ceph osd pool <span class="hljs-built_in">set</span> <span class="hljs-variable">$pool_name</span> pg_num <span class="hljs-variable">$pg_number</span>
+ceph osd pool <span class="hljs-built_in">set</span> <span class="hljs-variable">$pool_name</span> pgp_num <span class="hljs-variable">$pg_number</span></code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">重要提示</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：我们必须依次更改每个池中PG的数量，并且不要更改其他池中的PG的值，直到警告</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">``降级的数据冗余''</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">``n数量的pgs降级''</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">警告消失为止</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您还可以根据</font></font><code>ceph health detail</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font><font style="vertical-align: inherit;">命令的结论来验证一切是否成功</font></font><code>ceph -s</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">案号3。</font><font style="vertical-align: inherit;">虚拟机从LVM迁移到Ceph RBD</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在项目使用安装在租用裸机服务器上的虚拟机的情况下，经常会出现容错存储的问题。并且非常希望此存储中有足够的空间...另一个常见情况：服务器上有一台带有本地存储的虚拟机，您需要扩展磁盘，但无处可扩，因为服务器上没有剩余的可用磁盘空间。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该问题可以通过不同的方式解决-例如，通过迁移到另一台服务器（如果有）或向该服务器添加新磁盘。但是并非总是可以做到这一点，因此从LVM到Ceph的迁移可以很好地解决此问题。通过选择此选项，由于不需要将本地存储从一个虚拟机管理程序迁移到另一个虚拟机管理程序，因此我们还简化了服务器之间的进一步迁移过程。唯一的问题是您必须在工作期间停止VM。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+按照下面给出的配方，</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">该博客中的一篇文章被</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">采用了</font><font style="vertical-align: inherit;">，其指示已在实践中进行了测试。顺便说一下，</font><b><font style="vertical-align: inherit;">这里也描述了无阻碍迁移</font></b><font style="vertical-align: inherit;">的</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">方法。</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">但是，在我们的情况下，根本不需要它，因此我们没有对其进行检查。</font><font style="vertical-align: inherit;">如果这对您的项目至关重要，我们很乐意在评论中了解结果。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们开始实践。</font><font style="vertical-align: inherit;">在该示例中，我们使用virsh，因此使用libvirt。</font><font style="vertical-align: inherit;">首先，确保将数据迁移到的Ceph池已连接到libvirt：</font></font><br>
+<br>
+<pre><code class="bash hljs">virsh pool-dumpxml <span class="hljs-variable">$ceph_pool</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+池描述应包含带有授权数据的Ceph连接数据。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下一步是将LVM映像转换为Ceph RBD。</font><font style="vertical-align: inherit;">运行时主要取决于图像的大小：</font></font><br>
+<br>
+<pre><code class="bash hljs">qemu-img convert -p -O rbd /dev/main/<span class="hljs-variable">$vm_image_name</span> rbd:<span class="hljs-variable">$ceph_pool</span>/<span class="hljs-variable">$vm_image_name</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+转换后，将保留LVM映像，如果您无法将VM迁移到RBD并必须回滚更改，这将很有用。</font><font style="vertical-align: inherit;">另外-为了能够快速回滚更改，我们将备份虚拟机的配置文件：</font></font><br>
+<br>
+<pre><code class="bash hljs">virsh dumpxml <span class="hljs-variable">$vm_name</span> &gt; <span class="hljs-variable">$vm_name</span>.xml<font></font>
+cp <span class="hljs-variable">$vm_name</span>.xml <span class="hljs-variable">$vm_name_backup</span>.xml</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+...，然后编辑原稿（</font></font><code>vm_name.xml</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font><font style="vertical-align: inherit;">查找一个带有磁盘描述的块（以一行开头，以</font></font><code>&lt;disk type='file' device='disk'&gt;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结束</font></font><code>&lt;/disk&gt;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">），并将其转换为以下形式：</font></font><br>
+<br>
+<pre><code class="xml hljs"><span class="hljs-tag">&lt;<span class="hljs-name">disk</span> <span class="hljs-attr">type</span>=<span class="hljs-string">'network'</span> <span class="hljs-attr">device</span>=<span class="hljs-string">'disk'</span>&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-name">driver</span> <span class="hljs-attr">name</span>=<span class="hljs-string">'qemu'</span>/&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-name">auth</span> <span class="hljs-attr">username</span>=<span class="hljs-string">'libvirt'</span>&gt;</span>
+  <span class="hljs-tag">&lt;<span class="hljs-name">secret</span> <span class="hljs-attr">type</span>=<span class="hljs-string">'ceph'</span> <span class="hljs-attr">uuid</span>=<span class="hljs-string">'sec-ret-uu-id'</span>/&gt;</span>
+ <span class="hljs-tag">&lt;/<span class="hljs-name">auth</span>&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-name">source</span> <span class="hljs-attr">protocol</span>=<span class="hljs-string">'rbd'</span> <span class="hljs-attr">name</span>=<span class="hljs-string">'$ceph_pool/$vm_image_name&gt;
+  &lt;host name='</span><span class="hljs-attr">10.0.0.1</span>' <span class="hljs-attr">port</span>=<span class="hljs-string">'6789'</span>/&gt;</span>
+  <span class="hljs-tag">&lt;<span class="hljs-name">host</span> <span class="hljs-attr">name</span>=<span class="hljs-string">'10.0.0.2'</span> <span class="hljs-attr">port</span>=<span class="hljs-string">'6789'</span>/&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-name">source</span>&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-name">target</span> <span class="hljs-attr">dev</span>=<span class="hljs-string">'vda'</span> <span class="hljs-attr">bus</span>=<span class="hljs-string">'virtio'</span>/&gt;</span> 
+<span class="hljs-tag">&lt;<span class="hljs-name">alias</span> <span class="hljs-attr">name</span>=<span class="hljs-string">'virtio-disk0'</span>/&gt;</span>
+<span class="hljs-tag">&lt;<span class="hljs-name">address</span> <span class="hljs-attr">type</span>=<span class="hljs-string">'pci'</span> <span class="hljs-attr">domain</span>=<span class="hljs-string">'0x0000'</span> <span class="hljs-attr">bus</span>=<span class="hljs-string">'0x00'</span> <span class="hljs-attr">slot</span>=<span class="hljs-string">'0x04'</span> <span class="hljs-attr">function</span>=<span class="hljs-string">'0x0'</span>/&gt;</span>
+<span class="hljs-tag">&lt;/<span class="hljs-name">disk</span>&gt;</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们看一些细节：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">该协议</font></font><code>source</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">指示Ceph RBD中的存储地址（这是指示在第一阶段确定的Ceph池和RBD映像名称的地址）。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">该块</font></font><code>secret</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">指示类型</font></font><code>ceph</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，以及用于连接到它的秘密的UUID。</font><font style="vertical-align: inherit;">可以通过命令找到它的uuid </font></font><code>virsh secret-list</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在块</font></font><code>host</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">中，指示了监视器的地址Ceph。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+编辑配置文件并完成LVM到RBD的转换后，您可以应用修改后的配置文件并启动虚拟机：</font></font><br>
+<br>
+<pre><code class="bash hljs">virsh define <span class="hljs-variable">$vm_name</span>.xml<font></font>
+virsh start <span class="hljs-variable">$vm_name</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在该验证虚拟机是否正确启动了：例如，您可以通过SSH或通过连接来找到它</font></font><code>virsh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果虚拟机运行正常，并且没有发现其他问题，则可以删除不再使用的LVM映像：</font></font><br>
+<br>
+<pre><code class="bash hljs">lvremove main/<span class="hljs-variable">$vm_image_name</span></code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结论</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们在实践中遇到了所有描述的案例-我们希望这些说明将有助于其他管理员解决类似的问题。</font><font style="vertical-align: inherit;">如果您有来自Ceph操作经验的评论或其他类似故事，我们将很高兴在评论中看到它们！</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">聚苯乙烯</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+另请参阅我们的博客：</font></font><br>
+<br>
+<ul>
+<li> «<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">    :   Rook  K8s</a>»;</li>
+<li> «<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Rook   Rook —    </a>»;</li>
+<li> «<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Rook — „“    Kubernetes</a>»;</li>
+<li> «<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">    provisioning  Kubernetes   Ceph</a>».</li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN495852/index.html">有关LiveJournal文章的LDA +可视化</a></li>
+<li><a href="../zh-CN495854/index.html">如何摆脱Covid和监视？</a></li>
+<li><a href="../zh-CN495856/index.html">英特尔DevCloud for oneAPI-面向在家的开发人员的云服务</a></li>
+<li><a href="../zh-CN495858/index.html">远程与自我隔离：太空经验帮助地球人</a></li>
+<li><a href="../zh-CN495862/index.html">可信类型-一种保护Web应用程序代码免受XSS攻击的新方法</a></li>
+<li><a href="../zh-CN495880/index.html">该书“头先。学习围棋»</a></li>
+<li><a href="../zh-CN495882/index.html">2020年3月9种最佳开源资源</a></li>
+<li><a href="../zh-CN495884/index.html">使用递归神经网络的时间序列预测</a></li>
+<li><a href="../zh-CN495888/index.html">PyCon俄罗斯已经为未来的演讲者开放了CFP。参与表格和预期主题</a></li>
+<li><a href="../zh-CN495890/index.html">在Docker Swarm中配置Nginx / LetsEncrypt捆绑软件</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

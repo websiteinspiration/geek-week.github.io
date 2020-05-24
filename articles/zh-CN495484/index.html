@@ -1,0 +1,617 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌋 💔 👩🏾‍🎨 Unix管道的实现方式 🚧 ⛎ 🤙🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="本文介绍了Unix内核中管道的实现。我对最近一篇题为“ 管道如何在Unix上工作？”的文章感到失望。“ 不是关于内部设备。我变得很感兴趣，我将自己埋藏在旧资料中以寻找答案。
+ 
+ 我们在说啥啊？
+ 管道-“可能是Unix上最重要的发明”-是Unix将小程序组合在一起的基本哲学的基本特征，以及熟悉的命...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Unix管道的实现方式</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/495484/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/ge/sl/9i/gesl9iqjuhatlmgyrdps28zgje0.jpeg"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+本文介绍了Unix内核中管道的实现。</font><font style="vertical-align: inherit;">我对最近一篇题为“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管道如何在Unix上工作？”的</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">文章感到失望</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">。</font></a><font style="vertical-align: inherit;">“ </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">不是</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">关于内部设备。</font><font style="vertical-align: inherit;">我变得很感兴趣，我将自己埋藏在旧资料中以寻找答案。</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们在说啥啊？</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+管道-“可能是Unix上最重要的发明”-是Unix将小程序组合在一起的基本哲学的基本特征，以及熟悉的命令行：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">$ echo hello | wc -c<font></font>
+6<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此功能取决于内核提供的系统调用</font></font><code>pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管道（7）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管道（2）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">文档页面上对此进行了描述</font><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">传送带提供单向进程间通信通道。</font><font style="vertical-align: inherit;">流水线具有一个输入（写端）和一个输出（读端）。</font><font style="vertical-align: inherit;">可以读取写入管道输入的数据。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用</font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">返回两个文件描述符</font><font style="vertical-align: inherit;">的调用</font><font style="vertical-align: inherit;">来</font><font style="vertical-align: inherit;">创建管道</font><font style="vertical-align: inherit;">：一个引用管道的输入，第二个引用输出。</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上面命令的跟踪结果演示了管道的创建以及从一个进程到另一个进程的数据流：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">$ strace -qf -e execve,pipe,dup2,read,write \<font></font>
+    sh -c 'echo hello | wc -c'<font></font>
+<font></font>
+execve("/bin/sh", ["sh", "-c", "echo hello | wc -c"], …)<font></font>
+pipe([3, 4])                            = 0<font></font>
+[pid 2604795] dup2(4, 1)                = 1<font></font>
+[pid 2604795] write(1, "hello\n", 6)    = 6<font></font>
+[pid 2604796] dup2(3, 0)                = 0<font></font>
+[pid 2604796] execve("/usr/bin/wc", ["wc", "-c"], …)<font></font>
+[pid 2604796] read(0, "hello\n", 16384) = 6<font></font>
+[pid 2604796] write(1, "6\n", 2)        = 2<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+父进程调用</font></font><code>pipe()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">以获取附加的文件描述符。</font><font style="vertical-align: inherit;">一个子进程写入一个描述符，而另一个进程从另一个描述符读取相同的数据。</font><font style="vertical-align: inherit;">包装器使用dup2“重命名”描述符3和4来匹配stdin和stdout。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果没有管道，则外壳程序必须将一个进程的结果写入文件，然后将其传输到另一个进程，以便从文件中读取数据。</font><font style="vertical-align: inherit;">结果，我们将花费更多的资源和磁盘空间。</font><font style="vertical-align: inherit;">但是，管道是好的，不仅因为它们避免使用临时文件：</font></font><br>
+<br>
+<blockquote>      ,  <code>read(2)</code>    ,     .       ,  <code>write(2)</code>    ,           .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+像POSIX要求一样，这是一个重要的属性：写入管道的最大</font></font><code>PIPE_BUF</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">字节数（至少512）必须是原子的，以便进程可以通过管道与常规文件（不提供此类保证）相同的方式相互通信。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用常规文件时，一个进程可以将其所有输出数据写入该文件，然后将其传输到另一个进程。</font><font style="vertical-align: inherit;">或者进程可以使用外部信令机制（例如信号量）在硬并行化模式下运行，以相互告知写入或读取已完成。</font><font style="vertical-align: inherit;">传送带为我们省去了所有麻烦。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们在找什么？</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我将用手指进行解释，以使您更容易想象传送带的工作方式。</font><font style="vertical-align: inherit;">您将需要在内存中分配一个缓冲区和一些状态。</font><font style="vertical-align: inherit;">您将需要一些函数来添加和删除缓冲区中的数据。</font><font style="vertical-align: inherit;">在对文件描述符的读写操作期间，将需要一些方法来调用函数。</font><font style="vertical-align: inherit;">并且需要锁来实现上述特殊行为。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，我们准备在灯的强光下询问内核的源代码，以确认或驳斥我们模糊的思维模型。</font><font style="vertical-align: inherit;">但始终要为意外做好准备。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们在找什么</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我不知道</font><font style="vertical-align: inherit;">带有Unix 6源代码</font><font style="vertical-align: inherit;">的著名书籍“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lions book</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”的</font><font style="vertical-align: inherit;">副本在哪里</font><font style="vertical-align: inherit;">，但是由于有了</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix Heritage Society，</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您</font><font style="vertical-align: inherit;">甚至</font><font style="vertical-align: inherit;">可以在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">源代码中</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在线搜索</font><font style="vertical-align: inherit;">Unix的较旧版本。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在TUHS档案中徘徊类似于参观博物馆。</font><font style="vertical-align: inherit;">我们可以回顾一下我们的共同历史，我尊重多年来为从旧纸盒和打印输出中逐点回收所有这些材料所做的努力。</font><font style="vertical-align: inherit;">我敏锐地意识到仍然缺少的那些片段。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+满足了我们对传送带古代历史的好奇心之后，我们可以看一下现代的芯子进行比较。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+顺便说一句，表中</font></font><code>pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">是系统调用号码42 </font></font><code>sysent[]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">巧合？</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">传统的Unix内核（1970–1974）</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我</font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PDP-7 Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（1970年1月），</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix的第一版</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（1971年11月）和</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第二版</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的不完整源代码</font><font style="vertical-align: inherit;">（1972年6月）中都</font><font style="vertical-align: inherit;">找不到踪迹</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+TUHS声称</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix的第三版</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（1973年2月）是带有管道的第一版：</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix的第三版是使用汇编语言编写的内核的最新版本，而第一版则使用管道。</font><font style="vertical-align: inherit;">1973年，做了很多工作来改进第三版，用C重写了内核，因此出现了第四版Unix。</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一位读者浏览了一份文件，道格·麦克罗伊（Doug McIlroy）提出了``通过花园软管的原理连接程序''的想法。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/c6c/8c2/c8c/c6c8c2c8c5720d79227246af98c9b8d5.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在布莱恩·克尼根（Brian Kernighan）的著作《</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix：历史和回忆录</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">》中，在传送带出现的历史中，还提到了该文档：“ ...它在我贝尔实验室的办公室墙上挂了30年。”这</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">是对麦克罗伊的采访</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，以及</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">麦克罗伊在2014年撰写的工作中的</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">另一个故事</font><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<blockquote>  Unix,        ,  ,  ,   - ,     ,       .  ,   . ,  ,  ,       .                ?           «»     , , -, : «  !».<br>
+<br>
+ .        ,    ,       (    ),     .          .              .      API          ,      .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+不幸的是，第三版Unix的内核源代码丢失了。尽管我们拥有</font><font style="vertical-align: inherit;">1973年11月发布的</font><font style="vertical-align: inherit;">用C编写的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第四版</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内核的源代码</font><font style="vertical-align: inherit;">，但它在正式发布之前已发布了几个月，并且不包含管道实现。遗憾的是，传说中的Unix函数的源代码可能永远丢失了。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们拥有</font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">两个版本</font><font style="vertical-align: inherit;">的文档文本</font><font style="vertical-align: inherit;">，因此您可以从搜索文档的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第三版</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">开始</font><font style="vertical-align: inherit;">（对于某些单词，“手动”下划线，一串文字^ H，后跟下划线！）。该原型是</font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用汇编器编写的，仅返回一个文件描述符，但是已经提供了预期的基本功能：</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"></font><u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管道</font></font></u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">系统调用</font><font style="vertical-align: inherit;">创建称为管道的输出输入机制。</font><font style="vertical-align: inherit;">返回的文件描述符可用于读取和写入操作。</font><font style="vertical-align: inherit;">将某些内容写入管道时，最多缓冲504字节的数据，此后暂停写入过程。</font><font style="vertical-align: inherit;">从管道读取时，将获取缓冲的数据。</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+到第二年，用C语言重写了内核，</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第四版中的pipe（2）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通过原型“ </font></font><code>pipe(fildes)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">” </font><font style="vertical-align: inherit;">找到了它的现代外观</font><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<blockquote>  <i>pipe</i>    ,   .          .  -   ,   ,   r1 (. fildes[1]),    4096  ,     .     ,   r0 (. fildes[0]),  .<br>
+<br>
+,      ( )   (   <i>fork</i>)         <i>read</i>  <i>write</i>.<br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Shell具有用于定义通过管道连接的线性进程数组的语法。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从只有一端（所有写入文件描述符均已关闭）的空管道（不包含缓冲数据）进行的读取调用将返回“文件末尾”。</font><font style="vertical-align: inherit;">在类似情况下的录音呼叫将被忽略。</font></font></blockquote><br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">尚存</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+的最早</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">的管道实现</font></a><font style="vertical-align: inherit;">可追溯到</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix的第五版</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（1974年6月），但与下一版本中出现的版本几乎相同。</font><font style="vertical-align: inherit;">仅添加了注释，因此可以跳过第五版。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第六版Unix（1975）</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们开始阅读</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第六版</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Unix源代码</font><font style="vertical-align: inherit;">（1975年5月）。</font><font style="vertical-align: inherit;">很大程度上要感谢</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lions，</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">发现它比早期版本的源代码要容易得多：</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">多年来，</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lions</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">是Bell实验室之外唯一可用的Unix核心文档。</font><font style="vertical-align: inherit;">尽管第六版的许可证允许教师使用其源代码，但第七版的许可证排除了这种可能性，因此该书以非法打字副本的形式分发。</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+今天，您可以购买本书的重印本，并在复印机上为学生盖上封面。还要感谢Warren Tumi（发起了TUHS项目），您可以下载</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">包含第六版源代码</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">PDF文件</font></a><font style="vertical-align: inherit;">。我想让您了解创建文件花费了多少精力：</font></font><br>
+<br>
+<blockquote> 15       ,   <i>Lions</i>,             . TUHS   ,         .   1988-      9 ,        PDP11.   ,   ,      /usr/src/,       1979- ,     .        PWB,   .<br>
+<br>
+            .     ,    ,    +=   =+. -  ,  -   ,    .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+今天，我们可以在TUHS上在线阅读</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">存档中</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第六版的源代码</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">，Dennis Ritchie</font></a><font style="vertical-align: inherit;">可以访问该源代码</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+顺便说一下，乍看之下，在Kernigan和Richie时期之前，C代码的主要特征是它的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">简洁</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。并非经常，我无需进行大量编辑即可嵌入代码段，以适应网站上相对狭窄的显示区域。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/usr/sys/ken/pipe.c</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的开头</font><font style="vertical-align: inherit;">有一个解释性注释（是的，还有</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ usr / sys / dmr</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Max allowable buffering per pipe.<font></font>
+ * This is also the max size of the<font></font>
+ * file created to implement the pipe.<font></font>
+ * If this size is bigger than 4096,<font></font>
+ * pipes will be implemented in LARG<font></font>
+ * files, which is probably not good.<font></font>
+ */<font></font>
+#define    PIPSIZ    4096<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+自第四版以来，缓冲区大小未更改。但是在这里，没有任何公共文档，我们看到一旦管道使用文件作为备份存储！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于LARG文件，它们对应</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">于LARG inode标志</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，“高级寻址算法”使用该</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">标志</font></a><font style="vertical-align: inherit;">来处理</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">间接块</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，以支持更大的文件系统。由于Ken表示最好不要使用它们，因此我很乐意接受他的承诺。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是真实的系统调用</font></font><code>pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * The sys-pipe entry.<font></font>
+ * Allocate an inode on the root device.<font></font>
+ * Allocate 2 file structures.<font></font>
+ * Put it all together with flags.<font></font>
+ */<font></font>
+pipe()<font></font>
+{<font></font>
+    register *ip, *rf, *wf;<font></font>
+    int r;<font></font>
+<font></font>
+    ip = ialloc(rootdev);<font></font>
+    if(ip == NULL)<font></font>
+        return;<font></font>
+    rf = falloc();<font></font>
+    if(rf == NULL) {<font></font>
+        iput(ip);<font></font>
+        return;<font></font>
+    }<font></font>
+    r = u.u_ar0[R0];<font></font>
+    wf = falloc();<font></font>
+    if(wf == NULL) {<font></font>
+        rf-&gt;f_count = 0;<font></font>
+        u.u_ofile[r] = NULL;<font></font>
+        iput(ip);<font></font>
+        return;<font></font>
+    }<font></font>
+    u.u_ar0[R1] = u.u_ar0[R0]; /* wf's fd */<font></font>
+    u.u_ar0[R0] = r;           /* rf's fd */<font></font>
+    wf-&gt;f_flag = FWRITE|FPIPE;<font></font>
+    wf-&gt;f_inode = ip;<font></font>
+    rf-&gt;f_flag = FREAD|FPIPE;<font></font>
+    rf-&gt;f_inode = ip;<font></font>
+    ip-&gt;i_count = 2;<font></font>
+    ip-&gt;i_flag = IACC|IUPD;<font></font>
+    ip-&gt;i_mode = IALLOC;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+评论清楚地描述了这里发生的事情。但是要理解代码并不容易，部分原因是借助« </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结构用户u</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> »的方式，并注册</font></font><code>R0</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><code>R1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">传输了系统调用的参数以及返回值。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们尝试使用</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ialloc（）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在磁盘上放置</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">inode（inode </font></font></a><font style="vertical-align: inherit;"><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">）</font></a><font style="vertical-align: inherit;">，并使用</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">falloc（）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在内存中放置两个</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">文件</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。如果一切顺利，那么我们将设置标志以将这些文件定义为管道的两端，将它们指向同一inode（其引用计数为2），并将inode标记为已更改和已使用。注意对</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">iput（）的</font></a><font style="vertical-align: inherit;">调用</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在错误路径中减少新inode中的引用计数。</font></font><br>
+<br>
+<code>pipe()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">必须通过</font></font><code>R0</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并</font></font><code>R1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">返回用于读取和写入的文件描述符编号。</font></font><code>falloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">返回指向文件结构的指针，但也通过</font></font><code>u.u_ar0[R0]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">文件描述符</font><font style="vertical-align: inherit;">“返回” </font><font style="vertical-align: inherit;">。即，该代码保存到</font></font><code>r</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">文件描述符中以进行读取，并从</font></font><code>u.u_ar0[R0]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第二次调用后</font><font style="vertical-align: inherit;">直接分配一个描述符以进行写入</font></font><code>falloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我们在创建管道时设置</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+的标志</font></font><code>FPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">控制</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sys2.c中rdwr（）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">函数的行为，该函数</font><font style="vertical-align: inherit;">调用特定的I / O I / O例程：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * common code for read and write calls:<font></font>
+ * check permissions, set base, count, and offset,<font></font>
+ * and switch out to readi, writei, or pipe code.<font></font>
+ */<font></font>
+rdwr(mode)<font></font>
+{<font></font>
+    register *fp, m;<font></font>
+<font></font>
+    m = mode;<font></font>
+    fp = getf(u.u_ar0[R0]);<font></font>
+        /* … */<font></font>
+<font></font>
+    if(fp-&gt;f_flag&amp;FPIPE) {<font></font>
+        if(m==FREAD)<font></font>
+            readp(fp); else<font></font>
+            writep(fp);<font></font>
+    }<font></font>
+        /* … */<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后，函数</font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从管道读取数据。</font><font style="vertical-align: inherit;">但是，从更好地跟踪实现</font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">再次，由于参数传递协议的细节，代码变得更加复杂，但是一些细节可以省略。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">writep(fp)<font></font>
+{<font></font>
+    register *rp, *ip, c;<font></font>
+<font></font>
+    rp = fp;<font></font>
+    ip = rp-&gt;f_inode;<font></font>
+    c = u.u_count;<font></font>
+<font></font>
+loop:<font></font>
+    /* If all done, return. */<font></font>
+<font></font>
+    plock(ip);<font></font>
+    if(c == 0) {<font></font>
+        prele(ip);<font></font>
+        u.u_count = 0;<font></font>
+        return;<font></font>
+    }<font></font>
+<font></font>
+    /*<font></font>
+     * If there are not both read and write sides of the<font></font>
+     * pipe active, return error and signal too.<font></font>
+     */<font></font>
+<font></font>
+    if(ip-&gt;i_count &lt; 2) {<font></font>
+        prele(ip);<font></font>
+        u.u_error = EPIPE;<font></font>
+        psignal(u.u_procp, SIGPIPE);<font></font>
+        return;<font></font>
+    }<font></font>
+<font></font>
+    /*<font></font>
+     * If the pipe is full, wait for reads to deplete<font></font>
+     * and truncate it.<font></font>
+     */<font></font>
+<font></font>
+    if(ip-&gt;i_size1 == PIPSIZ) {<font></font>
+        ip-&gt;i_mode =| IWRITE;<font></font>
+        prele(ip);<font></font>
+        sleep(ip+1, PPIPE);<font></font>
+        goto loop;<font></font>
+    }<font></font>
+<font></font>
+    /* Write what is possible and loop back. */<font></font>
+<font></font>
+    u.u_offset[0] = 0;<font></font>
+    u.u_offset[1] = ip-&gt;i_size1;<font></font>
+    u.u_count = min(c, PIPSIZ-u.u_offset[1]);<font></font>
+    c =- u.u_count;<font></font>
+    writei(ip);<font></font>
+    prele(ip);<font></font>
+    if(ip-&gt;i_mode&amp;IREAD) {<font></font>
+        ip-&gt;i_mode =&amp; ~IREAD;<font></font>
+        wakeup(ip+2);<font></font>
+    }<font></font>
+    goto loop;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们想将字节写入管道的输入</font></font><code>u.u_count</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">首先，我们需要锁定inode（请参见</font></font><code>plock</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>prele</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后检查inode引用计数。</font><font style="vertical-align: inherit;">当管道的两端都保持打开状态时，计数器应为2。我们保留一个链接（out </font></font><code>rp-&gt;f_inode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">），因此，如果计数器小于2，则应表示读取过程已经关闭了管道的末端。</font><font style="vertical-align: inherit;">换句话说，我们正在尝试在封闭的管道中进行编写，这是一个错误。</font><font style="vertical-align: inherit;">错误代码</font></font><code>EPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和信号首先</font></font><code>SIGPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">出现在Unix的第六版中。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是，即使输送机是打开的，也可以装满。在这种情况下，我们将移开锁并进入睡眠状态，以希望另一个进程将从管道中读取并释放出足够的空间。唤醒后，我们将回到开头，再次锁定锁并开始新的录制周期。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果管道中有足够的可用空间，则可以使用</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">writei（）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">向其中写入数据</font><font style="vertical-align: inherit;">。</font></font><code>i_size1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">inode中</font><font style="vertical-align: inherit;">的参数</font><font style="vertical-align: inherit;">（流水线可以为0，可以为空）指示它已经包含的数据的结尾。如果有足够的记录空间，我们可以填补输送</font></font><code>i_size1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">到</font></font><code>PIPESIZ</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。然后，我们删除该锁，并尝试唤醒任何正在等待机会从管道读取的进程。我们从头开始，看看是否设法写入所需的字节数。如果失败，则我们开始一个新的记录周期。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常</font></font><code>i_mode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，使用inode </font><font style="vertical-align: inherit;">参数</font><font style="vertical-align: inherit;">存储权限</font></font><code>r</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，</font></font><code>w</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并且</font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。但是，在管道的情况下，我们的信号，某些进程正在等待编写或使用位读</font></font><code>IREAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和，</font></font><code>IWRITE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分别。一个进程设置一个标志并调用</font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，并且预计将来还会有其他进程调用</font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+真正的魔法发生在</font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和中</font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。它们在</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">slp.c</font></a><font style="vertical-align: inherit;">中实现</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，著名评论的来源，“您不应理解这一点。” </font><font style="vertical-align: inherit;">幸运的是，我们不需要了解代码，只需查看一些注释即可：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Give up the processor till a wakeup occurs<font></font>
+ * on chan, at which time the process<font></font>
+ * enters the scheduling queue at priority pri.<font></font>
+ * The most important effect of pri is that when<font></font>
+ * pri&lt;0 a signal cannot disturb the sleep;<font></font>
+ * if pri&gt;=0 signals will be processed.<font></font>
+ * Callers of this routine must be prepared for<font></font>
+ * premature return, and check that the reason for<font></font>
+ * sleeping has gone away.<font></font>
+ */<font></font>
+sleep(chan, pri) /* … */<font></font>
+<font></font>
+/*<font></font>
+ * Wake up all processes sleeping on chan.<font></font>
+ */<font></font>
+wakeup(chan) /* … */<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+调用</font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">特定通道的</font><font style="vertical-align: inherit;">进程</font><font style="vertical-align: inherit;">稍后可能会被另一个调用</font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同一通道的</font><font style="vertical-align: inherit;">进程唤醒</font><font style="vertical-align: inherit;">。</font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并</font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通过配对呼叫协调他们的行动。</font><font style="vertical-align: inherit;">请注意，</font><font style="vertical-align: inherit;">通话时</font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">始终优先</font><font style="vertical-align: inherit;">，因此每个人都</font><font style="vertical-align: inherit;">可以打断信号。</font><font style="vertical-align: inherit;">
+现在我们掌握了所有功能</font><font style="vertical-align: inherit;">：</font></font><code>PPIPE</code><font style="vertical-align: inherit;"></font><code>sleep()</code><font style="vertical-align: inherit;"></font><code>sleep()</code><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><code>readp()</code><font style="vertical-align: inherit;"></font><br>
+<br>
+<pre><code class="plaintext hljs">readp(fp)<font></font>
+int *fp;<font></font>
+{<font></font>
+    register *rp, *ip;<font></font>
+<font></font>
+    rp = fp;<font></font>
+    ip = rp-&gt;f_inode;<font></font>
+<font></font>
+loop:<font></font>
+    /* Very conservative locking. */<font></font>
+<font></font>
+    plock(ip);<font></font>
+<font></font>
+    /*<font></font>
+     * If the head (read) has caught up with<font></font>
+     * the tail (write), reset both to 0.<font></font>
+     */<font></font>
+<font></font>
+    if(rp-&gt;f_offset[1] == ip-&gt;i_size1) {<font></font>
+        if(rp-&gt;f_offset[1] != 0) {<font></font>
+            rp-&gt;f_offset[1] = 0;<font></font>
+            ip-&gt;i_size1 = 0;<font></font>
+            if(ip-&gt;i_mode&amp;IWRITE) {<font></font>
+                ip-&gt;i_mode =&amp; ~IWRITE;<font></font>
+                wakeup(ip+1);<font></font>
+            }<font></font>
+        }<font></font>
+<font></font>
+        /*<font></font>
+         * If there are not both reader and<font></font>
+         * writer active, return without<font></font>
+         * satisfying read.<font></font>
+         */<font></font>
+<font></font>
+        prele(ip);<font></font>
+        if(ip-&gt;i_count &lt; 2)<font></font>
+            return;<font></font>
+        ip-&gt;i_mode =| IREAD;<font></font>
+        sleep(ip+2, PPIPE);<font></font>
+        goto loop;<font></font>
+    }<font></font>
+<font></font>
+    /* Read and return */<font></font>
+<font></font>
+    u.u_offset[0] = 0;<font></font>
+    u.u_offset[1] = rp-&gt;f_offset[1];<font></font>
+    readi(ip);<font></font>
+    rp-&gt;f_offset[1] = u.u_offset[1];<font></font>
+    prele(ip);<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可能会发现从下至上更容易阅读此功能。当管道中有一些数据时，通常使用“读取和返回”分支。在这种情况下，我们使用</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">readi（）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从当前</font></font><code>f_offset</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">读取</font><font style="vertical-align: inherit;">开始读取尽可能多的数据</font><font style="vertical-align: inherit;">，然后更新相应偏移量的值。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在后续读取中，如果读取偏移量已达到</font></font><code>i_size1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">inode </font><font style="vertical-align: inherit;">的值，则管道将为空</font><font style="vertical-align: inherit;">。我们将位置重置为0，并尝试唤醒要写入管道的任何进程。我们知道，当输送机装满时，它</font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">会睡着</font></font><code>ip+1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。现在管道是空的，我们可以将其唤醒，以使其恢复记录周期。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果没有什么可以阅读的，它</font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">可以设置一个标志</font></font><code>IREAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并入睡</font></font><code>ip+2</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我们知道</font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">当他将一些数据写入管道时</font><font style="vertical-align: inherit;">会唤醒他什么</font><font style="vertical-align: inherit;">。</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">readi（）和writei（）</font></a></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+上的注释</font><font style="vertical-align: inherit;">将有助于理解</font><font style="vertical-align: inherit;">，我们可以像对待普通I / O函数一样对待它们</font><font style="vertical-align: inherit;">，而不是通过“ </font><font style="vertical-align: inherit;">” </font><font style="vertical-align: inherit;">传递参数</font><font style="vertical-align: inherit;">，该函数接受文件，位置，内存中的缓冲区并计算要读取或写入的字节数。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"></font><code>u</code><font style="vertical-align: inherit;"></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Read the file corresponding to<font></font>
+ * the inode pointed at by the argument.<font></font>
+ * The actual read arguments are found<font></font>
+ * in the variables:<font></font>
+ *    u_base        core address for destination<font></font>
+ *    u_offset    byte offset in file<font></font>
+ *    u_count        number of bytes to read<font></font>
+ *    u_segflg    read to kernel/user<font></font>
+ */<font></font>
+readi(aip)<font></font>
+struct inode *aip;<font></font>
+/* … */<font></font>
+<font></font>
+/*<font></font>
+ * Write the file corresponding to<font></font>
+ * the inode pointed at by the argument.<font></font>
+ * The actual write arguments are found<font></font>
+ * in the variables:<font></font>
+ *    u_base        core address for source<font></font>
+ *    u_offset    byte offset in file<font></font>
+ *    u_count        number of bytes to write<font></font>
+ *    u_segflg    write to kernel/user<font></font>
+ */<font></font>
+writei(aip)<font></font>
+struct inode *aip;<font></font>
+/* … */<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+至于“保守”的锁，然后</font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">块索引节点，只要他们完成工作或没有得到结果（即原因</font></font><code>wakeup</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font><code>plock()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">它们的</font></font><code>prele()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">工作原理很简单：使用一组不同的调用，</font></font><code>sleep</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并</font></font><code>wakeup</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">允许我们唤醒所有需要删除的锁的进程：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Lock a pipe.<font></font>
+ * If its already locked, set the WANT bit and sleep.<font></font>
+ */<font></font>
+plock(ip)<font></font>
+int *ip;<font></font>
+{<font></font>
+    register *rp;<font></font>
+<font></font>
+    rp = ip;<font></font>
+    while(rp-&gt;i_flag&amp;ILOCK) {<font></font>
+        rp-&gt;i_flag =| IWANT;<font></font>
+        sleep(rp, PPIPE);<font></font>
+    }<font></font>
+    rp-&gt;i_flag =| ILOCK;<font></font>
+}<font></font>
+<font></font>
+/*<font></font>
+ * Unlock a pipe.<font></font>
+ * If WANT bit is on, wakeup.<font></font>
+ * This routine is also used to unlock inodes in general.<font></font>
+ */<font></font>
+prele(ip)<font></font>
+int *ip;<font></font>
+{<font></font>
+    register *rp;<font></font>
+<font></font>
+    rp = ip;<font></font>
+    rp-&gt;i_flag =&amp; ~ILOCK;<font></font>
+    if(rp-&gt;i_flag&amp;IWANT) {<font></font>
+        rp-&gt;i_flag =&amp; ~IWANT;<font></font>
+        wakeup(rp);<font></font>
+    }<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一开始我不明白为什么它</font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在通话</font></font><code>prele(ip)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">之前</font><font style="vertical-align: inherit;">没有</font><font style="vertical-align: inherit;">通话</font></font><code>wakeup(ip+1)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">导致循环</font><font style="vertical-align: inherit;">的第一件事</font><font style="vertical-align: inherit;">是，</font></font><code>plock(ip)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如果</font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">尚未删除其块，</font><font style="vertical-align: inherit;">则会</font><font style="vertical-align: inherit;">导致死锁</font><font style="vertical-align: inherit;">，因此代码必须以某种方式正常工作。如果您看一下它</font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，很显然他只将睡眠过程标记为可以执行，因此将来它会</font></font><code>sched()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">真正启动它。因此，它</font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">会导致</font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，解锁，设置</font></font><code>IREAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和调用</font></font><code>sleep(ip+2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-在</font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">恢复周期</font><font style="vertical-align: inherit;">之前所有这些</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这样就完成了第六版中有关输送机的描述。简单的代码，影响深远。</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix第七版</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（1979年1月）是新的主要发行版（四年后），其中出现了许多新的应用程序和内核属性。</font><font style="vertical-align: inherit;">同样，在使用类型转换，union'ov和类型化结构指针方面也发生了重大变化。</font><font style="vertical-align: inherit;">但是，</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管道代码</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并没有太大变化。</font><font style="vertical-align: inherit;">我们可以跳过此版本。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Xv6，一个简单的Unix形内核</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix </font><font style="vertical-align: inherit;">
+的</font><font style="vertical-align: inherit;">第六版影响了</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Xv6</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内核</font><font style="vertical-align: inherit;">的</font><font style="vertical-align: inherit;">创建</font><font style="vertical-align: inherit;">，但是它是用现代C语言编写的，可以在x86处理器上运行。代码很容易阅读，很清楚。此外，与带有TUHS的Unix源不同，您可以对其进行编译，修改并在PDP 11/70之外的其他程序上运行。因此，该内核已在大学中广泛用作操作系统的教学材料。来源</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在Github上</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该代码包含</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe.c的</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一种清晰且经过深思熟虑的实现，</font><font style="vertical-align: inherit;">由内存中的缓冲区而不是磁盘上的inode备份。在这里，我仅给出“结构管道”和函数的定义</font></font><code>pipealloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">#define PIPESIZE 512<font></font>
+<font></font>
+struct pipe {<font></font>
+  struct spinlock lock;<font></font>
+  char data[PIPESIZE];<font></font>
+  uint nread;     // number of bytes read<font></font>
+  uint nwrite;    // number of bytes written<font></font>
+  int readopen;   // read fd is still open<font></font>
+  int writeopen;  // write fd is still open<font></font>
+};<font></font>
+<font></font>
+int<font></font>
+pipealloc(struct file **f0, struct file **f1)<font></font>
+{<font></font>
+  struct pipe *p;<font></font>
+<font></font>
+  p = 0;<font></font>
+  *f0 = *f1 = 0;<font></font>
+  if((*f0 = filealloc()) == 0 || (*f1 = filealloc()) == 0)<font></font>
+    goto bad;<font></font>
+  if((p = (struct pipe*)kalloc()) == 0)<font></font>
+    goto bad;<font></font>
+  p-&gt;readopen = 1;<font></font>
+  p-&gt;writeopen = 1;<font></font>
+  p-&gt;nwrite = 0;<font></font>
+  p-&gt;nread = 0;<font></font>
+  initlock(&amp;p-&gt;lock, "pipe");<font></font>
+  (*f0)-&gt;type = FD_PIPE;<font></font>
+  (*f0)-&gt;readable = 1;<font></font>
+  (*f0)-&gt;writable = 0;<font></font>
+  (*f0)-&gt;pipe = p;<font></font>
+  (*f1)-&gt;type = FD_PIPE;<font></font>
+  (*f1)-&gt;readable = 0;<font></font>
+  (*f1)-&gt;writable = 1;<font></font>
+  (*f1)-&gt;pipe = p;<font></font>
+  return 0;<font></font>
+<font></font>
+ bad:<font></font>
+  if(p)<font></font>
+    kfree((char*)p);<font></font>
+  if(*f0)<font></font>
+    fileclose(*f0);<font></font>
+  if(*f1)<font></font>
+    fileclose(*f1);<font></font>
+  return -1;<font></font>
+}<font></font>
+</code></pre><br>
+<code>pipealloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">设置执行，其包括功能的其余部分的状态</font></font><code>piperead()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，</font></font><code>pipewrite()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><code>pipeclose()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">实际的系统调用</font></font><code>sys_pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">是在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sysfile.c中</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实现的包装器</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我建议阅读其所有代码。</font><font style="vertical-align: inherit;">复杂度是在第六版的源代码级别，但是它更容易阅读并且更令人愉快。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Linux 0.01</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以找到Linux 0.01的源代码。</font><font style="vertical-align: inherit;">研究他</font></font><code>fs</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font><font style="vertical-align: inherit;">的管道的实施将具有指导意义</font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">在这里，inode用于表示管道，但是管道本身是用现代C语言编写的。如果您掌握了第六版代码，那么您将不会遇到困难。</font><font style="vertical-align: inherit;">该函数的外观</font></font><code>write_pipe()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如下：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">int write_pipe(struct m_inode * inode, char * buf, int count)<font></font>
+{<font></font>
+    char * b=buf;<font></font>
+<font></font>
+    wake_up(&amp;inode-&gt;i_wait);<font></font>
+    if (inode-&gt;i_count != 2) { /* no readers */<font></font>
+        current-&gt;signal |= (1&lt;&lt;(SIGPIPE-1));<font></font>
+        return -1;<font></font>
+    }<font></font>
+    while (count--&gt;0) {<font></font>
+        while (PIPE_FULL(*inode)) {<font></font>
+            wake_up(&amp;inode-&gt;i_wait);<font></font>
+            if (inode-&gt;i_count != 2) {<font></font>
+                current-&gt;signal |= (1&lt;&lt;(SIGPIPE-1));<font></font>
+                return b-buf;<font></font>
+            }<font></font>
+            sleep_on(&amp;inode-&gt;i_wait);<font></font>
+        }<font></font>
+        ((char *)inode-&gt;i_size)[PIPE_HEAD(*inode)] =<font></font>
+            get_fs_byte(b++);<font></font>
+        INC_PIPE( PIPE_HEAD(*inode) );<font></font>
+        wake_up(&amp;inode-&gt;i_wait);<font></font>
+    }<font></font>
+    wake_up(&amp;inode-&gt;i_wait);<font></font>
+    return b-buf;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+即使不查看结构的定义，您也可以弄清楚如何使用inode引用计数器检查写操作是否导致</font></font><code>SIGPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">除字节工作外，此功能还很容易与上述想法相关联。</font><font style="vertical-align: inherit;">甚至逻辑</font></font><code>sleep_on</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>wake_up</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">看起来也不那么陌生。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">现代Linux，FreeBSD，NetBSD，OpenBSD内核</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我很快浏览了一些现代内核。他们都没有磁盘实现（不足为奇）。 Linux有其自己的实现。尽管三个现代的BSD内核都包含基于John Dyson编写的代码的实现，但是多年来，它们之间已经变得太不相同了。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要读取</font></font><code>fs</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（在Linux上）或</font></font><code>sys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>kern</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>sys_pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（在* BSD），需要真正的奉献。在当今的代码中，性能和对矢量和异步I / O等功能的支持非常重要。以及内存分配，锁和内核配置的详细信息-所有这些都非常不同。这不是大学开设操作系统入门课程所需要的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+无论如何，</font><font style="vertical-align: inherit;">在所有这些非常不同的现代内核中</font><font style="vertical-align: inherit;">，我发现了几个旧模式（例如，</font><font style="vertical-align: inherit;">在写入封闭的管道时</font><font style="vertical-align: inherit;">生成</font></font><code>SIGPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并返回）</font><font style="vertical-align: inherit;">对我来说很有趣</font></font><code>EPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我可能永远不会看到实时的PDP-11计算机，但是从我出生前几年编写的代码中仍然可以学到很多东西。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由Divi Kapoor在2011年撰写的文章“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管道和FIFO的Linux内核实现</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”概述了（到目前为止）管道如何在Linux上工作。</font><font style="vertical-align: inherit;">而</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最近的Linux提交</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">说明其能力超过临时文件的能力流水线交互模型; </font><font style="vertical-align: inherit;">并且还显示了管道与第六版Unix内核中的“非常保守的锁定”相去甚远。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN495472/index.html">转向素食主义者并不能阻止人们感染像COVID-19这样的疾病</a></li>
+<li><a href="../zh-CN495474/index.html">DataGrip 2020.1：启动配置，导出到Excel，在编辑器中显示结果等</a></li>
+<li><a href="../zh-CN495476/index.html">为什么Atari DeepMind AI成功令人失望</a></li>
+<li><a href="../zh-CN495478/index.html">大小数据测试仪：趋势，理论，我的故事</a></li>
+<li><a href="../zh-CN495480/index.html">使用SIP为C / C ++库创建Python绑定。第1部分</a></li>
+<li><a href="../zh-CN495486/index.html">机密数据的新威胁：Acronis全球调查结果</a></li>
+<li><a href="../zh-CN495490/index.html">DUMP 2020会议的测试和质量检查部分，今年会有什么期望？剧透：一对止痛药和樱桃</a></li>
+<li><a href="../zh-CN495492/index.html">虚幻引擎4 iOS游戏发行功能</a></li>
+<li><a href="../zh-CN495494/index.html">使用一组自定义的计划规则创建另一个kube-scheduler</a></li>
+<li><a href="../zh-CN495500/index.html">Alexey Klyanin：“直到2018年，我仅将OSM用作博客的基础”</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

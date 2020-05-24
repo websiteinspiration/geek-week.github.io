@@ -1,0 +1,235 @@
+<!doctype html>
+<html class="no-js" lang="es">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚗 😴 ✌🏾 Compresión de datos en Apache Ignite. Experiencia Sberbank 🌪️ 🌻 👡</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Cuando se trabaja con grandes volúmenes de datos, a veces el problema del espacio insuficiente en el disco puede agravarse. Una forma de resolver este...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Compresión de datos en Apache Ignite. Experiencia Sberbank</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/sberbank/blog/502136/"><img src="https://habrastorage.org/webt/cl/nj/sz/clnjsz90dmzkkj3wr4vuusu_-nu.png" align="left"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cuando se trabaja con grandes volúmenes de datos, a veces el problema del espacio insuficiente en el disco puede agravarse. </font><font style="vertical-align: inherit;">Una forma de resolver este problema es la compresión, debido a que, en el mismo equipo, puede permitirse aumentar los volúmenes de almacenamiento. </font><font style="vertical-align: inherit;">En este artículo, veremos cómo funciona la compresión de datos en Apache Ignite. </font><font style="vertical-align: inherit;">Este artículo describirá solo los métodos de compresión de disco implementados dentro del producto. </font><font style="vertical-align: inherit;">Otros métodos de compresión de datos (a través de la red, en la memoria), tanto implementados como no, permanecerán fuera del alcance. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entonces, cuando el modo de persistencia está activado, como resultado del cambio de datos en cachés, Ignite comienza a escribir en el disco:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Contenido de caché</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Escribir registro anticipado (en lo sucesivo, WAL)</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Un mecanismo llamado compactación WAL ha existido durante mucho tiempo para comprimir los WAL. </font><font style="vertical-align: inherit;">El recientemente lanzado Apache Ignite 2.8 introdujo dos mecanismos más para comprimir datos en el disco: compresión de página de disco para comprimir el contenido de cachés y compresión de instantánea de página WAL para comprimir algunos registros WAL. </font><font style="vertical-align: inherit;">Más información sobre todos estos tres mecanismos a continuación.</font></font><a name="habracut"></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Compresión de página de disco</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cómo funciona</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para empezar, nos detendremos brevemente en cómo Ignite almacena los datos. Para el almacenamiento, se utiliza la memoria de página. El tamaño de la página se establece al comienzo del nodo y no se puede cambiar en etapas posteriores, también el tamaño de la página debe ser una potencia de dos y un múltiplo del tamaño del bloque del sistema de archivos. Las páginas se cargan en la RAM desde el disco según sea necesario, el tamaño de los datos en el disco puede exceder la cantidad de RAM asignada. Si no hay suficiente espacio en la RAM para cargar páginas desde el disco, las páginas viejas no utilizadas se verán obligadas a salir de la RAM.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Los datos se almacenan en el disco de la siguiente forma: se crea un archivo separado para cada partición de cada grupo de caché, en este archivo, en orden ascendente de índice, las páginas van una tras otra. El identificador de página completo contiene el identificador de grupo de caché, el número de partición y el índice de página en el archivo. Por lo tanto, mediante el identificador de página completa, podemos identificar de manera única el archivo y el desplazamiento en el archivo para cada página. Puede leer más sobre la memoria de la página en un artículo en Apache Ignite Wiki: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ignite Persistent Store, bajo el capó</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El mecanismo de compresión de la página del disco, como su nombre indica, funciona a nivel de página. </font><font style="vertical-align: inherit;">Cuando se activa este mecanismo, el trabajo con datos en RAM se realiza tal cual, sin ninguna compresión, pero al momento de guardar las páginas de la RAM en el disco, se comprimen. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pero comprimir cada página individualmente no es una solución al problema, debe reducir de alguna manera el tamaño de los archivos de datos resultantes. </font><font style="vertical-align: inherit;">Si el tamaño de la página deja de fijarse, ya no podemos escribir páginas en un archivo una por una, ya que esto puede dar lugar a una serie de problemas:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">No podemos usar el índice de página para calcular el desplazamiento en el que se encuentra en el archivo.</font></font></li>
+<li> ,    ,          .    ,     .    ,         .</li>
+<li>           ,      ,        ,      .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para no resolver estos problemas a su propio nivel, la compresión de páginas de disco en Apache Ignite utiliza un mecanismo de sistema de archivos llamado archivos dispersos. Un archivo disperso es un archivo en el que algunas regiones llenas de ceros se pueden marcar como "agujeros". En este caso, no se asignarán bloques del sistema de archivos para almacenar estos agujeros, como resultado de lo cual se ahorrará espacio en disco.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Es lógico que para liberar el bloque del sistema de archivos, el tamaño del agujero debe ser mayor o igual que el bloque del sistema de archivos, lo que impone una restricción adicional en el tamaño de página de Apache Ignite: para que la compresión tenga al menos algún efecto, el tamaño de la página debe ser estrictamente mayor que el tamaño del bloque del sistema de archivos . Si el tamaño de la página es igual al tamaño del bloque, entonces nunca podremos liberar un solo bloque, ya que para liberar un solo bloque necesitamos una página comprimida para ocupar 0 bytes. Si el tamaño de la página es igual al tamaño de 2 o 4 bloques, ya podemos liberar al menos un bloque si nuestra página está comprimida al menos al 50% o 75%, respectivamente.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Por lo tanto, la descripción final del mecanismo: al escribir una página en el disco, se intenta comprimir la página. Si el tamaño de la página comprimida permite liberar uno o más bloques del sistema de archivos, entonces la página se escribe en forma comprimida, se perfora un "agujero" en lugar de los bloques liberados (se realiza una llamada al sistema </font></font><code>fallocate()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">con el indicador de "agujero perforado"). Si el tamaño de la página comprimida no permite liberar bloques, la página se guarda como está, en forma no comprimida. Todos los desplazamientos de página se consideran, así como sin compresión, multiplicando el índice de página por el tamaño de página. No se requiere reubicación de páginas. Los desplazamientos de página, así como sin compresión, caen en los límites de los bloques del sistema de archivos.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-l/0f/3x/-l0f3xzxozvrxefbiauxdivslv0.png"><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En la implementación actual, Ignite solo puede trabajar con archivos dispersos en el sistema operativo Linux, por lo que la compresión de la página del disco solo se puede habilitar cuando se usa Ignite en este sistema operativo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Algoritmos de compresión que se pueden usar para la compresión de páginas de disco: ZSTD, LZ4, Snappy. </font><font style="vertical-align: inherit;">Además, hay un modo operativo (SKIP_GARBAGE), en el que solo se elimina un lugar no utilizado en la página sin aplicar compresión a los datos restantes, lo que permite reducir la carga en la CPU en comparación con los algoritmos enumerados anteriormente.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Impacto en el rendimiento </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Desafortunadamente, en realidad no medí el rendimiento en stands reales, ya que no planeamos usar este mecanismo en la producción, pero en teoría podemos especular dónde perderemos y dónde ganaremos. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para hacer esto, debemos recordar cómo leer y escribir páginas al acceder a ellas:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cuando se realiza una operación de lectura, primero se busca en la RAM, si la búsqueda falla, la página se carga en la RAM desde el disco con la misma secuencia que lee.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cuando se realiza una operación de escritura, la página en la RAM se marca como sucia, mientras que el almacenamiento físico de la página en el disco inmediatamente en la secuencia que realiza la grabación no se produce. </font><font style="vertical-align: inherit;">Todas las páginas sucias se guardan en el disco más adelante en el proceso del punto de control en secuencias separadas.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Por lo tanto, el efecto sobre las operaciones de lectura:</font></font><br>
+<br>
+<ul>
+<li> (disk IO),        .</li>
+<li> (CPU),           sparse .       IO       sparse  (    sparse  ,  ,  ).</li>
+<li> (CPU),     .</li>
+<li>    .</li>
+<li>    (    ):</li>
+<li> (disk IO),        .</li>
+<li> (CPU,  disk IO),     sparse .</li>
+<li> (CPU),     .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+¿Qué escala pesará más? </font><font style="vertical-align: inherit;">Todo depende mucho del entorno, pero me inclino a creer que la compresión de la página del disco tiene más probabilidades de degradar el rendimiento en la mayoría de los sistemas. </font><font style="vertical-align: inherit;">Además, las pruebas en otros DBMS que utilizan un enfoque similar con archivos dispersos muestran una caída en el rendimiento cuando se habilita la compresión.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cómo habilitar y configurar</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como se mencionó anteriormente, la versión mínima de Apache Ignite que admite la compresión de páginas del disco: 2.8 y solo es compatible con el sistema operativo Linux. </font><font style="vertical-align: inherit;">El encendido y la configuración se realizan de la siguiente manera:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">La ruta de clase debe tener un módulo de encendido por compresión. </font><font style="vertical-align: inherit;">Por defecto, se encuentra en la distribución Apache Ignite en el directorio libs / opcional y no está incluido en la ruta de clase. </font><font style="vertical-align: inherit;">Simplemente puede mover el directorio un nivel hacia arriba a libs y luego, cuando se inicie a través de ignite.sh, se activará automáticamente.</font></font></li>
+<li>Persistence    (  <code>DataRegionConfiguration.setPersistenceEnabled(true))</code>.</li>
+<li>         (    <code>DataStorageConfiguration.setPageSize()</code> ).</li>
+<li>  ,            ()   ( <code>CacheConfiguration.setDiskPageCompression() , CacheConfiguration.setDiskPageCompressionLevel()</code>).</li>
+</ul><br>
+<h3>WAL compaction</h3><br>
+<h4>  </h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+¿Qué es WAL y por qué es necesario? Muy brevemente: este es un diario en el que caen todos los eventos que cambian como resultado del repositorio de la página. Es necesario principalmente por la posibilidad de recuperación en caso de una caída. Antes de transferir el control a un usuario, cualquier operación debe primero escribir el evento en el WAL, de modo que en caso de una caída, pueda reproducir el registro y restaurar todas las operaciones para las cuales el usuario recibió una respuesta exitosa, incluso si estas operaciones no tuvieron tiempo de reflejarse en el almacenamiento de la página en el disco (arriba ya se ha descrito que la escritura real en el almacén de páginas se realiza en un proceso llamado punto de control con cierto retraso en subprocesos separados).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Las entradas en el WAL se dividen en lógicas y físicas. Los lógicos son claves y valores en sí mismos. Físico: refleja los cambios de página en la tienda de páginas. Si los registros lógicos pueden ser útiles para otros casos, los registros físicos son necesarios solo para la recuperación en caso de una caída y los registros son necesarios solo desde el momento del último punto de control exitoso. Aquí no entraremos en detalles y explicaremos por qué esto funciona de esta manera, pero cualquier persona interesada puede consultar el artículo ya mencionado en Apache Ignite Wiki: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ignite Persistent Store, bajo el capó</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Un registro lógico a menudo representa varios registros físicos. Es decir, por ejemplo, una operación de colocación de caché afecta a varias páginas en la memoria de la página (una página con los datos en sí, páginas con índices, páginas con listas libres). En algunas pruebas sintéticas, resultó que los registros físicos ocupaban hasta el 90% del archivo WAL. Además, necesitan un tiempo muy corto (por defecto, el intervalo entre puntos de control es de 3 minutos). Sería lógico deshacerse de estos datos después de perder su relevancia. Esto es exactamente lo que realiza el mecanismo de compactación WAL, elimina los registros físicos y comprime los registros lógicos restantes con zip, mientras que el tamaño del archivo disminuye de manera muy significativa (a veces decenas de veces).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Físicamente, un WAL consta de varios segmentos (predeterminado 10) de un tamaño fijo (predeterminado 64 MB), que se sobrescriben en un círculo. </font><font style="vertical-align: inherit;">Tan pronto como se llena el segmento actual, el siguiente segmento se asigna al actual, y el segmento lleno se copia al archivo en una secuencia separada. </font><font style="vertical-align: inherit;">La compactación WAL ya funciona con segmentos de archivo. </font><font style="vertical-align: inherit;">Además, en una secuencia separada, supervisa la ejecución del punto de control e inicia la compresión por segmentos de archivo, para los cuales ya no se necesitan registros físicos.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zk/95/jo/zk95jo7dnthiox2sv0ezywhrj2a.png"><br>
+ <br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Impacto en el rendimiento</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dado que la compactación WAL funciona como un hilo separado, no debería haber una influencia directa en las operaciones realizadas. </font><font style="vertical-align: inherit;">Pero todavía proporciona una carga de fondo adicional en la CPU (compresión) y el disco (leyendo cada segmento WAL del archivo y escribiendo segmentos comprimidos), por lo que si el sistema se ejecuta al límite, también conducirá a una degradación del rendimiento.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cómo habilitar y configurar</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Puede habilitar la compactación WAL utilizando la propiedad </font></font><code>WalCompactionEnabled</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">c </font></font><code>DataStorageConfiguration (DataStorageConfiguration.setWalCompactionEnabled(true)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">). </font><font style="vertical-align: inherit;">Además, utilizando el método DataStorageConfiguration.setWalCompactionLevel (), puede establecer la relación de compresión si no está satisfecho con el valor predeterminado (BEST_SPEED).</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Compresión de instantánea de página WAL</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cómo funciona</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ya hemos descubierto que en WAL, las entradas se dividen en lógicas y físicas. Para cada cambio de cada página en la memoria de la página, se genera un registro WAL físico. Los registros físicos, a su vez, también se dividen en 2 subespecies: registro de instantánea de página y registro delta. Cada vez que cambiamos algo en una página y lo cambiamos de un estado limpio a uno sucio, se guarda una copia completa de esta página en el WAL (registro de instantánea de la página). Incluso si cambiamos solo un byte en el WAL, se guardará un registro con un tamaño ligeramente mayor que el tamaño de la página. Si cambiamos algo en una página que ya está sucia, se forma un registro delta en el WAL, que refleja solo los cambios en comparación con el estado anterior de la página, pero no toda la página. Dado que el restablecimiento del estado de las páginas de sucio a limpio se realiza durante el proceso del punto de control,inmediatamente después del inicio del punto de control, casi todos los registros físicos consistirán solo en instantáneas de páginas (dado que todas las páginas inmediatamente después del inicio del punto de control están en blanco), luego, a medida que se acerca al siguiente punto de control, la proporción de registro delta comienza a crecer y se restablece nuevamente al comienzo del siguiente punto de control. Las mediciones en algunas pruebas sintéticas mostraron que la proporción de instantáneas de página en el volumen total de registros físicos alcanza el 90%.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La idea detrás de la compresión de instantáneas de página WAL es comprimir instantáneas de página utilizando una herramienta de compresión de página estándar (ver compresión de página de disco). Al mismo tiempo, en WAL, los registros se guardan secuencialmente en modo de solo agregado y no es necesario vincular los registros a los límites de los bloques del sistema de archivos, por lo tanto, aquí, a diferencia del mecanismo de compresión de la página del disco, no necesitamos archivos dispersos, por lo que este mecanismo funcionará no solo en el sistema operativo Linux Además, ya no nos importa cuánto pudimos comprimir la página. Incluso si liberamos 1 byte, esto ya es un resultado positivo y podemos guardar datos comprimidos en el WAL, a diferencia de la compresión de la página del disco, donde guardamos una página comprimida solo si se libera más de 1 bloque del sistema de archivos.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Las páginas son datos bien comprimibles, su participación en el volumen WAL total es muy alta, por lo que sin cambiar el formato del archivo WAL, podemos obtener una reducción significativa en su tamaño. </font><font style="vertical-align: inherit;">La compresión de registros lógicos, entre otras cosas, requeriría un cambio de formato y pérdida de compatibilidad, por ejemplo, para consumidores externos que podrían estar interesados ​​en registros lógicos, sin reducir significativamente el tamaño del archivo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En cuanto a la compresión de la página del disco para la compresión de la instantánea de la página WAL, se pueden utilizar los algoritmos de compresión ZSTD, LZ4, Snappy, así como el modo SKIP_GARBAGE.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Impacto en el rendimiento</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No es difícil notar que la inclusión directa de la compresión de instantáneas de página WAL afecta solo a las secuencias que escriben datos en la memoria de la página, es decir, aquellas secuencias que cambian los datos en las cachés. La lectura de los registros físicos de WAL ocurre solo una vez, en el momento de elevar el nodo después de la caída (y solo en el caso de una caída durante el punto de control). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Esto afecta los flujos de datos de la siguiente manera: obtenemos un efecto negativo (CPU) debido a la necesidad de comprimir la página cada vez antes de escribir en el disco y un efecto positivo (disco IO) al reducir la cantidad de datos que se escriben. En consecuencia, todo es simple aquí, si el rendimiento del sistema se basa en la CPU, tenemos una pequeña degradación, si en la E / S del disco, obtenemos un aumento.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Indirectamente, la reducción del tamaño de los WAL también afecta (positivamente) los flujos que dejan caer segmentos WAL en el archivo y los flujos de compactación WAL. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Las pruebas de rendimiento real en nuestro entorno con datos sintéticos mostraron un pequeño aumento (el rendimiento aumentó en un 10% -15%, la latencia disminuyó en un 10% -15%).</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cómo habilitar y configurar</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La versión mínima de Apache Ignite es 2.8. </font><font style="vertical-align: inherit;">El encendido y la configuración se realizan de la siguiente manera:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">La ruta de clase debe tener un módulo de encendido por compresión. </font><font style="vertical-align: inherit;">Por defecto, se encuentra en la distribución Apache Ignite en el directorio libs / opcional y no está incluido en la ruta de clase. </font><font style="vertical-align: inherit;">Simplemente puede mover el directorio un nivel hacia arriba a libs y luego, cuando se inicie a través de ignite.sh, se activará automáticamente.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">La persistencia debe estar habilitada (habilitada a través de </font></font><code>DataRegionConfiguration.setPersistenceEnabled(true)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">).</font></font></li>
+<li>        <code>DataStorageConfiguration.setWalPageCompression()</code>,     ( DISABLED).</li>
+<li>        <code>DataStorageConfiguration.setWalPageCompression()</code>,         javadoc  .</li>
+</ul><br>
+<h3></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Los mecanismos de compresión de datos discutidos en Apache Ignite pueden usarse independientemente uno del otro, pero cualquier combinación de ellos también es válida. </font><font style="vertical-align: inherit;">La comprensión de los principios de su trabajo determinará cómo se ajustan a sus tareas en su entorno y qué tendrá que sacrificar cuando las use. </font><font style="vertical-align: inherit;">La compresión de página de disco está diseñada para comprimir el almacenamiento principal y puede proporcionar una compresión media. </font><font style="vertical-align: inherit;">La compresión de instantáneas de la página WAL proporcionará un grado medio de compresión de los archivos ya WAL, mientras que es probable que incluso mejore el rendimiento. </font><font style="vertical-align: inherit;">La compactación WAL no afectará positivamente el rendimiento, pero minimizará el tamaño de los archivos WAL al eliminar registros físicos.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es502122/index.html">Thanos - Prometeo escalable</a></li>
+<li><a href="../es502124/index.html">Resultados de riesgo de 2019 para Ucrania</a></li>
+<li><a href="../es502126/index.html">Cómo mejorar tu currículum de programador de inglés</a></li>
+<li><a href="../es502132/index.html">Cómo transferir el contenedor OpenVZ 6 al servidor KVM sin dolor de cabeza</a></li>
+<li><a href="../es502134/index.html">Lo suficiente como para temer las decisiones subjetivamente hermosas en el código: no son robots</a></li>
+<li><a href="../es502146/index.html">Mesa redonda en línea "Quiero gamedev"</a></li>
+<li><a href="../es502148/index.html">Uso de componentes de terceros en el almacenamiento usando Qsan como ejemplo</a></li>
+<li><a href="../es502150/index.html">Escalando una red de alta carga con Nutanix: características y desafíos con un caso personal</a></li>
+<li><a href="../es502154/index.html">Escribir autotests de manera efectiva - Pruebas subcutáneas</a></li>
+<li><a href="../es502156/index.html">Caso Rambler v. NGINX: Mesa de Riesgos Criminales de Digitalización 16 de mayo</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

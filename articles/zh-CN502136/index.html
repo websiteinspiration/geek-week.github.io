@@ -1,0 +1,237 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍘 👃🏿 🤜🏾 Apache Ignite中的数据压缩。Sberbank经验 😤 🐶 🥥</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="当处理大量数据时，有时磁盘空间不足的问题会变得很严重。解决此问题的一种方法是压缩，因此可以在同一设备上增加存储量。在本文中，我们将研究数据压缩在Apache Ignite中的工作方式。本文将仅介绍产品内实现的磁盘压缩方法。实施和未实施的其他数据压缩方法（通过网络，在内存中）将不在范围之内。
+ 
+ 因...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Apache Ignite中的数据压缩。Sberbank经验</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/sberbank/blog/502136/"><img src="https://habrastorage.org/webt/cl/nj/sz/clnjsz90dmzkkj3wr4vuusu_-nu.png" align="left"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">当处理大量数据时，有时磁盘空间不足的问题会变得很严重。</font><font style="vertical-align: inherit;">解决此问题的一种方法是压缩，因此可以在同一设备上增加存储量。</font><font style="vertical-align: inherit;">在本文中，我们将研究数据压缩在Apache Ignite中的工作方式。</font><font style="vertical-align: inherit;">本文将仅介绍产品内实现的磁盘压缩方法。</font><font style="vertical-align: inherit;">实施和未实施的其他数据压缩方法（通过网络，在内存中）将不在范围之内。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，在启用持久性模式时，由于更改了缓存中的数据，Ignite开始写入磁盘：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">缓存内容</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">预写日志（以下称为WAL）</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+很久以来就有一种称为WAL压缩的机制可以压缩WAL。</font><font style="vertical-align: inherit;">最近发布的Apache Ignite 2.8引入了另外两种压缩磁盘上数据的机制：用于压缩缓存内容的磁盘页面压缩和用于压缩某些WAL记录的WAL页面快照压缩。</font><font style="vertical-align: inherit;">有关这三种机制的更多信息，请参见下文。</font></font><a name="habracut"></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">磁盘页面压缩</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">怎么运行的</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，我们将简要介绍Ignite如何存储数据。为了存储，使用页面存储器。页面大小是在节点的开始处设置的，不能在以后的阶段更改，而且页面大小必须是文件系统块大小的2的整数倍。页面会根据需要从磁盘加载到RAM中，磁盘上的数据大小可能会超过分配的RAM数量。如果RAM中没有足够的空间来从磁盘加载页面，则旧的未使用页面将被强制从RAM中取出。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+数据以以下形式存储在磁盘上：为每个缓存组的每个分区创建一个单独的文件，在该文件中，按索引的升序排列，页接一个。完整页面标识符包含文件中的缓存组标识符，分区号和页面索引。因此，通过完整的页面标识符，我们可以唯一地识别文件和文件中每个页面的偏移量。您可以在Apache Ignite Wiki：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ignite Persistent Store的</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">幕后文章中阅读有关页面内存的更多信息</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+顾名思义，磁盘页面压缩机制在页面级别起作用。</font><font style="vertical-align: inherit;">启用此机制后，将按原样执行RAM中的数据处理，而不进行任何压缩，但是在将页面从RAM保存到磁盘时，它们将被压缩。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是单独压缩每个页面并不是解决问题的方法，您需要以某种方式减小生成的数据文件的大小。</font><font style="vertical-align: inherit;">如果页面大小不再固定，我们将无法再将页面逐个写入文件，因为这会引起许多问题：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们不能使用页面索引来计算它在文件中的偏移量。</font></font></li>
+<li> ,    ,          .    ,     .    ,         .</li>
+<li>           ,      ,        ,      .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了不从根本上解决这些问题，Apache Ignite中的磁盘页面压缩使用一种称为稀疏文件的文件系统机制。稀疏文件是其中一些填充有零的区域可以标记为空的文件。在这种情况下，将不会分配用于存储这些漏洞的文件系统块，从而节省了磁盘空间。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+逻辑上，为了释放文件系统块，孔的大小必须大于或等于文件系统块，这对Apache Ignite的页面大小施加了附加限制：为了使压缩产生至少某种效果，页面大小必须严格大于文件系统块的大小。如果页面大小等于块的大小，那么我们将永远无法释放单个块，因为要释放单个块，我们需要压缩的页面占用0个字节。如果页面大小等于2或4个块的大小，并且我们的页面分别压缩到至少50％或75％，我们已经可以释放至少一个块。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，对该机制进行了最终描述：将页面写入磁盘时，将尝试压缩该页面。如果压缩页面的大小允许释放文件系统的一个或多个块，</font></font><code>fallocate()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">则以</font><font style="vertical-align: inherit;">压缩形式写入页面，在释放的块上打一个“孔”（进行</font><font style="vertical-align: inherit;">带有“打孔”标志</font><font style="vertical-align: inherit;">的系统调用</font><font style="vertical-align: inherit;">）。如果压缩页面的大小不允许释放块，则该页面将以未压缩形式保存。通过将页面索引乘以页面大小，可以考虑所有页面偏移以及不进行压缩。不需要页面的自动重定位。页面偏移以及未经压缩都落在文件系统块的边界上。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-l/0f/3x/-l0f3xzxozvrxefbiauxdivslv0.png"><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在当前的实现中，Ignite仅可在Linux OS下使用稀疏文件，因此仅当在此操作系统上使用Ignite时才能启用磁盘页面压缩。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+可用于磁盘页面压缩的压缩算法：ZSTD，LZ4，Snappy。</font><font style="vertical-align: inherit;">此外，还有一种操作模式（SKIP_GARBAGE），其中仅丢弃页面中未使用的位置而不对剩余数据施加压缩，与上述算法相比，它可以减少CPU的负担。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">绩效影响 </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+不幸的是，由于我们不打算在生产中使用这种机制，因此我实际上并没有衡量实际的表现，但是从理论上讲，我们可以推测我们将在哪里失去和在哪里赢。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为此，我们需要记住访问页面时如何读取和写入页面：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">当执行读取操作时，首先在RAM中搜索它，如果搜索失败，则将页面从磁盘加载到具有相同读取流的RAM中。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">当执行写操作时，RAM中的页面被标记为脏的，而不会立即将页面物理保存到磁盘中进行记录的流中。</font><font style="vertical-align: inherit;">稍后在检查点过程中，所有脏页都以单独的流保存到磁盘。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，对读取操作的影响：</font></font><br>
+<br>
+<ul>
+<li> (disk IO),        .</li>
+<li> (CPU),           sparse .       IO       sparse  (    sparse  ,  ,  ).</li>
+<li> (CPU),     .</li>
+<li>    .</li>
+<li>    (    ):</li>
+<li> (disk IO),        .</li>
+<li> (CPU,  disk IO),     sparse .</li>
+<li> (CPU),     .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+哪个规模胜过？</font><font style="vertical-align: inherit;">这完全取决于环境，但是我倾向于相信磁盘页面压缩更有可能在大多数系统上降低性能。</font><font style="vertical-align: inherit;">此外，在其他DBMS上使用类似方法处理稀疏文件的测试显示，启用压缩后性能会下降。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如何启用和配置</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如上所述，支持磁盘页面压缩的Apache Ignite的最低版本为2.8，仅支持Linux操作系统。</font><font style="vertical-align: inherit;">开启和设置的步骤如下：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">类路径必须具有ignite-compression模块。</font><font style="vertical-align: inherit;">默认情况下，它位于libs / optional目录中的Apache Ignite发行版中，并且不包含在类路径中。</font><font style="vertical-align: inherit;">您可以简单地将目录上移至libs，然后通过ignite.sh启动时，它将自动打开。</font></font></li>
+<li>Persistence    (  <code>DataRegionConfiguration.setPersistenceEnabled(true))</code>.</li>
+<li>         (    <code>DataStorageConfiguration.setPageSize()</code> ).</li>
+<li>  ,            ()   ( <code>CacheConfiguration.setDiskPageCompression() , CacheConfiguration.setDiskPageCompressionLevel()</code>).</li>
+</ul><br>
+<h3>WAL compaction</h3><br>
+<h4>  </h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+什么是WAL，为什么需要？非常简单：这是一本日记，所有因页面存储库而发生变化的事件都落入其中。跌倒时主要需要他才能康复。在将控制权转移给用户之前，任何操作都必须首先将事件写入WAL，这样，如果发生故障，它就可以播放日志并恢复用户已成功响应的所有操作，即使这些操作没有时间反映在磁盘上的页面存储中（已经已经描述了对页面存储的实际写入是在称为检查点的过程中执行的，在单独的线程中有一些延迟。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WAL中的条目分为逻辑和物理。逻辑键本身就是键和值。物理-反映页面存储中的页面更改。如果逻辑记录在某些其他情况下可能有用，则仅在跌落时才需要物理记录才能恢复，并且仅在上次成功检查点之后才需要记录。在这里，我们将不进行详细说明，也不能解释为什么这样做会如此，但是任何有兴趣的人都可以参考Apache Ignite Wiki上已经提到的文章：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ignite Persistent</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Store-深入了解</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一条逻辑记录通常占多个物理记录。也就是说，例如，一个高速缓存放置操作会影响页面内存中的多个页面（具有数据本身的页面，具有索引的页面，具有空闲列表的页面）。在一些综合测试中，事实证明，物理记录最多占WAL文件的90％。此外，他们需要很短的时间（默认情况下，检查点之间的间隔是3分钟）。在失去其相关性之后摆脱这些数据将是合乎逻辑的。这正是WAL压缩机制所执行的工作，它消除了物理记录并使用zip压缩了剩余的逻辑记录，而文件大小却显着减小（有时数十倍）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从物理上讲，WAL由固定大小（默认为64 MB）的几个段（默认为10 MB）组成，这些段被围成一圈。</font><font style="vertical-align: inherit;">一旦填充了当前段，就将下一个段分配给当前段，并将填充的段复制到单独的流中的归档中。</font><font style="vertical-align: inherit;">WAL压缩已适用于归档段。</font><font style="vertical-align: inherit;">此外，在单独的流中，它监视检查点的执行并开始按存档段压缩，而对于这些存档段，不再需要物理记录。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zk/95/jo/zk95jo7dnthiox2sv0ezywhrj2a.png"><br>
+ <br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">性能影响</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于WAL压缩是作为单独的线程运行的，因此不应直接影响执行的操作。</font><font style="vertical-align: inherit;">但是，它仍然给CPU（压缩）和磁盘（从归档文件读取每个WAL段并写入压缩段）带来额外的后台负载，因此，如果系统运行到极限，也会导致性能下降。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如何启用和配置</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以使用属性</font></font><code>WalCompactionEnabled</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">c </font></font><code>DataStorageConfiguration (DataStorageConfiguration.setWalCompactionEnabled(true)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">启用WAL压缩</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">另外，如果对默认值（BEST_SPEED）不满意，则可以使用DataStorageConfiguration.setWalCompactionLevel（）方法来设置压缩率。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WAL页面快照压缩</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">怎么运行的</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们已经发现在WAL中，条目分为逻辑和物理。对于页面存储器中每个页面的每次更改，都会生成一个物理WAL记录。物理记录又分为两个亚种：页面快照记录和增量记录。每次我们更改页面上的某些内容并将其从干净状态转移到脏状态时，此页面的完整副本都会保存在WAL（页面快照记录）中。即使我们只更改了WAL中的一个字节，也会保存一条稍大于页面大小的记录。如果我们在已经变脏的页面上进行更改，则会在WAL中形成增量记录，该记录仅反映与页面先前状态相比的更改，而不反映整个页面。由于在检查点过程中执行了将页面的状态从脏到干净的重置，因此，紧接检查点开始之后，几乎所有物理记录将仅由页面快照组成（因为紧接在检查点开始之后的所有页面均为空白），然后随着您接近下一个检查点，增量记录的比例开始增长，并在下一个检查点开始时再次重置。对一些综合测试的测量表明，页面快照在物理记录总量中所占的比例达到了90％。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WAL页面快照压缩的想法是使用现成的页面压缩工具压缩页面快照（请参阅磁盘页面压缩）。同时，在WAL中，记录以仅追加模式顺序保存，并且不需要将记录绑定到文件系统块的边界，因此，在这里，与磁盘页面压缩机制不同，我们绝对不需要稀疏文件，因此该机制不仅适用于OS的Linux此外，我们不再关心能够压缩页面多少。即使我们释放了1个字节，这已经是一个肯定的结果，我们可以将压缩数据保存在WAL中，这与磁盘页面压缩不同，磁盘页面压缩只有在释放了多个文件系统块的情况下才保存压缩页面。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+页面是可很好压缩的数据，它们在WAL总量中所占的份额非常高，因此无需更改WAL文件的格式，我们就可以大幅度减小其大小。</font><font style="vertical-align: inherit;">逻辑记录的压缩，除其他外，例如，可能需要更改格式并失去兼容性，例如，对于可能对逻辑记录感兴趣的外部使用者，而又不会显着减小文件大小。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+至于用于WAL页面快照压缩的磁盘页面压缩，可以使用压缩算法ZSTD，LZ4，Snappy以及SKIP_GARBAGE模式。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">性能影响</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+不难看出，直接包含WAL页面快照压缩仅影响将数据写入页面存储器的流，即那些更改高速缓存中数据的流。从WAL物理记录中读取仅发生一次，即在跌倒后升起节点时（并且仅在检查点发生跌落的情况下）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这对数据流的影响如下：由于每次写入磁盘之前都需要压缩页面，因此会产生负面影响（CPU），而通过减少写入的数据量则会产生正面影响（CPU IO）。因此，这里的一切都很简单，如果系统性能取决于CPU，则性能会有所下降，如果在磁盘I / O中，性能会有所提高。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+间接地，减小WAL的大小也会影响（肯定地）将WAL段拖放到存档和WAL压缩流中的流。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在我们的环境中对合成数据进行的实际性能测试表明，该性能略有增加（吞吐量提高了10％-15％，延迟降低了10％-15％）。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如何启用和配置</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Apache Ignite的最低版本为2.8。</font><font style="vertical-align: inherit;">开启和设置的步骤如下：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">类路径必须具有ignite-compression模块。</font><font style="vertical-align: inherit;">默认情况下，它位于libs / optional目录中的Apache Ignite发行版中，并且不包含在类路径中。</font><font style="vertical-align: inherit;">您可以简单地将目录上移至libs，然后通过ignite.sh启动时，它将自动打开。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">必须启用持久性（通过启用</font></font><code>DataRegionConfiguration.setPersistenceEnabled(true)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font></li>
+<li>        <code>DataStorageConfiguration.setWalPageCompression()</code>,     ( DISABLED).</li>
+<li>        <code>DataStorageConfiguration.setWalPageCompression()</code>,         javadoc  .</li>
+</ul><br>
+<h3></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Apache Ignite中讨论的数据压缩机制可以彼此独立使用，但是它们的任何组合也是有效的。</font><font style="vertical-align: inherit;">了解他们的工作原理将决定他们如何适应您的环境任务，以及在使用它们时必须付出的代价。</font><font style="vertical-align: inherit;">磁盘页面压缩旨在压缩主存储，并可以提供中等压缩。</font><font style="vertical-align: inherit;">WAL页面快照压缩将对已经存在的WAL文件提供平均程度的压缩，同时甚至有可能提高性能。</font><font style="vertical-align: inherit;">WAL压缩不会对性能产生积极影响，但会通过删除物理记录来最小化WAL文件的大小。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN502122/index.html">Thanos-可扩展的普罗米修斯</a></li>
+<li><a href="../zh-CN502124/index.html">乌克兰的2019年风险投资结果</a></li>
+<li><a href="../zh-CN502126/index.html">如何提高英语程序员的简历</a></li>
+<li><a href="../zh-CN502132/index.html">如何轻松将OpenVZ 6容器传输到KVM服务器</a></li>
+<li><a href="../zh-CN502134/index.html">足以害怕代码中的主观决定-您不是机器人</a></li>
+<li><a href="../zh-CN502146/index.html">在线圆桌会议“我想gamedev”</a></li>
+<li><a href="../zh-CN502148/index.html">以Qsan为例，在存储中使用第三方组件</a></li>
+<li><a href="../zh-CN502150/index.html">使用Nutanix扩展高负载网络：个人案例的功能和挑战</a></li>
+<li><a href="../zh-CN502154/index.html">有效编写自动测试-皮下测试</a></li>
+<li><a href="../zh-CN502156/index.html">Rambler诉NGINX案：数字化圆桌会议的刑事风险5月16日</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

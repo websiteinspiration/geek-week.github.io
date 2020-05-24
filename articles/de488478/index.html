@@ -1,0 +1,388 @@
+<!doctype html>
+<html class="no-js" lang="de">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙏🏻 ✍🏾 🤥 Übertragen Sie alle MS SQL Server-Datenbanken auf einen anderen Computer 🤩 ☦️ 💦</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Vor kurzem mussten alle Datenbanken (> 50 auf einer Instanz von SQL Server) von der Entwicklungsumgebung auf eine andere Instanz von SQL Server übertr...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Übertragen Sie alle MS SQL Server-Datenbanken auf einen anderen Computer</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/488478/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Vor kurzem mussten alle Datenbanken (&gt; 50 auf einer Instanz von SQL Server) von der Entwicklungsumgebung auf eine andere Instanz von SQL Server übertragen werden, die sich auf einer anderen Hardware befand. </font><font style="vertical-align: inherit;">Ich wollte die Handarbeit minimieren und alles so schnell wie möglich erledigen.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Haftungsausschluss</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Skripte werden für eine bestimmte Situation geschrieben: Dies ist eine Entwicklungsumgebung. Alle Datenbanken in einem einfachen Wiederherstellungsmodell, Datendateien und Transaktionsprotokolle befinden sich auf demselben Heap. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Alles, was unten geschrieben steht, gilt nur für diese Situation, aber Sie können sie ohne großen Aufwand leicht für sich selbst (Ihre Bedingungen) erledigen. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Die Skripte verwenden nicht das neue STRING_AGG und andere nette Dinge, daher sollte ab SQL Server 2008 alles funktionieren (oder 2008 R2, ich kann mich nicht erinnern, wo die Sicherungskomprimierung aufgetreten ist). Bei älteren Versionen müssen Sie WITH COMPRESSION aus dem Sicherungsbefehl entfernen, aber dann gibt es möglicherweise keine Zeitunterschiede mehr beim Kopieren von Dateien. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Dies ist keine Anweisung - wie man eine solche Übertragung durchführt. Dies ist eine Demonstration, wie Metadaten in dynamischem SQL verwendet werden können.</font></font></b><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Der schnellste Weg wäre natürlich, das Festplattenfach einfach wieder mit dem neuen Server zu verbinden, aber das war nicht unsere Option. Trennen - Kopieren - Anhängen wurde in Betracht gezogen, passte aber nicht, da der Kanal ziemlich eng war und das Übertragen der Datenbank in unkomprimierter Form ziemlich lange dauern würde. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Aus diesem Grund haben wir beschlossen, ein Backup mit Komprimierung auf dem Ball auf dem neuen Server zu erstellen und es dort wiederherzustellen. Das Bügeleisen sowohl am alten als auch am neuen Standort ist nicht schlecht, das Backup ist nicht schlecht, der Zeitgewinn ist auch nicht schlecht. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Also wurde der "Skriptgenerator" geschrieben:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">DECLARE</span> @unc_backup_path <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'\\newServer\backup_share\'</span>
+	, @local_backup_path <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'E:\Backup\'</span>
+	, @new_data_path <span class="hljs-keyword">as</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'D:\SQLServer\data\'</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">name</span>	
+	, <span class="hljs-string">'BACKUP DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] TO DISK = '''</span> + @unc_backup_path + <span class="hljs-keyword">name</span> + <span class="hljs-string">'.bak'' WITH INIT, COPY_ONLY, STATS = 5;'</span> <span class="hljs-keyword">AS</span> backup_command<font></font>
+	, <span class="hljs-string">'ALTER DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] SET OFFLINE WITH ROLLBACK IMMEDIATE;'</span> <span class="hljs-keyword">AS</span> offline_command<font></font>
+	, <span class="hljs-string">'RESTORE DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] FROM DISK = '''</span> + @local_backup_path + <span class="hljs-keyword">name</span> + <span class="hljs-string">'.bak'' WITH '</span> <font></font>
+		+ (<font></font>
+			<span class="hljs-keyword">SELECT</span> <span class="hljs-string">'MOVE '''</span> + mf.name + <span class="hljs-string">''' TO '''</span> + <font></font>
+				@new_data_path + <span class="hljs-keyword">REVERSE</span>(<span class="hljs-keyword">LEFT</span>(<span class="hljs-keyword">REVERSE</span>(mf.physical_name), <span class="hljs-keyword">CHARINDEX</span>(<span class="hljs-string">'\'</span>, <span class="hljs-keyword">REVERSE</span>(mf.physical_name))<span class="hljs-number">-1</span>)) +
+				<span class="hljs-string">''', '</span>
+			<span class="hljs-keyword">FROM</span> sys.master_files mf
+			<span class="hljs-keyword">WHERE</span> mf.database_id = d.database_id
+			<span class="hljs-keyword">FOR</span> <span class="hljs-keyword">XML</span> <span class="hljs-keyword">PATH</span>(<span class="hljs-string">''</span>)<font></font>
+		) + <span class="hljs-string">'REPLACE, RECOVERY, STATS = 5;'</span> <span class="hljs-keyword">AS</span> restore_command
+<span class="hljs-keyword">FROM</span> sys.databases d
+<span class="hljs-keyword">WHERE</span> database_id &gt; <span class="hljs-number">4</span> <span class="hljs-keyword">AND</span> state_desc = N<span class="hljs-string">'ONLINE'</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Bei der Ausgabe erhalten wir vorgefertigte Befehle zum Erstellen von Sicherungen an den richtigen Ort und zum Offline-Übertragen der Datenbank, sodass ihre Benutzer nicht mit ihnen auf dem alten Server und Skripten arbeiten können, um die empfangenen Sicherungen auf dem neuen Server wiederherzustellen (mit automatischer Übertragung aller Datendateien und Transaktionsprotokolle an den angegebenen Speicherort ) </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Das Problem dabei ist, dass entweder jemand sitzen und alle Skripte nacheinander ausführen muss (Backup-Offline-Wiederherstellung), oder jemand muss zuerst alle Sicherungen starten, dann alle Datenbanken trennen und dann alles wiederherstellen - es gibt weniger Aktionen, aber Sie müssen sitzen und verfolgen.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ich wollte all diese Vorgänge automatisieren. Einerseits ist alles einfach - es gibt bereits vorgefertigte Befehle, den Cursor einschließen und ausführen. Und im Prinzip habe ich genau das getan, einen neuen Server als Verbindungsserver zum alten hinzugefügt und ihn gestartet. Auf dem lokalen Server wurde der Befehl über EXECUTE (@sql_text) ausgeführt, auf dem Verbindungsserver EXECUTE (@sql_text) AT [linkedServerName]. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Daher wurden Vorgänge nacheinander ausgeführt - lokale Sicherung, Offline-Übersetzung der lokalen Datenbank und Wiederherstellung auf dem Verbindungsserver. Alles begann, Prost, aber es schien mir, dass Sie den Prozess ein wenig beschleunigen können, wenn Backups und Restaurationen unabhängig voneinander durchgeführt werden.</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dann wurde der erfundene Cursor in zwei Teile geteilt - auf dem alten Server im Cursor wird jede Datenbank gesichert und offline übertragen. Danach muss der zweite Server verstehen, dass eine neue Aufgabe aufgetreten ist, und die Datenbank wiederherstellen. </font><font style="vertical-align: inherit;">Um diesen Mechanismus zu implementieren, habe ich einen Datensatz in einer Tabelle auf einem Verbindungsserver und eine Endlosschleife verwendet (ich war zu faul, um Stoppkriterien zu finden), um festzustellen, ob neue Datensätze vorhanden sind, und um zu versuchen, gegebenenfalls etwas wiederherzustellen.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Entscheidung</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Auf dem alten Server wird eine globale temporäre Tabelle ## CommandList erstellt und ausgefüllt, in der alle Befehle gesammelt werden und der Status von Sicherungen an derselben Stelle verfolgt werden kann. </font><font style="vertical-align: inherit;">Die Tabelle ist global, sodass Sie jederzeit von einer anderen Sitzung aus sehen können, was dort gerade passiert.</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">DECLARE</span> @unc_backup_path <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'D:\SQLServer\backup\'</span> <span class="hljs-comment">--       </span>
+	, @local_backup_path <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'D:\SQLServer\backup\'</span>	<span class="hljs-comment">--        </span>
+	, @new_data_path <span class="hljs-keyword">as</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'D:\SQLServer\data\'</span>;		<span class="hljs-comment">--      ,    </span><font></font>
+<font></font>
+<span class="hljs-keyword">SET</span> NOCOUNT <span class="hljs-keyword">ON</span>;<font></font>
+<font></font>
+IF OBJECT_ID ('tempdb..<span class="hljs-comment">##CommandList', 'U') IS NULL</span>
+	<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> <span class="hljs-comment">##CommandList (</span>
+		dbName sysname <span class="hljs-keyword">unique</span>			<span class="hljs-comment">-- </span>
+		, backup_command <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)	<span class="hljs-comment">--   </span>
+		, offline_command <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)	<span class="hljs-comment">--        </span>
+		, restore_command <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)	<span class="hljs-comment">--       </span>
+		, processed <span class="hljs-built_in">bit</span>				<span class="hljs-comment">-- : NULL -  , 0 -  , 1 - </span>
+		, start_dt datetime			<span class="hljs-comment">--  </span>
+		, finish_dt datetime			<span class="hljs-comment">--  </span>
+		, error_msg <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)		<span class="hljs-comment">--  ,  </span><font></font>
+	);<font></font>
+<font></font>
+<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> <span class="hljs-comment">##CommandList (dbname, backup_command, offline_command, restore_command)</span>
+<span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">name</span>	
+	, <span class="hljs-string">'BACKUP DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] TO DISK = '''</span> + @unc_backup_path + <span class="hljs-keyword">name</span> + <span class="hljs-string">'.bak'' WITH INIT, COPY_ONLY, STATS = 5;'</span> <span class="hljs-keyword">AS</span> backup_command <span class="hljs-comment">-- INIT -      </span>
+	, <span class="hljs-string">'ALTER DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] SET OFFLINE WITH ROLLBACK IMMEDIATE;'</span> <span class="hljs-keyword">AS</span> offline_command<font></font>
+	, <span class="hljs-string">'RESTORE DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] FROM DISK = '''</span> + @local_backup_path + <span class="hljs-keyword">name</span> + <span class="hljs-string">'.bak'' WITH '</span> <font></font>
+		+ (<font></font>
+			<span class="hljs-keyword">SELECT</span> <span class="hljs-string">'MOVE '''</span> + mf.name + <span class="hljs-string">''' TO '''</span> + <font></font>
+				@new_data_path + <span class="hljs-keyword">REVERSE</span>(<span class="hljs-keyword">LEFT</span>(<span class="hljs-keyword">REVERSE</span>(mf.physical_name), <span class="hljs-keyword">CHARINDEX</span>(<span class="hljs-string">'\'</span>, <span class="hljs-keyword">REVERSE</span>(mf.physical_name))<span class="hljs-number">-1</span>)) +
+				<span class="hljs-string">''', '</span>	
+			<span class="hljs-keyword">FROM</span> sys.master_files mf
+			<span class="hljs-keyword">WHERE</span> mf.database_id = d.database_id
+			<span class="hljs-keyword">FOR</span> <span class="hljs-keyword">XML</span> <span class="hljs-keyword">PATH</span>(<span class="hljs-string">''</span>)<font></font>
+		) + <span class="hljs-string">'REPLACE, RECOVERY, STATS = 5;'</span> <span class="hljs-keyword">AS</span> restore_command	
+<span class="hljs-keyword">FROM</span> sys.databases d
+<span class="hljs-keyword">WHERE</span> database_id &gt; <span class="hljs-number">4</span> 
+	<span class="hljs-keyword">AND</span> state_desc = N<span class="hljs-string">'ONLINE'</span>
+	<span class="hljs-keyword">AND</span> <span class="hljs-keyword">name</span> <span class="hljs-keyword">NOT</span> <span class="hljs-keyword">IN</span> (<span class="hljs-keyword">SELECT</span> dbname <span class="hljs-keyword">FROM</span> <span class="hljs-comment">##CommandList)</span>
+	<span class="hljs-keyword">AND</span> <span class="hljs-keyword">name</span> &lt;&gt; <span class="hljs-string">'Maintenance'</span>;	<span class="hljs-comment">--  linked server -    ,   ,    "linked server"</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mal sehen, was dort passiert ist (SELECT * FROM ## CommandList): </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/2d/z7/k3/2dz7k3yvtbryjpasnxt5z0c7ipw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Großartig, alle Befehle werden dort gesammelt, um alle erforderlichen Datenbanken zu sichern / wiederherzustellen. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Die Wartungsdatenbank wurde auf dem neuen Server erstellt und enthält die CommandList-Tabelle, die Informationen zum Wiederherstellen der Datenbanken enthält:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">USE</span> [Maintenance]
+<span class="hljs-keyword">GO</span><font></font>
+<font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> CommandList (<font></font>
+	dbName sysname <span class="hljs-keyword">unique</span>				<span class="hljs-comment">-- </span>
+	, restore_command <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)		<span class="hljs-comment">--  </span>
+	, processed <span class="hljs-built_in">bit</span>						<span class="hljs-comment">-- </span>
+	, creation_dt datetime <span class="hljs-keyword">DEFAULT</span> <span class="hljs-keyword">GETDATE</span>()	<span class="hljs-comment">--  </span>
+	, start_dt datetime					<span class="hljs-comment">--  </span>
+	, finish_dt datetime					<span class="hljs-comment">--  </span>
+	, error_msg <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)				<span class="hljs-comment">-- ,  </span>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Auf dem alten Server wurde ein Verbindungsserver konfiguriert, der sich die neue Instanz von SQL Server ansieht. </font><font style="vertical-align: inherit;">Die Skripte, die in diesem Beitrag enthalten sind, habe ich zu Hause geschrieben und mich nicht um eine neue Instanz gekümmert. Ich habe eine verwendet und sie als Verbindungsserver mit mir selbst verbunden. </font><font style="vertical-align: inherit;">Daher habe ich hier die gleichen Pfade und Unpfad lokal. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Jetzt können Sie einen Cursor deklarieren, in dem die Datenbanken gesichert, getrennt und ein Befehl zum Wiederherstellen auf dem Verbindungsserver geschrieben werden sollen:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">DECLARE</span> @dbname <span class="hljs-keyword">AS</span> sysname<font></font>
+	, @backup_cmd <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)<font></font>
+	, @restore_cmd <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)<font></font>
+	, @offline_cmd <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>);<font></font>
+<font></font>
+<span class="hljs-keyword">DECLARE</span> MoveDatabase <span class="hljs-keyword">CURSOR</span>
+<span class="hljs-keyword">FOR</span> 
+<span class="hljs-keyword">SELECT</span> dbName, backup_command, offline_command, restore_command
+<span class="hljs-keyword">FROM</span> <span class="hljs-comment">##CommandList</span>
+<span class="hljs-keyword">WHERE</span> processed <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>;<font></font>
+<font></font>
+OPEN MoveDatabase;<font></font>
+<font></font>
+FETCH NEXT FROM MoveDatabase INTO @dbname, @backup_cmd, @offline_cmd, @restore_cmd;<font></font>
+<font></font>
+WHILE @@FETCH_STATUS = 0<font></font>
+	<span class="hljs-keyword">BEGIN</span>
+		<span class="hljs-comment">--    ,  :</span>
+		<span class="hljs-comment">--  </span>
+		<span class="hljs-comment">--   -      </span>
+		<span class="hljs-comment">--    ,      </span>
+		<span class="hljs-comment">--     </span><font></font>
+<font></font>
+		<span class="hljs-comment">--    </span>
+		<span class="hljs-keyword">UPDATE</span> <span class="hljs-comment">##CommandList</span>
+		<span class="hljs-keyword">SET</span> start_dt = <span class="hljs-keyword">GETDATE</span>()
+		<span class="hljs-keyword">WHERE</span> dbName = @dbname;<font></font>
+<font></font>
+		<span class="hljs-keyword">BEGIN</span> TRY<font></font>
+			<font></font>
+			RAISERROR (<span class="hljs-string">'  %s'</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>; <span class="hljs-comment">--   messages   </span><font></font>
+			<font></font>
+			<span class="hljs-comment">--  </span><font></font>
+			EXEC (@backup_cmd);<font></font>
+<font></font>
+			RAISERROR ('    %s', 0, 1, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			<span class="hljs-comment">--    -  linked server</span>
+			<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> [(<span class="hljs-keyword">LOCAL</span>)].[Maintenance].[dbo].[CommandList] (dbName, restore_command)
+			<span class="hljs-keyword">VALUES</span> (@dbname, @restore_cmd);<font></font>
+<font></font>
+			RAISERROR (' %s  OFFLINE', 0, 1, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			<span class="hljs-comment">--    </span><font></font>
+			EXEC (@offline_cmd);<font></font>
+<font></font>
+			<span class="hljs-comment">--  ,    </span>
+			<span class="hljs-keyword">UPDATE</span> <span class="hljs-comment">##CommandList</span>
+			<span class="hljs-keyword">SET</span> processed = <span class="hljs-number">0</span>
+				, finish_dt = <span class="hljs-keyword">GETDATE</span>()
+			<span class="hljs-keyword">WHERE</span> dbName = @dbname;<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span> TRY
+		<span class="hljs-keyword">BEGIN</span> CATCH<font></font>
+			<font></font>
+			RAISERROR (<span class="hljs-string">'    %s.   error_msg  ##CommandList'</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			<span class="hljs-comment">--  -   ,      </span>
+			<span class="hljs-keyword">UPDATE</span> <span class="hljs-comment">##CommandList</span>
+			<span class="hljs-keyword">SET</span> processed = <span class="hljs-number">1</span>
+				, finish_dt = <span class="hljs-keyword">GETDATE</span>()<font></font>
+				, error_msg = ERROR_MESSAGE();<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span> CATCH<font></font>
+<font></font>
+		<span class="hljs-keyword">FETCH</span> <span class="hljs-keyword">NEXT</span> <span class="hljs-keyword">FROM</span> MoveDatabase <span class="hljs-keyword">INTO</span> @dbname, @backup_cmd, @offline_cmd, @restore_cmd;
+	<span class="hljs-keyword">END</span><font></font>
+<font></font>
+<span class="hljs-keyword">CLOSE</span> MoveDatabase;<font></font>
+<font></font>
+<span class="hljs-keyword">DEALLOCATE</span> MoveDatabase;<font></font>
+<font></font>
+<span class="hljs-comment">-- </span>
+<span class="hljs-keyword">SELECT</span> dbName<font></font>
+	, <span class="hljs-keyword">CASE</span> processed <span class="hljs-keyword">WHEN</span> <span class="hljs-number">1</span> <span class="hljs-keyword">THEN</span> <span class="hljs-string">''</span> <span class="hljs-keyword">WHEN</span> <span class="hljs-number">0</span> <span class="hljs-keyword">THEN</span> <span class="hljs-string">''</span> <span class="hljs-keyword">ELSE</span> <span class="hljs-string">' '</span> <span class="hljs-keyword">END</span> <span class="hljs-keyword">as</span> <span class="hljs-keyword">Status</span> <font></font>
+	, start_dt<font></font>
+	, finish_dt<font></font>
+	, error_msg<font></font>
+<span class="hljs-keyword">FROM</span> <span class="hljs-comment">##CommandList</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> start_dt;<font></font>
+<font></font>
+<span class="hljs-keyword">DROP</span> <span class="hljs-keyword">TABLE</span> <span class="hljs-comment">##CommandList;</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Jede Aktion wird auf der Registerkarte Nachrichten in SSMS „protokolliert“ - dort können Sie die aktuelle Aktion beobachten. </font><font style="vertical-align: inherit;">Wenn Sie WITH LOG in RAISERROR verwenden, können Sie im Prinzip alles in einen Job einfügen und dann die Protokolle anzeigen. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Zur Laufzeit können Sie auf die ## CommandList zugreifen und in tabellarischer Form sehen, was wie passiert. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Parallel dazu drehte sich auf dem neuen Server eine Endlosschleife:</font></font><br>
+<br>
+<pre><code class="sql hljs">
+<span class="hljs-keyword">SET</span> NOCOUNT <span class="hljs-keyword">ON</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">DECLARE</span> @dbname <span class="hljs-keyword">AS</span> sysname<font></font>
+	, @restore_cmd <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>);<font></font>
+<font></font>
+WHILE 1 = 1	<span class="hljs-comment">--   ,    </span>
+<span class="hljs-keyword">BEGIN</span>
+	<span class="hljs-keyword">SELECT</span> TOP <span class="hljs-number">1</span> @dbname = dbName, @restore_cmd = restore_command 
+	<span class="hljs-keyword">FROM</span> CommandList
+	<span class="hljs-keyword">WHERE</span> processed <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>; <span class="hljs-comment">--    ,  </span><font></font>
+<font></font>
+	IF @dbname IS NOT NULL <font></font>
+	<span class="hljs-keyword">BEGIN</span>
+		<span class="hljs-comment">--    </span>
+		<span class="hljs-keyword">UPDATE</span> CommandList
+		<span class="hljs-keyword">SET</span> start_dt = <span class="hljs-keyword">GETDATE</span>()
+		<span class="hljs-keyword">WHERE</span> dbName = @dbname;<font></font>
+<font></font>
+		RAISERROR('  %s', 0, 1, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+		<font></font>
+		<span class="hljs-keyword">BEGIN</span> TRY<font></font>
+<font></font>
+			<span class="hljs-comment">--  ,  -  ,  CATCH    </span><font></font>
+			EXEC (@restore_cmd);<font></font>
+<font></font>
+			<span class="hljs-comment">--   </span>
+			<span class="hljs-keyword">UPDATE</span> CommandList
+			<span class="hljs-keyword">SET</span> processed = <span class="hljs-number">0</span>
+				, finish_dt = <span class="hljs-keyword">GETDATE</span>()
+			<span class="hljs-keyword">WHERE</span> dbName = @dbname;<font></font>
+<font></font>
+			RAISERROR(' %s  ', 0, 1, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span> TRY
+		<span class="hljs-keyword">BEGIN</span> CATCH<font></font>
+<font></font>
+			RAISERROR(<span class="hljs-string">'    %s'</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			<span class="hljs-keyword">UPDATE</span> CommandList 
+			<span class="hljs-keyword">SET</span> processed = <span class="hljs-number">1</span>
+				, finish_dt = <span class="hljs-keyword">GETDATE</span>()<font></font>
+				, error_msg = ERROR_MESSAGE();<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span> CATCH<font></font>
+<font></font>
+	<span class="hljs-keyword">END</span>
+	<span class="hljs-keyword">ELSE</span>	<span class="hljs-comment">--   ,    </span>
+		<span class="hljs-keyword">BEGIN</span><font></font>
+<font></font>
+			RAISERROR(<span class="hljs-string">'waiting'</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			WAITFOR DELAY '00:00:30';<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span><font></font>
+		<font></font>
+	<span class="hljs-keyword">SET</span> @dbname = <span class="hljs-literal">NULL</span>;
+	<span class="hljs-keyword">SET</span> @restore_cmd = <span class="hljs-literal">NULL</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">END</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Alles, was er tut - schaut in die CommandList-Tabelle, wenn dort mindestens ein Rohdatensatz vorhanden ist - nimmt den Datenbanknamen und den Befehl zum Wiederherstellen und versucht, ihn mit EXEC (@sql_text) auszuführen; </font><font style="vertical-align: inherit;">Wenn keine Einträge vorhanden sind, warten Sie 30 Sekunden und versuchen Sie es erneut. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sowohl der Cursor als auch die Schleife verarbeiten jeden Datensatz nur einmal. </font><font style="vertical-align: inherit;">Hat nicht funktioniert? </font><font style="vertical-align: inherit;">Wir schreiben eine Fehlermeldung in die Tabelle und kehren hier nicht mehr zurück.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Über die Bedingung zum Anhalten - ich war eigentlich faul. </font><font style="vertical-align: inherit;">Während der Eingabe habe ich mindestens drei Lösungen gefunden - als Option - die Flags "Bereit zur Wiederherstellung \ Nicht bereit für die Wiederherstellung \ Fertig" hinzugefügt, die Liste der Datenbanken und Befehle sofort ausgefüllt, wenn ## CommandList auf dem alten Server ausgefüllt und das Flag im Cursor aktualisiert wurde. </font><font style="vertical-align: inherit;">Wir hören auf, wenn keine „Datensätze zur Wiederherstellung bereit“ mehr vorhanden sind, da wir sofort den vollen Arbeitsaufwand kennen.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ergebnisse</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Es gibt jedoch keine Schlussfolgerungen. Ich dachte, es könnte für jemanden nützlich / interessant sein, zu sehen, wie Metadaten zum Erstellen und Ausführen von dynamischem SQL verwendet werden. Die in der Veröffentlichung angegebenen Skripte sind nicht für die Verwendung auf dem Produkt geeignet. Sie können jedoch für sich selbst leicht fertiggestellt und beispielsweise für die Massenanpassung von Protokollversand- / Datenbankspiegelungs- / Verfügbarkeitsgruppen verwendet werden. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Wenn Sie eine Sicherung für den Ball durchführen, muss das Konto, unter dem SQL Server ausgeführt wird, über Schreibberechtigungen verfügen.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Die Erstellung des Verbindungsservers wurde im Beitrag nicht bekannt gegeben (die Maus in der GUI wird in wenigen Minuten intuitiv konfiguriert) und die Übertragung von Anmeldungen auf den neuen Server. </font><font style="vertical-align: inherit;">Diejenigen, die eine Benutzermigration erlebt haben, wissen, dass das einfache Neuerstellen von SQL-Anmeldungen nicht viel hilft, da sie Seiten haben, mit denen Datenbankbenutzer verbunden sind. </font><font style="vertical-align: inherit;">Skripte zum Generieren von SQL-Anmeldungen mit aktuellen Kennwörtern und korrekter Sid befinden sich </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">auf msdn</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de488464/index.html">Webpack 5 - Asset-Module</a></li>
+<li><a href="../de488468/index.html">Einführung in FastAPI</a></li>
+<li><a href="../de488470/index.html">Kim Dotcom: Gefangen, die meistgesuchte Person online. Teil 4</a></li>
+<li><a href="../de488472/index.html">Wochenendlesung: 10 Materialien zu Audiogeräten - von sowjetischen Autoradios bis hin zu geräuschunterdrückenden Steckern</a></li>
+<li><a href="../de488476/index.html">Tesla-Rohrspule</a></li>
+<li><a href="../de488480/index.html">Eine intelligente Lampe für die "Reichen" mit ihren "faulen" Händen. Sie ist "einfach" und praktisch</a></li>
+<li><a href="../de488482/index.html">Wie viel kostet Appium für die Menschen?</a></li>
+<li><a href="../de488484/index.html">SQL-Start - Microsoft SQL Server 2019-Ereignis</a></li>
+<li><a href="../de488488/index.html">Für OpenBSD. Ein bisschen Freude</a></li>
+<li><a href="../de488490/index.html">Likbez über Atemschutzmasken. Hilft das Beatmungsgerät bei Virusinfektionen? Übersicht über 11 Atemschutzmasken</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

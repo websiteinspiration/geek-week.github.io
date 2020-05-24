@@ -1,0 +1,235 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍠 👨🏽‍🤝‍👨🏼 ⏭️ Data compression in Apache Ignite. Sberbank Experience 🍼 📻 🚴</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="When working with large volumes of data, sometimes the problem of insufficient disk space can become acute. One way to solve this problem is compressi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Data compression in Apache Ignite. Sberbank Experience</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/sberbank/blog/502136/"><img src="https://habrastorage.org/webt/cl/nj/sz/clnjsz90dmzkkj3wr4vuusu_-nu.png" align="left"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">When working with large volumes of data, sometimes the problem of insufficient disk space can become acute. </font><font style="vertical-align: inherit;">One way to solve this problem is compression, due to which, on the same equipment, you can afford to increase storage volumes. </font><font style="vertical-align: inherit;">In this article, we will look at how data compression works in Apache Ignite. </font><font style="vertical-align: inherit;">This article will describe only the methods of disk compression implemented within the product. </font><font style="vertical-align: inherit;">Other methods of data compression (over the network, in memory), both implemented and not, will remain outside the scope. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, when persistence mode is on, as a result of changing data in caches, Ignite starts writing to disk:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cache Content</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Write Ahead Log (hereinafter referred to as WAL)</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A mechanism called WAL compaction has existed for a long time to compress WALs. </font><font style="vertical-align: inherit;">The recently released Apache Ignite 2.8 introduced two more mechanisms for compressing data on disk: disk page compression for compressing the contents of caches and WAL page snapshot compression for compressing some WAL records. </font><font style="vertical-align: inherit;">More on all of these three mechanisms below.</font></font><a name="habracut"></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Disk page compression</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How it works</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To begin with, we will very briefly dwell on how Ignite stores data. For storage, page memory is used. The page size is set at the start of the node and cannot be changed at later stages, also the page size must be a power of two and a multiple of the size of the file system block. Pages are loaded into RAM from disk as needed, the size of data on disk may exceed the amount of allocated RAM. If there is not enough space in RAM to load pages from disk, old, unused pages will be forced out of RAM.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Data is stored on disk in the following form: a separate file is created for each partition of each cache group, in this file, in ascending order of index, pages go one after another. The full page identifier contains the cache group identifier, partition number, and page index in the file. Thus, by the full page identifier, we can uniquely identify the file and offset in the file for each page. You can read more about page memory in an article on the Apache Ignite Wiki: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ignite Persistent Store - under the hood</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The disk page compression mechanism, as the name suggests, works at the page level. </font><font style="vertical-align: inherit;">When this mechanism is turned on, work with data in RAM is performed as is, without any compression, but at the time of saving pages from RAM to disk, they are compressed. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But to compress each page individually is not a solution to the problem, you need to somehow reduce the size of the resulting data files. </font><font style="vertical-align: inherit;">If the page size ceases to be fixed, we can no longer write pages to a file one by one, as this can give rise to a number of problems:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We cannot use the page index to calculate the offset at which it is located in the file.</font></font></li>
+<li> ,    ,          .    ,     .    ,         .</li>
+<li>           ,      ,        ,      .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In order not to solve these problems at its own level, disk page compression in Apache Ignite uses a file system mechanism called sparse files. A sparse file is a file in which some regions filled with zeros can be marked as holes. In this case, blocks of the file system for storing these holes will not be allocated, as a result of which disk space is saved.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is logical that in order to free the file system block, the hole size must be greater than or equal to the file system block, which imposes an additional restriction on the page size of Apache Ignite: for compression to give at least some effect, the page size must be strictly larger than the file system block size . If the page size is equal to the size of the block, then we will never be able to free a single block, since in order to free a single block we need a compressed page to occupy 0 bytes. If the page size is equal to the size of 2 or 4 blocks, we can already free at least one block if our page is compressed to at least 50% or 75%, respectively.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thus, the final description of the mechanism: When writing a page to disk, an attempt is made to compress the page. If the size of the compressed page allows one or more blocks of the file system to be freed, then the page is written in compressed form, a “hole” breaks in place of the released blocks (a system call </font></font><code>fallocate()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">with the “punch hole” flag is made). If the size of the compressed page does not allow freeing up blocks, the page is saved as is, in uncompressed form. All page offsets are considered as well as without compression, by multiplying the page index by page size. No self-relocation of pages is required. Page offsets, as well as without compression, fall on the boundaries of file system blocks.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-l/0f/3x/-l0f3xzxozvrxefbiauxdivslv0.png"><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the current implementation, Ignite can only work with sparse files under Linux OS, so disk page compression can only be enabled when Ignite is used on this operating system. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Compression algorithms that can be used for disk page compression: ZSTD, LZ4, Snappy. </font><font style="vertical-align: inherit;">In addition, there is an operating mode (SKIP_GARBAGE), in which only an unused place in the page is thrown out without applying compression to the remaining data, which allows to reduce the load on the CPU compared to the algorithms listed above.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Performance impact </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Unfortunately, I did not actually measure performance on real stands, since we don’t plan to use this mechanism in production, but theoretically we can speculate where we will lose and where we will win. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To do this, we need to remember how to read and write pages when accessing them:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">When a read operation is performed, it is first searched for in RAM, if the search fails, the page is loaded into RAM from the disk with the same stream that reads.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">When performing a write operation, the page in RAM is marked as dirty, while the physical saving of the page to disk immediately in the stream performing recording does not occur. </font><font style="vertical-align: inherit;">All dirty pages are saved to disk later in the checkpoint process in separate streams.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thus, the effect on read operations:</font></font><br>
+<br>
+<ul>
+<li> (disk IO),        .</li>
+<li> (CPU),           sparse .       IO       sparse  (    sparse  ,  ,  ).</li>
+<li> (CPU),     .</li>
+<li>    .</li>
+<li>    (    ):</li>
+<li> (disk IO),        .</li>
+<li> (CPU,  disk IO),     sparse .</li>
+<li> (CPU),     .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Which scale will outweigh? </font><font style="vertical-align: inherit;">It all depends a lot on the environment, but I am inclined to believe that disk page compression is more likely to degrade performance on most systems. </font><font style="vertical-align: inherit;">Moreover, tests on other DBMSs using a similar approach with sparse files show a drop in performance when compression is enabled.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How to enable and configure</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As mentioned above, the minimum version of Apache Ignite that supports disk page compression: 2.8 and only supports the Linux operating system. </font><font style="vertical-align: inherit;">Switching on and setting is performed as follows:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The class-path must have an ignite-compression module. </font><font style="vertical-align: inherit;">By default, it is located in the Apache Ignite distribution in the libs / optional directory and is not included in the class-path. </font><font style="vertical-align: inherit;">You can simply move the directory one level up to libs and then when launched through ignite.sh it will automatically be turned on.</font></font></li>
+<li>Persistence    (  <code>DataRegionConfiguration.setPersistenceEnabled(true))</code>.</li>
+<li>         (    <code>DataStorageConfiguration.setPageSize()</code> ).</li>
+<li>  ,            ()   ( <code>CacheConfiguration.setDiskPageCompression() , CacheConfiguration.setDiskPageCompressionLevel()</code>).</li>
+</ul><br>
+<h3>WAL compaction</h3><br>
+<h4>  </h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What is WAL and why is it needed? Very briefly: this is a journal in which all events that change as a result of the page repository fall. He is needed primarily for the possibility of recovery in the event of a fall. Before transferring control to a user, any operation must first write the event to the WAL, so that in the event of a fall it will be able to play through the log and restore all operations for which the user received a successful response, even if these operations did not have time to be reflected in the page storage on disk (above already it has been described that the actual writing to the page store is performed in a process called a checkpoint with some delay in separate threads).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entries in the WAL are divided into logical and physical. Logical ones are keys and values ​​themselves. Physical - reflect page changes in the page store. If logical records can be useful for some other cases, physical records are needed only for recovery in the event of a fall and records are needed only from the moment of the last successful checkpoint. Here we will not go into details and explain why this works in this way, but anyone interested can refer to the already mentioned article on the Apache Ignite Wiki: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ignite Persistent Store - under the hood</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+One logical record often accounts for several physical records. That is, for example, one cache put operation affects several pages in page memory (a page with the data itself, pages with indexes, pages with free-lists). On some synthetic tests, it turned out that the physical records occupied up to 90% of the WAL file. Moreover, they need a very short time (by default, the interval between checkpoints is 3 minutes). It would be logical to get rid of this data after losing its relevance. This is exactly what the WAL compaction mechanism performs, gets rid of physical records and compresses the remaining logical records with zip, while the file size decreases very significantly (sometimes tens of times).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Physically, a WAL consists of several segments (default 10) of a fixed size (default 64 MB), which are overwritten in a circle. </font><font style="vertical-align: inherit;">As soon as the current segment is filled, the next segment is assigned to the current one, and the filled segment is copied to the archive in a separate stream. </font><font style="vertical-align: inherit;">WAL compaction already works with archive segments. </font><font style="vertical-align: inherit;">Also, in a separate stream, it monitors the execution of the checkpoint and starts compression by archive segments, for which physical records are no longer needed.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zk/95/jo/zk95jo7dnthiox2sv0ezywhrj2a.png"><br>
+ <br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Performance impact</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since WAL compaction operates as a separate thread, there should not be a direct influence on the operations performed. </font><font style="vertical-align: inherit;">But it still gives an additional background load on the CPU (compression) and disk (reading each WAL segment from the archive and writing compressed segments), so if the system runs to the limit, it will also lead to degradation of performance.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How to enable and configure</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can enable WAL compaction using property </font></font><code>WalCompactionEnabled</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">c </font></font><code>DataStorageConfiguration (DataStorageConfiguration.setWalCompactionEnabled(true)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">). </font><font style="vertical-align: inherit;">Also, using the DataStorageConfiguration.setWalCompactionLevel () method, you can set the compression ratio if you are not satisfied with the default value (BEST_SPEED).</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WAL page snapshot compression</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How it works</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We have already found out that in WAL, entries are divided into logical and physical. For each change of each page in the page memory, a physical WAL record is generated. Physical records, in turn, are also divided into 2 subspecies: page snapshot record and delta record. Every time we change something on a page and transfer it from a clean state to a dirty one, a full copy of this page is saved in the WAL (page snapshot record). Even if we changed only one byte in the WAL, a record with a size slightly larger than the page size will be saved. If we change something on an already dirty page, then a delta record is formed in the WAL, which reflects only the changes compared to the previous state of the page, but not the entire page. Since resetting the status of pages from dirty to clean is performed during the checkpoint process,immediately after the start of the checkpoint, almost all physical records will consist only of snapshots of pages (since all pages immediately after the start of the checkpoint are blank), then as you approach the next checkpoint, the proportion of delta record starts to grow and is reset again at the beginning of the next checkpoint. Measurements on some synthetic tests showed that the share of page snapshots in the total volume of physical records reaches 90%.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The idea behind WAL page snapshot compression is to compress page snapshots using an off-the-shelf page compression tool (see disk page compression). At the same time, in WAL, records are saved sequentially in append-only mode and there is no need to bind records to the boundaries of file system blocks, therefore, here, unlike the disk page compression mechanism, we absolutely do not need sparse files, so this mechanism will work not only on the OS Linux In addition, we no longer care how much we were able to compress the page. Even if we freed 1 byte, this is already a positive result and we can save compressed data in WAL, unlike disk page compression, where we save a compressed page only if more than 1 file system block is freed.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pages are well compressible data, their share in the total WAL volume is very high, so without changing the format of the WAL file, we can get a significant reduction in its size. </font><font style="vertical-align: inherit;">Compression of logical records, among other things, would require a change in format and loss of compatibility, for example, for external consumers who might be interested in logical records, without significantly reducing the file size. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As for disk page compression for WAL page snapshot compression, the compression algorithms ZSTD, LZ4, Snappy, as well as the SKIP_GARBAGE mode can be used.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Performance impact</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is not difficult to notice that the direct inclusion of WAL page snapshot compression affects only the streams that write data to the page memory, that is, those streams that change the data in the caches. Reading from WAL physical records occurs only once, at the moment of raising the node after the fall (and only in the case of a fall during the checkpoint). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This affects data flows as follows: we get a negative effect (CPU) due to the need to compress the page each time before writing to disk and a positive effect (disk IO) by reducing the amount of data being written. Accordingly, everything is simple here, if the system performance rests on the CPU, we get a little degradation, if in disk I / O, we get an increase.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Indirectly, reducing the size of WALs also affects (positively) streams that drop WAL segments into the archive and WAL compaction streams. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Real performance tests in our environment on synthetic data showed a small increase (throughput increased by 10% -15%, latency decreased by 10% -15%).</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How to enable and configure</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The minimum version of Apache Ignite is 2.8. </font><font style="vertical-align: inherit;">Switching on and setting is performed as follows:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The class-path must have an ignite-compression module. </font><font style="vertical-align: inherit;">By default, it is located in the Apache Ignite distribution in the libs / optional directory and is not included in the class-path. </font><font style="vertical-align: inherit;">You can simply move the directory one level up to libs and then when launched through ignite.sh it will automatically be turned on.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Persistence must be enabled (Enabled through </font></font><code>DataRegionConfiguration.setPersistenceEnabled(true)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">).</font></font></li>
+<li>        <code>DataStorageConfiguration.setWalPageCompression()</code>,     ( DISABLED).</li>
+<li>        <code>DataStorageConfiguration.setWalPageCompression()</code>,         javadoc  .</li>
+</ul><br>
+<h3></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The data compression mechanisms discussed in Apache Ignite can be used independently of each other, but any combination of them is also valid. </font><font style="vertical-align: inherit;">Understanding the principles of their work will determine how they fit your tasks in your environment and what you will have to sacrifice when using them. </font><font style="vertical-align: inherit;">Disk page compression is designed to compress main storage and can provide medium compression. </font><font style="vertical-align: inherit;">WAL page snapshot compression will give an average degree of compression of already WAL files, while it is likely to even improve performance. </font><font style="vertical-align: inherit;">WAL compaction will not positively affect performance, but will minimize the size of WAL files by deleting physical records.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en502122/index.html">Thanos - Scalable Prometheus</a></li>
+<li><a href="../en502124/index.html">2019 venture results for Ukraine</a></li>
+<li><a href="../en502126/index.html">How to Improve Your English Programmer Resume</a></li>
+<li><a href="../en502132/index.html">How to transfer OpenVZ 6 container to KVM server without headache</a></li>
+<li><a href="../en502134/index.html">Enough to be afraid of subjectively beautiful decisions in the code - you are not robots</a></li>
+<li><a href="../en502146/index.html">Online roundtable "I want to gamedev"</a></li>
+<li><a href="../en502148/index.html">Using third-party components in storage using Qsan as an example</a></li>
+<li><a href="../en502150/index.html">Scaling a high-load network with Nutanix: features and challenges with a personal case</a></li>
+<li><a href="../en502154/index.html">Writing Autotests Effectively - Subcutaneous tests</a></li>
+<li><a href="../en502156/index.html">Rambler v. NGINX Case: Criminal Risks of Digitalization Roundtable May 16</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

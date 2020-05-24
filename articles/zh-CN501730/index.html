@@ -1,0 +1,213 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎇 🎷 🕸️ ProxySQL-用于多路分解连接的工具 🛐 👶🏼 🧑🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="您好，我叫Alexander Yakovlev，我在Citimobil工作并运营。今天，我将向您介绍一个非常有趣的ProxySQL产品-它是一种高性能的MySQL Proxy，可以完成很多事情-通过掩码捕获和杀死请求，借助它您可以搜索sql注入，复制负载等等。我将谈论我们与他的经历。
+ 迟来的情况是...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>ProxySQL-用于多路分解连接的工具</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/citymobil/blog/501730/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您好，我叫Alexander Yakovlev，我在Citimobil工作并运营。</font><font style="vertical-align: inherit;">今天，我将向您介绍一个非常有趣的ProxySQL产品-它是一种高性能的MySQL Proxy，可以完成很多事情-通过掩码捕获和杀死请求，借助它您可以搜索sql注入，复制负载等等。</font><font style="vertical-align: inherit;">我将谈论我们与他的经历。</font></font><a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+迟来的情况是，任何大型IT项目（其开发都是从一对服务器开始的）都面临着以下情况。想象一下，该项目最初只有一个数据库-主服务器。逐渐地，一群奴隶被加入其中。然后他们引入了分片。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一天，负载突然增加了十倍。例如，因为您的主要竞争对手已经倒下，而客户却赶到了您。此时，您似乎可以通过添加Web服务器来简单地扩展负载。但是完成此操作后，就会出现不愉快的情况。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+考虑一个向导的示例。假设您有50个Web服务器，每200个php-fpm进程。然后，将有50 * 200个连接到达主服务器，然后以50 * 200 /个从服务器到达每个从服务器（当然，如果在roproxy中配置了roundrobin）-参见下图。当然，到主服务器的一万个连接是很多，但仍然可以承受，如果有200个网站，则连接的数量将更多，一个连接=一个线程。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们遇到了这个瓶颈。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/7b2/bb3/e2b/7b2bb3e2b3ff265076397aece6d0da81.jpg" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后我们开始争论：与向导的连接始终安装在代码中，但是所有fpm进程是否都必须这样做？可能不是。我们注意到，与主服务器的大量持久连接只是简单地挂起。他们决定我们需要解复用。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/df8/8e7/595/df88e75958437543e14e00a08603a7b8.jpg" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为此，我们提请注意一种名为ProxySQL的产品。它像普通的反向代理一样工作：建立连接，并根据配置中指定的某些规则重新分配流量。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们在所有Web服务器上安装了ProxySQL，并在应用程序配置中指定对主数据库的调用在地址127.0.0.1处进行。如果以前每台Web服务器上的200名FPM工作人员意味着从这台机器到主数据库的200条连接，那么情况已经改变了。这200个连接来自ProxySQL，而50-70个连接则在不同时间断开。也就是说，ProxySQL可以重用现有的连接。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于多路分解，我们在所有主机上将连接数减少了3-10倍，请参阅下面其中一个主机的当前连接图。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/87b/285/e02/87b285e02729e752ccf931994d4253e6.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+多亏了ProxySQL，我们摆脱了上述瓶颈。但这不是我们使用此工具改进的唯一工作流程。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们还没有完成第二个过程，但是非常接近完成。我们计划使用ProxySQL在测试环境中复制实际负载。这是检查战斗流量的新功能所必需的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如何实施？该应用程序转到ProxySQL，并通过两条路径发送流量：进入战斗数据库以使该应用程序正常运行，以及到达测试环境以检查负载下的新功能。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ProxySQL的功能是有它的配置，在我们的案例中是通过puppet推出的（对于puppet，有一个ProxySQL模块），但是还有运行时区域的概念，以便进行更改（添加服务器，添加用户，删除服务器和用户） ），则不需要通常的重新启动/重新加载。一切都通过ProxySQL控制台完成，例如这样。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">mysql -ulogin -ppassword -h 127.0.0.1 -P6032 -e "INSERT INTO mysql_users(username,password,default_hostgroup) VALUES ('sm_username','pass',1);;LOAD MYSQL USERS TO RUNTIME;SAVE MYSQL USERS TO DISK;"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当然，更详细地，在官方文档</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">proxysql.com/documentation中。</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+感谢您的关注。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+解决上述问题的配置，请参见下文。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们的配置</font></font><br>
+<br>
+<pre><code class="plaintext hljs">datadir="/var/lib/proxysql"<font></font>
+<font></font>
+admin_variables=<font></font>
+{<font></font>
+    admin_credentials="user:pass"<font></font>
+    mysql_ifaces="0.0.0.0:6032"<font></font>
+    refresh_interval=2000<font></font>
+    web_enabled=true<font></font>
+    web_port=6080<font></font>
+    stats_credentials="stats:admin"<font></font>
+}<font></font>
+<font></font>
+mysql_variables =<font></font>
+{<font></font>
+    threads = 1000<font></font>
+    max_connections = 2000<font></font>
+    default_query_delay= 0<font></font>
+    default_query_timeout=1<font></font>
+    have_compress=true<font></font>
+    poll_timeout=2000<font></font>
+    interfaces="0.0.0.0:6033;/tmp/proxysql.sock"<font></font>
+    default_schema="information_schema"<font></font>
+    stacksize=1048576<font></font>
+    server_version="5.7.22"<font></font>
+    connect_timeout_server=10000<font></font>
+    monitor_history=60000<font></font>
+    monitor_connect_interval=200000<font></font>
+    monitor_ping_interval=200000<font></font>
+    ping_interval_server_msec=5000<font></font>
+    ping_timeout_server=200<font></font>
+    commands_stats=true<font></font>
+    sessions_sort=true<font></font>
+    monitor_username="root"<font></font>
+    monitor_password="password"<font></font>
+    monitor_galera_healthcheck_interval=200<font></font>
+    monitor_galera_healthcheck_timeout=80<font></font>
+}<font></font>
+<font></font>
+mysql_servers =<font></font>
+(<font></font>
+  {<font></font>
+    address = "ip_real_mysql_server",<font></font>
+    port = 3306,<font></font>
+    max_connections = 10000,<font></font>
+    host_group = 1,<font></font>
+  })<font></font>
+mysql_users =<font></font>
+(<font></font>
+  {<font></font>
+    username = "user",<font></font>
+    password = "pass",<font></font>
+    default_hostgroup = 1,<font></font>
+    transaction_persistent = 0,<font></font>
+    active = 1,<font></font>
+  })<font></font>
+</code></pre></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN501712/index.html">谈论测试：一些故事和调查</a></li>
+<li><a href="../zh-CN501714/index.html">School 42是IT生活，编程领域以及所有其他方面的主要答案</a></li>
+<li><a href="../zh-CN501716/index.html">接受挑战或Lamoda工程师解决什么任务</a></li>
+<li><a href="../zh-CN501722/index.html">Comet-用于快速REST API的PHP框架</a></li>
+<li><a href="../zh-CN501724/index.html">在纯JavaScript中使用Cookie可以轻松解决</a></li>
+<li><a href="../zh-CN501734/index.html">[极客时代]我们的技术未来：专家的预测</a></li>
+<li><a href="../zh-CN501736/index.html">六个月前我们由于光学系统断路而改用udalenka</a></li>
+<li><a href="../zh-CN501738/index.html">5月13日Java摘要</a></li>
+<li><a href="../zh-CN501742/index.html">5月13日运输：uiiii，就患者人数而言，我们位居第二，是时候取消限制了</a></li>
+<li><a href="../zh-CN501744/index.html">设计师不是绘画精美的人，而是帮助企业了解用户的人。</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

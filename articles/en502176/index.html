@@ -1,0 +1,438 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👸🏿 🤜 🚺 Go: JSON deserialization with incorrect typing, or how to work around API developer errors 👊🏽 🧔🏻 👨🏾‍🚒</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Recently, I happened to develop an http client on Go for a service that provides a REST API with json as the encoding format. A standard task, but in ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Go: JSON deserialization with incorrect typing, or how to work around API developer errors</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/502176/"><img src="https://habrastorage.org/webt/pf/hz/xm/pfhzxmp9antvvecnexqujg6pkzk.jpeg" alt="image"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Recently, I happened to develop an http client on Go for a service that provides a REST API with json as the encoding format. </font><font style="vertical-align: inherit;">A standard task, but in the course of work I had to face a non-standard problem. </font><font style="vertical-align: inherit;">I tell you what the point is. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As you know, the json format has data types. </font><font style="vertical-align: inherit;">Four primitives: string, number, boolean, null; </font><font style="vertical-align: inherit;">and two structural types: an object and an array. </font><font style="vertical-align: inherit;">In this case, we are interested in primitive types. </font><font style="vertical-align: inherit;">Here is an example json code with four fields of different types:</font></font><br>
+<br>
+<pre><code class="json hljs">{
+	<span class="hljs-attr">"name"</span>:<span class="hljs-string">"qwerty"</span>,
+	<span class="hljs-attr">"price"</span>:<span class="hljs-number">258.25</span>,
+	<span class="hljs-attr">"active"</span>:<span class="hljs-literal">true</span>,
+	<span class="hljs-attr">"description"</span>:<span class="hljs-literal">null</span>,<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As the example shows, the string value is enclosed in quotation marks. Numeric - does not have quotation marks. A boolean type can have only one of two values: true or false (without quotes). And the null type is accordingly null (also without quotes).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And now the problem itself. At some point, in a detailed examination of the json code received from a third-party service, I found that one of the fields (let's call it price) periodically has a string value (the number in quotation marks) in addition to the numerical value. That is, the same query with different parameters can return a number as a number, or it can return the same number as a string. I can’t imagine how the code returning such results is organized at the other end, but apparently this is due to the fact that the service itself is an aggregator and pulls data from different sources, and the developers did not bring the server response json to a single format. Nevertheless, it is necessary to work with what is.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But then I was even more surprised. </font><font style="vertical-align: inherit;">The logical field (let's call it active), in addition to true and false, returned the string values ​​“true”, “false”, and even numeric 1 and 0 (true and false, respectively).</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All this confusion about data types would not be critical if I were to process json say in weakly typed PHP, but Go has strong typing, and requires a clear indication of the type of deserialized field. </font><font style="vertical-align: inherit;">As a result, there was a need to implement a mechanism that allows converting all values ​​of the active field to a logical type during the deserialization process, and any value of the price field to a numeric one. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's start with the price field. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suppose we have json code like this:</font></font><br>
+<br>
+<pre><code class="json hljs">[<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">1</span>,<span class="hljs-attr">"price"</span>:<span class="hljs-number">2.58</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">2</span>,<span class="hljs-attr">"price"</span>:<span class="hljs-number">7.15</span>}<font></font>
+]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is, json contains an array of objects with two fields of a numeric type. </font><font style="vertical-align: inherit;">The standard deserialization code for this json on Go looks like this:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">type</span> Target <span class="hljs-keyword">struct</span> {<font></font>
+	Id    <span class="hljs-keyword">int</span>     <span class="hljs-string">`json:"id"`</span>
+	Price <span class="hljs-keyword">float64</span> <span class="hljs-string">`json:"price"`</span><font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">main</span><span class="hljs-params">()</span></span> {<font></font>
+	jsonString := <span class="hljs-string">`[{"id":1,"price":2.58},
+					{"id":4,"price":7.15}]`</span><font></font>
+<font></font>
+	targets := []Target{}<font></font>
+<font></font>
+	err := json.Unmarshal([]<span class="hljs-keyword">byte</span>(jsonString), &amp;targets)
+	<span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {<font></font>
+		fmt.Println(err)<font></font>
+		<span class="hljs-keyword">return</span><font></font>
+	}<font></font>
+<font></font>
+	<span class="hljs-keyword">for</span> _, t := <span class="hljs-keyword">range</span> targets {<font></font>
+		fmt.Println(t.Id, <span class="hljs-string">"-"</span>, t.Price)<font></font>
+	}<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this code, we will deserialize the id field to int and the price field to float64. </font><font style="vertical-align: inherit;">Now suppose our json code looks like this:</font></font><br>
+<br>
+<pre><code class="json hljs">[<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">1</span>,<span class="hljs-attr">"price"</span>:<span class="hljs-number">2.58</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">2</span>,<span class="hljs-attr">"price"</span>:<span class="hljs-string">"2.58"</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">3</span>,<span class="hljs-attr">"price"</span>:<span class="hljs-number">7.15</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">4</span>,<span class="hljs-attr">"price"</span>:<span class="hljs-string">"7.15"</span>}<font></font>
+]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is, the price field contains values ​​of both a numeric type and a string. </font><font style="vertical-align: inherit;">In this case, only the numeric values ​​of the price field can be decoded into type float64, while string values ​​will cause an error about incompatibility of types. </font><font style="vertical-align: inherit;">This means that neither float64 nor any other primitive type is suitable for deserializing this field, and we need our own custom type with its own deserialization logic. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As such a type, declare a CustomFloat64 structure with a single Float64 field of type float64.</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">type</span> CustomFloat64 <span class="hljs-keyword">struct</span>{<font></font>
+	Float64 <span class="hljs-keyword">float64</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And immediately indicate this type for the Price field in the Target structure:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">type</span> Target <span class="hljs-keyword">struct</span> {<font></font>
+	Id    <span class="hljs-keyword">int</span>           <span class="hljs-string">`json:"id"`</span>
+	Price CustomFloat64 <span class="hljs-string">`json:"price"`</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now you need to describe your own logic for decoding a field of type CustomFloat64. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The “encoding / json” package has two special methods: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MarshalJSON</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">UnmarshalJSON</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which are designed to customize the encoding and decoding logic of a specific user data type. It is enough to override these methods and describe your own implementation. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Override the UnmarshalJSON method for an arbitrary type CustomFloat64. In this case, it is necessary to strictly follow the signature of the method, otherwise it simply will not work, and most importantly it will not give an error.</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(cf *CustomFloat64)</span> <span class="hljs-title">UnmarshalJSON</span><span class="hljs-params">(data []<span class="hljs-keyword">byte</span>)</span> <span class="hljs-title">error</span></span> {</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the input, this method takes a slice of bytes (data), which contains the value of a particular field of the decoded json. If we convert this sequence of bytes into a string, then we will see the value of the field exactly in the form in which it is written in json. That is, if it is a string type, then we will see exactly a string with double quotes (“258”), if it is a numeric type, then we will see a string without quotes (258).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To distinguish a numeric value from a string value, you must check whether the first character is a quotation mark. Since the double quote character in the UNICODE table takes up one byte, we just need to check the first byte of the data slice by comparing it with the character number in UNICODE. This is number 34. Note that in general, a character is not equivalent to a byte, as it can take more than one byte. A symbol in Go is equivalent to rune (rune). In our case, this condition is sufficient:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">if</span> data[<span class="hljs-number">0</span>] == <span class="hljs-number">34</span> {</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If the condition is met, then the value has a string type, and we need to get the string between quotes, i.e., the slice byte between the first and last byte. </font><font style="vertical-align: inherit;">This slice contains a numerical value that can be decoded into the primitive type float64. </font><font style="vertical-align: inherit;">This means that we can apply the json.Unmarshal method to it, while saving the result in the Float64 field of the CustomFloat64 structure.</font></font><br>
+<br>
+<pre><code class="go hljs">err := json.Unmarshal(data[<span class="hljs-number">1</span>:<span class="hljs-built_in">len</span>(data)<span class="hljs-number">-1</span>], &amp;cf.Float64)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If the data slice does not start with a quotation mark, then it already contains a numerical data type, and we can apply the json.Unmarshal method directly to the entire data slice.</font></font><br>
+<br>
+<pre><code class="go hljs">err := json.Unmarshal(data, &amp;cf.Float64)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here is the complete code for the UnmarshalJSON method:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(cf *CustomFloat64)</span> <span class="hljs-title">UnmarshalJSON</span><span class="hljs-params">(data []<span class="hljs-keyword">byte</span>)</span> <span class="hljs-title">error</span></span> {
+	<span class="hljs-keyword">if</span> data[<span class="hljs-number">0</span>] == <span class="hljs-number">34</span> {<font></font>
+		err := json.Unmarshal(data[<span class="hljs-number">1</span>:<span class="hljs-built_in">len</span>(data)<span class="hljs-number">-1</span>], &amp;cf.Float64)
+		<span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+			<span class="hljs-keyword">return</span> errors.New(<span class="hljs-string">"CustomFloat64: UnmarshalJSON: "</span> + err.Error())<font></font>
+		}<font></font>
+	} <span class="hljs-keyword">else</span> {<font></font>
+		err := json.Unmarshal(data, &amp;cf.Float64)<font></font>
+		<span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+			<span class="hljs-keyword">return</span> errors.New(<span class="hljs-string">"CustomFloat64: UnmarshalJSON: "</span> + err.Error())<font></font>
+		}<font></font>
+	}<font></font>
+	<span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result, using the json.Unmarshal method to our json code, all the values ​​of the price field will be transparently converted to a primitive type float64 for us, and the result will be written to the Float64 field of the CustomFloat64 structure. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we may need to convert the Target structure back to json. But, if we apply the json.Marshal method directly to the CustomFloat64 type, then we serialize this structure as an object. We need to encode the price field into a numerical value. To customize the coding logic of the custom type CustomFloat64, we implement the MarshalJSON method for it, while strictly observing the signature of the method:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(cf CustomFloat64)</span> <span class="hljs-title">MarshalJSON</span><span class="hljs-params">()</span> <span class="hljs-params">([]<span class="hljs-keyword">byte</span>, error)</span></span> {<font></font>
+	json, err := json.Marshal(cf.Float64)<font></font>
+	<span class="hljs-keyword">return</span> json, err<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All you need to do in this method is again to use the json.Marshal method, but already apply it not to the CustomFloat64 structure, but to its Float64 field. </font><font style="vertical-align: inherit;">From the method we return the received byte slice and error. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here is the complete code that displays the results of serialization and deserialization (error checking is omitted for brevity, the number of the byte with the double quotation mark symbol is in constant):</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">package</span> main<font></font>
+<font></font>
+<span class="hljs-keyword">import</span> (
+	<span class="hljs-string">"encoding/json"</span>
+	<span class="hljs-string">"errors"</span>
+	<span class="hljs-string">"fmt"</span><font></font>
+)<font></font>
+<font></font>
+<span class="hljs-keyword">type</span> CustomFloat64 <span class="hljs-keyword">struct</span> {<font></font>
+	Float64 <span class="hljs-keyword">float64</span><font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">const</span> QUOTES_BYTE = <span class="hljs-number">34</span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(cf *CustomFloat64)</span> <span class="hljs-title">UnmarshalJSON</span><span class="hljs-params">(data []<span class="hljs-keyword">byte</span>)</span> <span class="hljs-title">error</span></span> {
+	<span class="hljs-keyword">if</span> data[<span class="hljs-number">0</span>] == QUOTES_BYTE {<font></font>
+		err := json.Unmarshal(data[<span class="hljs-number">1</span>:<span class="hljs-built_in">len</span>(data)<span class="hljs-number">-1</span>], &amp;cf.Float64)
+		<span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+			<span class="hljs-keyword">return</span> errors.New(<span class="hljs-string">"CustomFloat64: UnmarshalJSON: "</span> + err.Error())<font></font>
+		}<font></font>
+	} <span class="hljs-keyword">else</span> {<font></font>
+		err := json.Unmarshal(data, &amp;cf.Float64)<font></font>
+		<span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+			<span class="hljs-keyword">return</span> errors.New(<span class="hljs-string">"CustomFloat64: UnmarshalJSON: "</span> + err.Error())<font></font>
+		}<font></font>
+	}<font></font>
+	<span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span><font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(cf CustomFloat64)</span> <span class="hljs-title">MarshalJSON</span><span class="hljs-params">()</span> <span class="hljs-params">([]<span class="hljs-keyword">byte</span>, error)</span></span> {<font></font>
+	json, err := json.Marshal(cf.Float64)<font></font>
+	<span class="hljs-keyword">return</span> json, err<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">type</span> Target <span class="hljs-keyword">struct</span> {<font></font>
+	Id    <span class="hljs-keyword">int</span>           <span class="hljs-string">`json:"id"`</span>
+	Price CustomFloat64 <span class="hljs-string">`json:"price"`</span><font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">main</span><span class="hljs-params">()</span></span> {<font></font>
+	jsonString := <span class="hljs-string">`[{"id":1,"price":2.58},
+					{"id":2,"price":"2.58"},
+					{"id":3,"price":7.15},
+					{"id":4,"price":"7.15"}]`</span><font></font>
+<font></font>
+	targets := []Target{}<font></font>
+<font></font>
+	_ := json.Unmarshal([]<span class="hljs-keyword">byte</span>(jsonString), &amp;targets)<font></font>
+<font></font>
+	<span class="hljs-keyword">for</span> _, t := <span class="hljs-keyword">range</span> targets {<font></font>
+		fmt.Println(t.Id, <span class="hljs-string">"-"</span>, t.Price.Float64)<font></font>
+	}<font></font>
+<font></font>
+	jsonStringNew, _ := json.Marshal(targets)<font></font>
+	fmt.Println(<span class="hljs-keyword">string</span>(jsonStringNew))<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Code Execution Result:</font></font><br>
+<br>
+<pre><code class="bash hljs">1 - 2.58<font></font>
+2 - 2.58<font></font>
+3 - 7.15<font></font>
+4 - 7.15<font></font>
+[{<span class="hljs-string">"id"</span>:1,<span class="hljs-string">"price"</span>:2.58},{<span class="hljs-string">"id"</span>:2,<span class="hljs-string">"price"</span>:2.58},{<span class="hljs-string">"id"</span>:3,<span class="hljs-string">"price"</span>:7.15},{<span class="hljs-string">"id"</span>:4,<span class="hljs-string">"price"</span>:7.15}]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's move on to the second part and implement the same code for json deserialization with inconsistent values ​​of the logical field. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suppose we have json code like this:</font></font><br>
+<br>
+<pre><code class="json hljs">[<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">1</span>,<span class="hljs-attr">"active"</span>:<span class="hljs-literal">true</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">2</span>,<span class="hljs-attr">"active"</span>:<span class="hljs-string">"true"</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">3</span>,<span class="hljs-attr">"active"</span>:<span class="hljs-string">"1"</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">4</span>,<span class="hljs-attr">"active"</span>:<span class="hljs-number">1</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">5</span>,<span class="hljs-attr">"active"</span>:<span class="hljs-literal">false</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">6</span>,<span class="hljs-attr">"active"</span>:<span class="hljs-string">"false"</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">7</span>,<span class="hljs-attr">"active"</span>:<span class="hljs-string">"0"</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">8</span>,<span class="hljs-attr">"active"</span>:<span class="hljs-number">0</span>},<font></font>
+	{<span class="hljs-attr">"id"</span>:<span class="hljs-number">9</span>,<span class="hljs-attr">"active"</span>:<span class="hljs-string">""</span>}<font></font>
+]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this case, the active field implies a logical type and the presence of only one of two values: true and false. </font><font style="vertical-align: inherit;">Non-boolean values ​​will need to be converted to boolean during deserialization. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the current example, we admit the following matches. </font><font style="vertical-align: inherit;">True values ​​correspond to: true (logical), “true” (string), “1” (string), 1 (numeric). </font><font style="vertical-align: inherit;">The false value corresponds to: false (logical), false (string), 0 (string), 0 (numeric), "" (empty string). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First, we’ll declare the target structure for deserialization. </font><font style="vertical-align: inherit;">As the type of the Active field, we immediately specify the custom type CustomBool:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">type</span> Target <span class="hljs-keyword">struct</span> {<font></font>
+	Id     <span class="hljs-keyword">int</span>        <span class="hljs-string">`json:"id"`</span>
+	Active CustomBool <span class="hljs-string">`json:"active"`</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+CustomBool is a structure with one single bool field of type bool:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">type</span> CustomBool <span class="hljs-keyword">struct</span> {<font></font>
+	Bool <span class="hljs-keyword">bool</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We implement the UnmarshalJSON method for this structure. </font><font style="vertical-align: inherit;">I’ll give you the code right away:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(cb *CustomBool)</span> <span class="hljs-title">UnmarshalJSON</span><span class="hljs-params">(data []<span class="hljs-keyword">byte</span>)</span> <span class="hljs-title">error</span></span> {
+	<span class="hljs-keyword">switch</span> <span class="hljs-keyword">string</span>(data) {
+	<span class="hljs-keyword">case</span> <span class="hljs-string">`"true"`</span>, <span class="hljs-string">`true`</span>, <span class="hljs-string">`"1"`</span>, <span class="hljs-string">`1`</span>:<font></font>
+		cb.Bool = <span class="hljs-literal">true</span>
+		<span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+	<span class="hljs-keyword">case</span> <span class="hljs-string">`"false"`</span>, <span class="hljs-string">`false`</span>, <span class="hljs-string">`"0"`</span>, <span class="hljs-string">`0`</span>, <span class="hljs-string">`""`</span>:<font></font>
+		cb.Bool = <span class="hljs-literal">false</span>
+		<span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+	<span class="hljs-keyword">default</span>:
+		<span class="hljs-keyword">return</span> errors.New(<span class="hljs-string">"CustomBool: parsing \""</span> + <span class="hljs-keyword">string</span>(data) + <span class="hljs-string">"\": unknown value"</span>)<font></font>
+	}<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since the active field in our case has a limited number of values, we can make a decision using the switch-case construct about what the value of the Bool field of the CustomBool structure should be equal to. To check, you need only two case blocks. In the first block, we check the value for true, in the second - false.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When recording possible values, you should pay attention to the role of gravel (this is such a quotation mark on the key with the letter E in the English layout). This character allows you to escape double quotes in a string. For clarity, I framed the values ​​with quotes and without quotes with this symbol. Thus, `false` corresponds to the string false (without quotes, type bool in json), and` false 'corresponds to the string “false” (with quotes, type string in json). The same thing with the values ​​of `1` and` 1 '. The first is the number 1 (written in json without quotes), the second is the string "1" (in json written with quotes). This entry `` "` is an empty string, i.e., in json format it looks like this: "". </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The corresponding value (true or false) is written directly to the Bool field of the CustomBool structure:</font></font><br>
+<br>
+<pre><code class="go hljs">cb.Bool = <span class="hljs-literal">true</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the defaul block, we return an error stating that the field has an unknown value:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">return</span> errors.New(<span class="hljs-string">"CustomBool: parsing \""</span> + <span class="hljs-keyword">string</span>(data) + <span class="hljs-string">"\": unknown value"</span>)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we can apply the json.Unmarshal method to our json code, and the values ​​of the active field will be converted to a primitive type bool. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We implement the MarshalJSON method for the CustomBool structure:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(cb CustomBool)</span> <span class="hljs-title">MarshalJSON</span><span class="hljs-params">()</span> <span class="hljs-params">([]<span class="hljs-keyword">byte</span>, error)</span></span> {<font></font>
+	json, err := json.Marshal(cb.Bool)<font></font>
+	<span class="hljs-keyword">return</span> json, err<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nothing new here. </font><font style="vertical-align: inherit;">The method serializes the Bool field of the CustomBool structure. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here is the complete code that displays the results of serialization and deserialization (error checking omitted for brevity):</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">package</span> main<font></font>
+<font></font>
+<span class="hljs-keyword">import</span> (
+	<span class="hljs-string">"encoding/json"</span>
+	<span class="hljs-string">"errors"</span>
+	<span class="hljs-string">"fmt"</span><font></font>
+)<font></font>
+<font></font>
+<span class="hljs-keyword">type</span> CustomBool <span class="hljs-keyword">struct</span> {<font></font>
+	Bool <span class="hljs-keyword">bool</span><font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(cb *CustomBool)</span> <span class="hljs-title">UnmarshalJSON</span><span class="hljs-params">(data []<span class="hljs-keyword">byte</span>)</span> <span class="hljs-title">error</span></span> {
+	<span class="hljs-keyword">switch</span> <span class="hljs-keyword">string</span>(data) {
+	<span class="hljs-keyword">case</span> <span class="hljs-string">`"true"`</span>, <span class="hljs-string">`true`</span>, <span class="hljs-string">`"1"`</span>, <span class="hljs-string">`1`</span>:<font></font>
+		cb.Bool = <span class="hljs-literal">true</span>
+		<span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+	<span class="hljs-keyword">case</span> <span class="hljs-string">`"false"`</span>, <span class="hljs-string">`false`</span>, <span class="hljs-string">`"0"`</span>, <span class="hljs-string">`0`</span>, <span class="hljs-string">`""`</span>:<font></font>
+		cb.Bool = <span class="hljs-literal">false</span>
+		<span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+	<span class="hljs-keyword">default</span>:
+		<span class="hljs-keyword">return</span> errors.New(<span class="hljs-string">"CustomBool: parsing \""</span> + <span class="hljs-keyword">string</span>(data) + <span class="hljs-string">"\": unknown value"</span>)<font></font>
+	}<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(cb CustomBool)</span> <span class="hljs-title">MarshalJSON</span><span class="hljs-params">()</span> <span class="hljs-params">([]<span class="hljs-keyword">byte</span>, error)</span></span> {<font></font>
+	json, err := json.Marshal(cb.Bool)<font></font>
+	<span class="hljs-keyword">return</span> json, err<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">type</span> Target <span class="hljs-keyword">struct</span> {<font></font>
+	Id     <span class="hljs-keyword">int</span>        <span class="hljs-string">`json:"id"`</span>
+	Active CustomBool <span class="hljs-string">`json:"active"`</span><font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">main</span><span class="hljs-params">()</span></span> {<font></font>
+	jsonString := <span class="hljs-string">`[{"id":1,"active":true},
+					{"id":2,"active":"true"},
+					{"id":3,"active":"1"},
+					{"id":4,"active":1},
+					{"id":5,"active":false},
+					{"id":6,"active":"false"},
+					{"id":7,"active":"0"},
+					{"id":8,"active":0},
+					{"id":9,"active":""}]`</span><font></font>
+<font></font>
+	targets := []Target{}<font></font>
+<font></font>
+	_ = json.Unmarshal([]<span class="hljs-keyword">byte</span>(jsonString), &amp;targets)<font></font>
+<font></font>
+	<span class="hljs-keyword">for</span> _, t := <span class="hljs-keyword">range</span> targets {<font></font>
+		fmt.Println(t.Id, <span class="hljs-string">"-"</span>, t.Active.Bool)<font></font>
+	}<font></font>
+<font></font>
+	jsonStringNew, _ := json.Marshal(targets)<font></font>
+	fmt.Println(<span class="hljs-keyword">string</span>(jsonStringNew))<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Code Execution Result:</font></font><br>
+<br>
+<pre><code class="bash hljs">1 - <span class="hljs-literal">true</span>
+2 - <span class="hljs-literal">true</span>
+3 - <span class="hljs-literal">true</span>
+4 - <span class="hljs-literal">true</span>
+5 - <span class="hljs-literal">false</span>
+6 - <span class="hljs-literal">false</span>
+7 - <span class="hljs-literal">false</span>
+8 - <span class="hljs-literal">false</span>
+9 - <span class="hljs-literal">false</span>
+[{<span class="hljs-string">"id"</span>:1,<span class="hljs-string">"active"</span>:<span class="hljs-literal">true</span>},{<span class="hljs-string">"id"</span>:2,<span class="hljs-string">"active"</span>:<span class="hljs-literal">true</span>},{<span class="hljs-string">"id"</span>:3,<span class="hljs-string">"active"</span>:<span class="hljs-literal">true</span>},{<span class="hljs-string">"id"</span>:4,<span class="hljs-string">"active"</span>:<span class="hljs-literal">true</span>},{<span class="hljs-string">"id"</span>:5,<span class="hljs-string">"active"</span>:<span class="hljs-literal">false</span>},{<span class="hljs-string">"id"</span>:6,<span class="hljs-string">"active"</span>:<span class="hljs-literal">false</span>},{<span class="hljs-string">"id"</span>:7,<span class="hljs-string">"active"</span>:<span class="hljs-literal">false</span>},{<span class="hljs-string">"id"</span>:8,<span class="hljs-string">"active"</span>:<span class="hljs-literal">false</span>},{<span class="hljs-string">"id"</span>:9,<span class="hljs-string">"active"</span>:<span class="hljs-literal">false</span>}]</code></pre><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">findings</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Firstly. </font><font style="vertical-align: inherit;">Overriding the MarshalJSON and UnmarshalJSON methods for arbitrary data types allows you to customize the serialization and deserialization of a specific json code field. </font><font style="vertical-align: inherit;">In addition to the indicated use cases, these functions are used to work with nullable fields. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Secondly. </font><font style="vertical-align: inherit;">The json text encoding format is a widely used tool for exchanging information, and one of its advantages over other formats is the availability of data types. </font><font style="vertical-align: inherit;">Compliance with these types must be strictly monitored.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en502154/index.html">Writing Autotests Effectively - Subcutaneous tests</a></li>
+<li><a href="../en502156/index.html">Rambler v. NGINX Case: Criminal Risks of Digitalization Roundtable May 16</a></li>
+<li><a href="../en502158/index.html">How to organize testing in order to accelerate and stabilize product releases. Part 2</a></li>
+<li><a href="../en502160/index.html">Custom mobile app development is inexpensive: reality or illusion</a></li>
+<li><a href="../en502166/index.html">Ghosts Windows 3.1</a></li>
+<li><a href="../en502178/index.html">oVirt in 2 hours. Part 3. Advanced settings</a></li>
+<li><a href="../en502180/index.html">The day the perimeter disappeared. Security Solutions from Microsoft and Partners</a></li>
+<li><a href="../en502182/index.html">Again about MikroTik or the long-awaited SOCKS5</a></li>
+<li><a href="../en502186/index.html">Webinar. Information Security: Quarantined SOC</a></li>
+<li><a href="../en502196/index.html">В подходе к математике столетней давности найдены новые ключи к разгадке природы времени</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

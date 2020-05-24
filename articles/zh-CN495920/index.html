@@ -1,0 +1,641 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📌 🌨️ 👠 PTPv2时间同步协议的实现细节 ☕️ 🎐 🔈</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="简介
+ 
+ 在电力行业中构建“数字变电站”的概念要求同步精度为1μs。金融交易也需要毫秒级的精度。在这些应用中，NTP时间精度不再足够。
+ 
+ IEEE 1588v2标准所描述的PTPv2同步协议允许数十纳秒的同步精度。PTPv2允许您通过L2和L3网络发送同步数据包。
+ 
+ 使用PTPv2的主要领...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PTPv2时间同步协议的实现细节</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/phoenix_contact/blog/495920/"><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">简介</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+在电力行业中构建“数字变电站”的概念要求同步精度为1μs。</font><font style="vertical-align: inherit;">金融交易也需要毫秒级的精度。</font><font style="vertical-align: inherit;">在这些应用中，NTP时间精度不再足够。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+IEEE 1588v2标准所描述的PTPv2同步协议允许数十纳秒的同步精度。</font><font style="vertical-align: inherit;">PTPv2允许您通过L2和L3网络发送同步数据包。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用PTPv2的主要领域是：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">电力工程;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">控制和测量设备；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">军事工业综合体；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">电讯</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">金融部门。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这篇文章介绍了PTPv2同步协议的工作原理。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们拥有更多的行业经验，我们经常在能源应用中遇到此协议。因此，我们将着眼</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">于精力</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">进行审查</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为什么有必要？</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+当前，STO 34.01-21-004-2019 PJSC Rosseti和STO 56947007-29.240.10.302-2020 PJSC FGC UES包含过程总线的组织要求，并通过PTPv2提供时间同步。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是由于以下事实：继电器保护端子和测量设备连接到过程总线，它们使用所谓的SV流（多播流）通过过程总线传输电流和电压的瞬时值。</font></font><a name="habracut"></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+继电保护端子使用这些值来实现连接保护。如果随时间变化的测量精度很小，那么某些保护措施可能会错误地起作用。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例如，绝对选择性的保护可能成为“弱”时间同步的受害者。通常，此类防御的逻辑基于两个值的比较。如果值发散到足够大的值，则触发保护。如果以1 ms的精度测量这些值，则以1μs的精度测量它们会在实际值正常的地方产生很大的差异。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PTP版本</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PTP协议最初于2002年在IEEE 1588-2002标准中进行了描述，被称为“用于网络测量和控制系统的精确时钟同步协议的标准”。</font><font style="vertical-align: inherit;">2008年，发布了更新的描述PTP版本2的IEEE 1588-2008标准，该版本的协议提高了准确性和稳定性，但未保持与该协议第一个版本的向后兼容性。</font><font style="vertical-align: inherit;">此外，在2019年，发布了描述PTP v2.1的IEEE 1588-2019标准版本。</font><font style="vertical-align: inherit;">该版本对PTPv2进行了较小的改进，并且与PTPv2向后兼容。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+换句话说，我们具有以下版本的图片：</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<td></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PTPv1 </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+（IEEE 1588-2002）</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PTPv2 </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+（IEEE 1588-2008）</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PTPv2.1 </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+（IEEE 1588-2019）</font></font><br>
+</td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PTPv1（IEEE 1588-2002）</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -- </font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">不相容</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">不相容</font></font><br>
+</td>
+</tr>
+<tr>
+<td>PTPv2 (IEEE 1588-2008)<br>
+</td>
+<td><br>
+</td>
+<td> — </td>
+<td><br>
+</td>
+</tr>
+<tr>
+<td>PTPv2.1 (IEEE 1588-2019)<br>
+</td>
+<td><br>
+</td>
+<td><br>
+</td>
+<td> — </td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是，一如既往，有细微差别。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PTPv1和PTPv2之间的不兼容性表明，支持PTPv1的设备将无法与PTPv2上运行的确切时钟进行同步。他们使用不同的消息格式进行同步。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是，您仍然可以在同一网络上将具有PTPv1的设备和具有PTPv2的设备组合在一起。为此，某些制造商允许您在边界时钟的端口上选择协议版本。也就是说，边界时钟可以通过PTPv2进行同步，并同时同步通过PTPv1和PTPv2连接到它的其他时钟。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PTP设备。它们是什么以及它们之间有何不同？</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+IEEE 1588v2标准描述了几种类型的设备。所有这些都在表中给出。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+设备使用PTP通过LAN相互通信。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PTP设备称为时钟。</font><font style="vertical-align: inherit;">所有手表都需要从大师钟表中获取准确的时间。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+手表有5种类型：</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大师钟</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">准确时间的主要来源。</font><font style="vertical-align: inherit;">通常配备用于连接GPS的接口。</font></font><br>
+</td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">普通钟</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">单端口设备可以是主机（主机时钟）或从机（主机时钟）</font></font><br>
+</td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">领导时间（硕士）</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">它们是其他时钟同步的确切时间的来源。</font></font><br>
+</td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从时钟（从）</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从主时钟同步的终端设备</font></font><br>
+</td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">边界时钟</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">具有多个端口的设备，可以是主机或从机。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+即，该手表可以从较高的主时钟同步，而从较低的从时钟同步。</font></font><br>
+</td>
+</tr>
+<tr>
+<td>End-to-end Transparent Clock ( ,    End-to-End)<br>
+</td>
+<td>   ,      ,  .    PTP   . <br>
+<br>
+       PTP-. <br>
+<br>
+                .<br>
+ </td>
+</tr>
+<tr>
+<td>Peer-to-Peer Transparent Clock ( ,    Peer-to-Peer)<br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">具有多个端口的设备，它既不是主时钟也不是从时钟。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+它在两个小时之间传输PTP数据。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+传输数据时，透明时钟会更正所有PTP消息Sync和Follow_Up（有关它们的更多信息，请参见下文）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通过在发送设备上发送的延迟数据包和数据通道上的延迟的调整字段中添加校正，可以实现校正。</font></font><br>
+</td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管理节点</font></font><br>
+</td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">配置和诊断其他手表的设备</font></font><br>
+</td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+主时钟和从时钟使用PTP消息中的时间戳同步。</font><font style="vertical-align: inherit;">PTP协议中有两种消息类型：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">事件消息是同步消息，涉及在发送消息时和接收消息时生成时间戳。</font></font></li>
+<li>General Messages –      ,        </li>
+</ul><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<td>Event Messages<br>
+</td>
+<td>General Messages<br>
+</td>
+</tr>
+<tr>
+<td>Sync<br>
+Delay_Req<br>
+Pdelay_Req<br>
+Pdelay_Resp<br>
+</td>
+<td>Announce<br>
+Follow_Up<br>
+Delay_Resp<br>
+Pdelay_Resp_Follow_Up<br>
+Management<br>
+Signaling<br>
+</td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接下来，我们将更详细地考虑所有类型的消息。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同步的主要问题</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+通过本地网络传输同步数据包时，它在交换机和数据传输通道中会延迟。</font><font style="vertical-align: inherit;">任何开关都会产生大约10μs的延迟，这对于PTPv2是不可接受的。</font><font style="vertical-align: inherit;">毕竟，我们需要在最终设备上获得1μs的精度。</font><font style="vertical-align: inherit;">（这是关于能量的。其他应用程序可能需要更高的精度。）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+IEEE 1588v2描述了几种运算算法，这些算法可让您记录时间延迟并进行调整。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">操作算法</font></font></b><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+在正常操作期间，协议分为两个阶段。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段1-建立“前导时钟-从时钟”层次结构。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段2-使用端到端机制或点对点的时钟同步。</font></font></li>
+</ul><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段1-设置主从</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+时钟</font><i><font style="vertical-align: inherit;">层次结构</font></i><font style="vertical-align: inherit;">常规或边界时钟的每个端口都有一定数量的状态（从时钟和主时钟）。该标准描述了这些状态之间的转换算法。在编程中，这种算法称为状态机或状态机（更多信息请参见Wiki）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+连接两个小时后，此状态机使用最佳主机时钟算法（BMCA）来设置主机。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当上等大师级手表失去其GPS信号，与网络断开连接等时，此算法可使手表承担起大师级手表的义务。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下图简要显示了根据BMCA进行的状态转换：</font></font><br>
+<img src="https://habrastorage.org/webt/uy/hz/h6/uyhzh63gb0jt63bppsuuhcllwmu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有关“电线”另一端时钟的信息以特殊消息（“公告”消息）发送。</font><font style="vertical-align: inherit;">收到此信息后，状态机算法将处理并比较哪个时钟更好。</font><font style="vertical-align: inherit;">最好的手表上的端口成为领先的手表。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下图显示了一个简单的层次结构。</font><font style="vertical-align: inherit;">路径1、2、3、4、5可能包含透明时钟（透明时钟），但它们不参与层次结构“ Leading clock-Slave Clock”的建立。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/kj/md/ci/kjmdcibg-ls2rflwu6qtur-0osg.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段2-正常时钟和边界时钟</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+的同步建立“领先时间-从机时间”层次结构之后，常规时钟和边界时钟的同步阶段立即开始。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了同步，主时钟将包含时间戳的消息发送到从时钟。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+前置时间可以是：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">单级;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">两阶段。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+用于同步的单级时钟发送一个同步消息。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+两级时钟使用两条消息进行同步-Sync和Follow_Up。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同步阶段可以使用两种机制：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">延迟请求-响应机制。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对等延迟测量机制。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，我们将在最简单的情况下考虑这些机制-当不使用透明手表时。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+延迟请求-响应机制</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该机制包括两个步骤：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">测量主时钟和从时钟之间传输消息的延迟。</font><font style="vertical-align: inherit;">它使用延迟请求-响应机制执行。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">校正准确时间的偏移。</font></font></li>
+</ol><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">延迟测量</font></font></i><br>
+<img src="https://habrastorage.org/webt/zj/hp/sa/zjhpsak259vihrylfiujf5vj2sm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+t1-通过超前时钟同步消息发送时间； t2-通过从时钟同步消息接收时间； t3-延迟请求发送时间（Delay_Req）按从属小时; t4-前置时钟的Delay_Req接收时间。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当从时钟知道时间t1，t2，t3和t4时，他们可以计算发送同步消息（tmpd）的平均延迟。计算方法如下：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/e6/cz/qx/e6czqxjr1wen8eld_z4y16joa4k.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+发送Sync and Follow_Up消息时，将计算从主机到从机的时间延迟-t-ms。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在发送Delay_Req和Delay_Resp消息时，将计算从站到主站的时间延迟t-sm。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果这两个值之间出现一些不对称，则在准确时间偏差的校正中会出现错误。该错误是由于以下事实造成的：计算出的延迟是延迟t-ms和t-sm的平均值。如果延迟不相等，那么我们将不正确地调整时间。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">校正精确时间的偏移量</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+在知道超前时钟和从时钟之间的延迟之后，从时钟将执行时间校正。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/a7/gv/qz/a7gvqzykdjxtg6nm5rcqhcqmyzs.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当从主时钟向从时钟发送数据包时，从时钟使用同步消息和可选的Follow_Up消息来计算确切的时间偏移。使用以下公式计算移位：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/n1/rk/nw/n1rknwzr-r0qio-uf1a9iiqd_9o.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对等延迟测量机制</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+此机制还使用两个步骤进行同步：</font></font><br>
+<br>
+<ol>
+<li>         .     peer delay mechanism.</li>
+<li>   .</li>
+</ol><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对等</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+延迟</font><i><font style="vertical-align: inherit;">测量</font></i><font style="vertical-align: inherit;">使用以下消息测量</font><i><font style="vertical-align: inherit;">启用</font></i><font style="vertical-align: inherit;">对等</font><i><font style="vertical-align: inherit;">设备之间的延迟</font></i><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/eo/0o/y2/eo0oy26vhwksm1rel2znic_q8rs.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当端口1知道时间t1，t2，t3和t4时，它可以计算平均延迟（tmld ）使用以下公式进行计算：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/a6/3r/mc/a63rmc4ehosk81dvktfv4prevt0.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后，端口使用此值为通过此设备的每个同步消息或可选的Follow_Up消息计算调整字段。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+总延迟等于通过该设备传输期间的延迟，通过数据信道传输期间的平均延迟以及此消息中已包含的延迟（包括在较高设备上）的总和。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+消息Pdelay_Req，Pdelay_Resp和可选的Pdelay_Resp_Follow_Up允许您从主机到从机以及从机到主机（循环）获得延迟。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这两个值之间的任何不对称都会引入准确的时间偏移校正误差。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">校正准确时间</font></font></i><br>
+<br>
+<img src="https://habrastorage.org/webt/m6/do/ku/m6dokuldnfjmqscwyrtin2tvjiu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+的偏移量当从前导时钟向从属设备传输数据包</font><i><font style="vertical-align: inherit;">时，</font></i><font style="vertical-align: inherit;">从时钟使用Sync消息和可选的Follow_Up消息来计算准确时间的偏移。根据以下公式计算偏移量：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ub/ui/xk/ubuixkpfmzizo7ilzkdgyfwvh8c.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对等调整的好处-每个Sync消息或Follow_Up消息在网络上传输时的时间延迟都将计算出来。因此，传输路径的改变将不会以任何方式影响调节的准确性。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用这种机制时，时间同步不需要像基本交换那样在同步数据包传播的路径上计算时间延迟。那些。不发送Delay_Req和Delay_Resp消息。在这种方法中，主时钟和跟随器之间的延迟仅在每个Sync或Follow_Up消息的调整字段中求和。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+另一个优点是驱动时钟无需处理Delay_Req消息。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">透明手表的操作模式</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+因此，研究了简单的示例。现在，假设开关出现在同步路径上。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果使用不支持PTPv2的交换机，则同步数据包将在交换机上延迟约10μs。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+IEEE 1588v2术语中支持PTPv2的交换机称为透明时钟。</font><font style="vertical-align: inherit;">透明时钟不与前导时钟同步，也不参与“前导时钟-从站时钟”层​​次结构，但是在传输同步消息时，他们记住消息延迟了多少。</font><font style="vertical-align: inherit;">这使您可以调整时间延迟。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+透明手表可以在两种模式下工作：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">端到端。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">点对点。</font></font></li>
+</ul><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">端到端（E2E）</font></font></b><br>
+<br>
+<img src="https://habrastorage.org/webt/cb/ev/vy/cbevvyylfmfgq9jgwm_jiuxvkjw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+透明的E2E手表将Sync消息和随附的Follow_Up消息传输到所有端口。即使是那些被任何协议（例如，RSTP）阻止的协议。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当在端口上收到Sync数据包（Follow_Up）以及从端口发送该数据包时，交换机会记住该时间戳记。基于这两个时间戳，将计算消息的交换机处理时间。在标准中，此时间称为停留时间。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+将处理时间添加到Sync消息（单级时钟）或Follow_Up（两级时钟）的correctionField字段中。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/hv/4q/rj/hv4qrjcuzer2hejocmtzitnntma.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+E2E透明手表测量通过交换机的Sync和Delay_Req消息的处理时间。但重要的是要了解，使用延迟请求-响应机制来计算前置时钟和从属时钟之间的时间延迟。如果主时钟改变或从主时钟到从时钟的路径改变，则再次测量延迟。在网络更改的情况下，这会增加过渡时间。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sw/im/q7/swimq7rpv2n24wyd8erbsvf420s.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+透明的P2P时钟除了通过交换机测量消息的处理时间外，还使用相邻节点的延迟测量机制来测量到最近邻居的数据通道上的延迟。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在每个通道的两个方向上测量延迟，包括被协议（例如，RSTP）阻塞的通道。</font><font style="vertical-align: inherit;">如果主时钟或网络拓扑已更改，这使您可以立即在同步路径上计算新的延迟。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+传输Sync或Follow_Up消息时，将累积开关处理时间和延迟时间。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对PTPv2交换机的支持类型</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+交换机可以支持PTPv2：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">以编程方式</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">硬件。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在PTPv2协议的软件实现中，交换机从固件请求时间戳。</font><font style="vertical-align: inherit;">问题是固件循环工作，您必须等到它结束当前周期后，才将请求处理，并且在下一个周期到期后，它将发出时间戳记。</font><font style="vertical-align: inherit;">所有这一切都将花费一些时间，尽管没有PTPv2软件支持的影响并不那么重要，但我们会遇到延迟。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+只有PTPv2的硬件支持才能使您保持必要的准确性。</font><font style="vertical-align: inherit;">在这种情况下，时间戳的发布是由安装在端口上的特殊ASIC执行的。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">消息格式</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+所有PTP消息均包含以下字段：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">标头-34个字节。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">正文-大小取决于邮件的类型。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">后缀-可选。</font></font></li>
+</ul><br>
+<img src="https://habrastorage.org/webt/ae/9l/_3/ae9l_3mph3pkhb-2oi0h_ppy48u.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">标头</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+所有PTP消息的</font><b><font style="vertical-align: inherit;">标头</font></b><font style="vertical-align: inherit;">字段均相同。它的大小是34个字节。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+标头：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/yu/xs/gu/yuxsgundgrz9iyiyyfabaxt5i38.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">messageType字段</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的格式</font><font style="vertical-align: inherit;">是传输的消息的类型，例如Sync，Delay_Req，PDelay_Req等。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">messageLength-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">包含PTP消息的完整大小，包括标头，正文和后缀（但不包括填充字节）。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">domainNumber</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> —确定消息所属的PTP域。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">域</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">是将几个不同的时钟组合成一个逻辑组并从一个前导时钟同步，但不一定与属于另一个域的时钟同步。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">标志</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -此字段包含各种标志以标识消息的状态。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CorrectionField</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-包含延迟时间（以纳秒为单位）。延迟时间包括通过透明时钟的传输延迟，以及使用对等模式时通过通道的传输延迟。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sourcePortIdentity-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">此字段包含有关此消息最初来自哪个端口的信息。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sequenceID-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">包含单个消息的标识号。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">controlField-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">构件字段=）它保留在标准的第一版中，并包含有关此消息类型的信息。本质上与messageType相同，但选项较少。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">logMessageInterval-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">此字段由消息的类型确定。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">身体</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如上所述，有几种类型的消息。这些类型如下所述：</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">公告消息公告</font></font></b><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+消息用于“告诉”同一域中的其他手表有关其设置的信息。该消息允许您设置层次结构“ Leading Clock-Slave Clock”。</font></font><br>
+<img src="https://habrastorage.org/webt/-i/zs/dh/-izsdhnvkookhpjtrdrqx2myimy.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同步</font></font></b><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+消息同步消息（Sync）由主时钟发送，并包含创建同步消息时主时钟的时间。如果超前时钟是两步时钟，则同步消息中的时间戳将设置为0，并且当前时间戳将在成对的Follow_Up消息中发送。同步消息用于两种延迟测量机制。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该消息是使用多播发送的。您可以选择使用单播。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sc/pp/1f/scpp1fns1uuyccw9bucbvghesgo.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Delay_Req</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+消息</font><b><font style="vertical-align: inherit;">Delay_Req</font></b><font style="vertical-align: inherit;">消息的格式与Sync消息相同。从时钟发送Delay_Req。它包含从时钟发送Delay_Req的时间。该消息仅用于延迟请求-响应机制。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该消息是使用多播发送的。您可以选择使用单播。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fe/bm/r_/febmr_zz7v1dricuta5z88xmjqk.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Follow_Up消息Follow_Up</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+消息可选地由主时钟发送，并包含主时钟发送</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同步消息的时间</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。 Follow_Up消息仅由两级驱动时钟发送。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Follow_Up消息用于两种延迟测量机制。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该消息是使用多播发送的。您可以选择使用单播。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/1g/42/2a/1g422aehbonsjrjjq0dwn9ceoxi.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">讯息Delay_Resp</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Delay_Resp消息由主时钟发送。它包含主时钟接收Delay_Req的时间。该消息仅用于延迟请求-响应机制。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该消息是使用多播发送的。您可以选择使用单播。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/up/is/gz/upisgzu5d7dk0iscixogmmjciwi.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pdelay_Req</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+消息</font><b><font style="vertical-align: inherit;">Pdelay_Req</font></b><font style="vertical-align: inherit;">消息由请求延迟的设备发送。它包含从该设备的端口发送消息的时间。 Pdelay_Req仅用于相邻节点延迟测量机制。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/hn/km/rz/hnkmrzmcidqsawxtazho-oprpus.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pdelay_Resp消息Pdelay_Resp</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+消息由接收到延迟请求的设备发送。它包含此设备接收Pdelay_Req消息的时间。 Pdelay_Resp消息仅用于相邻节点延迟测量机制。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/kh/bb/34/khbb34wn7ujy84lldruomgaenmg.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pdelay_Resp_Follow_Up消息Pdelay_Resp_Follow_Up</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+消息可选地由接收到延迟请求的设备发送。</font><font style="vertical-align: inherit;">它包含此设备接收Pdelay_Req消息的时间。</font><font style="vertical-align: inherit;">Pdelay_Resp_Follow_Up消息仅由两级主时钟发送。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该消息也可以用于运行时而不是时间戳。</font><font style="vertical-align: inherit;">执行时间是从收到Pdelay-Req到发送Pdelay_Resp的时间。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pdelay_Resp_Follow_Up仅用于相邻节点延迟测量机制。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/w7/-k/q2/w7-kq2pssesbnko10w1tmsrs9ow.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">控制消息（管理消息）</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+在一个或多个时钟与控制节点之间传输信息时，需要PTP控制消息。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/r7/xi/c0/r7xic0kvnb_yurjc53bah53f2ss.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">转移到LV</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PTP消息可以在两个级别上传输：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">网络-作为IP数据的一部分。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">链接-作为以太网帧的一部分。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通过以太网</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/f7/k6/al/f7k6alykkmt_4jrstkfkad_if-4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上的UDP </font><font style="vertical-align: inherit;">上的UDP发送PTP消息通过以太网</font><font style="vertical-align: inherit;">上的UDP </font><font style="vertical-align: inherit;">上的UDP发送</font><font style="vertical-align: inherit;">
+PTP </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/a7/pe/wu/a7pewujvuii1chap6wppv51dh0k.png"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">配置文件</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">具有许多需要配置的“灵活”参数。</font><font style="vertical-align: inherit;">例如：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">BMCA选项。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">延迟测量机制。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">所有可配置参数的间隔和初始值等</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+尽管我们早先说过PTPv2设备相互兼容，但实际上这不是很好。设备必须具有相同的设置才能进行交互。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，存在所谓的PTPv2配置文件。配置文件是一组配置的设置和某些协议限制，因此您可以为特定应用程序实现时间同步。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+IEEE 1588v2标准本身仅描述一个配置文件-“默认配置文件”。所有其他配置文件由各种组织和协会创建和描述。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例如，Power Profile或PTPv2 Power Profile是由IEEE Power and Energy Society的电源系统中继委员会和变电站委员会创建的。该配置文件本身称为IEEE C37.238-2011。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该配置文件描述了可以传输PTP：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">仅通过L2网络（即以太网，HSR，PRP，而不是IP）。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">消息仅通过多播邮件列表发送。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对等延迟测量机制用作延迟测量机制。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+默认域为0，建议域为93。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+创建C37.238-2011的理念是希望减少可选功能的数量，并仅保留必要的功能以实现设备之间的可靠交互并提高系统稳定性。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同样，确定消息传输的频率：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/wc/gp/z9/wcgpz9du_jejtkxidtptsh9x53i.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+实际上，只有一个参数可供选择-超前时钟的类型（单级或两级）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+精度应不超过1μs。</font><font style="vertical-align: inherit;">换句话说，一条同步路径中最多可以包含15个透明时钟或3个边界小时。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/et/zp/y0/etzpy01l2mtcewn9mxik3wyztrq.png"></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN495904/index.html">可以预测流行吗？</a></li>
+<li><a href="../zh-CN495908/index.html">奖励之路</a></li>
+<li><a href="../zh-CN495910/index.html">在Ubuntu单板IMG映像中安装ROS</a></li>
+<li><a href="../zh-CN495912/index.html">智能重播贴纸</a></li>
+<li><a href="../zh-CN495918/index.html">如何在电脑游戏和VR中再现逼真的声音以及为什么很难</a></li>
+<li><a href="../zh-CN495924/index.html">为什么建立一个良好的COVID-19发行模型如此困难？</a></li>
+<li><a href="../zh-CN495926/index.html">我们正在Z-Stack 3.0上为具有ds18b20传感器的Zigbee继电器Sonoff BASICZBR3编写TI cc2530固件</a></li>
+<li><a href="../zh-CN495932/index.html">SCRUM指南中作者的隐藏含义是什么。第1部分。关于过程</a></li>
+<li><a href="../zh-CN495934/index.html">在家中的数据治理</a></li>
+<li><a href="../zh-CN495938/index.html">机器学习文章精选：2020年3月的案例，指南和研究</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

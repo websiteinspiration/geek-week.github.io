@@ -1,0 +1,614 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏿‍🏫 🍟 🤙🏽 How Unix pipelines are implemented 💼 🤰🏽 👎</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article describes the implementation of pipelines in the Unix kernel. I was somewhat disappointed with a recent article entitled “ How do pipelin...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>How Unix pipelines are implemented</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/495484/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/ge/sl/9i/gesl9iqjuhatlmgyrdps28zgje0.jpeg"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This article describes the implementation of pipelines in the Unix kernel. </font><font style="vertical-align: inherit;">I was somewhat disappointed with a recent article entitled “ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How do pipelines work on Unix?” </font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"Was </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">not</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> about the internal device. </font><font style="vertical-align: inherit;">I became interested, and I buried myself in the old sources to find the answer.</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What are we talking about?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pipelines - "probably the most important invention on Unix" - is the defining characteristic of Unix's underlying philosophy of combining small programs together, as well as the familiar command line:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">$ echo hello | wc -c<font></font>
+6<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This functionality depends on the system call provided by the kernel </font></font><code>pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, which is described on the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe (7)</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe (2)</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> documentation pages </font><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conveyors provide a unidirectional interprocess communication channel. </font><font style="vertical-align: inherit;">The pipeline has an input (write end) and an output (read end). </font><font style="vertical-align: inherit;">Data written to the input of the pipeline can be read out. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The pipeline is created using a call </font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">that returns two file descriptors: one refers to the input of the pipeline, the second to the output.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The trace results of the above command demonstrate the creation of a pipeline and the flow of data through it from one process to another:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">$ strace -qf -e execve,pipe,dup2,read,write \<font></font>
+    sh -c 'echo hello | wc -c'<font></font>
+<font></font>
+execve("/bin/sh", ["sh", "-c", "echo hello | wc -c"], …)<font></font>
+pipe([3, 4])                            = 0<font></font>
+[pid 2604795] dup2(4, 1)                = 1<font></font>
+[pid 2604795] write(1, "hello\n", 6)    = 6<font></font>
+[pid 2604796] dup2(3, 0)                = 0<font></font>
+[pid 2604796] execve("/usr/bin/wc", ["wc", "-c"], …)<font></font>
+[pid 2604796] read(0, "hello\n", 16384) = 6<font></font>
+[pid 2604796] write(1, "6\n", 2)        = 2<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The parent process calls </font></font><code>pipe()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to get the attached file descriptors. </font><font style="vertical-align: inherit;">One child process writes to one descriptor, and another process reads the same data from another descriptor. </font><font style="vertical-align: inherit;">The wrapper using dup2 “renames” descriptors 3 and 4 to match stdin and stdout. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Without pipelines, the shell would have to write the result of one process to a file and transfer it to another process so that it reads the data from the file. </font><font style="vertical-align: inherit;">As a result, we would spend more resources and disk space. </font><font style="vertical-align: inherit;">However, pipelines are good not only because they avoid the use of temporary files:</font></font><br>
+<br>
+<blockquote>      ,  <code>read(2)</code>    ,     .       ,  <code>write(2)</code>    ,           .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Like the POSIX-requirement, this is an important property: writing to the pipeline up to </font></font><code>PIPE_BUF</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bytes (at least 512) must be atomic so that processes can interact with each other through the pipeline in the same way as regular files (which do not provide such guarantees) can. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When using a regular file, a process can write all its output data to it and transfer it to another process. </font><font style="vertical-align: inherit;">Or processes can operate in hard parallelization mode, using an external signaling mechanism (such as a semaphore) to inform each other about the completion of writing or reading. </font><font style="vertical-align: inherit;">Conveyors save us all this trouble.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What are we looking for?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I’ll explain it on my fingers to make it easier for you to imagine how the conveyor can work. </font><font style="vertical-align: inherit;">You will need to allocate a buffer and some state in memory. </font><font style="vertical-align: inherit;">You will need functions to add and remove data from the buffer. </font><font style="vertical-align: inherit;">It will take some means to call functions during read and write operations to file descriptors. </font><font style="vertical-align: inherit;">And locks are needed to implement the special behavior described above. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we are ready to interrogate in the bright light of the lamps the source code of the kernel to confirm or refute our vague mental model. </font><font style="vertical-align: inherit;">But always be prepared for the unexpected.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Where are we looking?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I don’t know where my copy of the famous book “ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lions book</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ” with Unix 6 source code is located, but thanks to </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The Unix Heritage Society,</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> you can search online for </font><font style="vertical-align: inherit;">even older versions of Unix </font><font style="vertical-align: inherit;">in the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">source code</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Wandering around the TUHS archives is akin to visiting a museum. </font><font style="vertical-align: inherit;">We can take a look at our common history, and I respect the many years of efforts to recover all these materials bit by bit from old cassettes and printouts. </font><font style="vertical-align: inherit;">And I am acutely aware of those fragments that are still missing. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Having satisfied our curiosity regarding the ancient history of conveyors, we can look at modern cores for comparison. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+By the way, </font></font><code>pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">is a system call number 42 in the table </font></font><code>sysent[]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Coincidence?</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Traditional Unix kernels (1970–1974)</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I found no trace </font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PDP-7 Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (January 1970), nor in the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">first edition of Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (November 1971), nor in the incomplete source code of the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">second edition</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (June 1972). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+TUHS claims that the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">third edition of Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (February 1973) was the first version with pipelines:</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The third edition of Unix was the latest version with a kernel written in assembly language, but the first version with pipelines. </font><font style="vertical-align: inherit;">During 1973, work was done to improve the third edition, the core was rewritten in C, and so the fourth edition of Unix appeared.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+One of the readers found a scan of a document in which Doug McIlroy proposed the idea of ​​“connecting programs by the principle of a garden hose.”</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/c6c/8c2/c8c/c6c8c2c8c5720d79227246af98c9b8d5.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the book of Brian Kernighan “ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix: A History and a Memoir</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”, in the history of the appearance of conveyors, this document is also mentioned: “... it hung on the wall in my office at Bell Labs for 30 years.” Here's </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">an interview with McIlroy</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and another story from </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">McIlroy's work written in 2014</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<blockquote>  Unix,        ,  ,  ,   - ,     ,       .  ,   . ,  ,  ,       .                ?           «»     , , -, : «  !».<br>
+<br>
+ .        ,    ,       (    ),     .          .              .      API          ,      .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Unfortunately, the kernel source code for the third edition of Unix is ​​lost. And although we have the source code for the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fourth edition</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> kernel written in C </font><font style="vertical-align: inherit;">, released in November 1973, it was released a few months before the official release and does not contain pipeline implementations. It is a pity that the source code of the legendary Unix function is lost, possibly forever. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We have the text of the documentation </font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">from both releases, so you can start by searching the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">third edition of the</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> documentation </font><font style="vertical-align: inherit;">(for certain words, underlined “manually”, a string of literals ^ H, followed by underscores!). This proto is </font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">written in assembler and returns only one file descriptor, but already provides the expected basic functionality:</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The </font></font><u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe</font></font></u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> system call </font><font style="vertical-align: inherit;">creates an output input mechanism called a pipeline. </font><font style="vertical-align: inherit;">The returned file descriptor can be used for read and write operations. </font><font style="vertical-align: inherit;">When something is written to the pipeline, up to 504 bytes of data are buffered, after which the writing process is paused. </font><font style="vertical-align: inherit;">When reading from a pipeline, buffered data is taken.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+By the next year, the kernel was rewritten in C, and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe (2) in the fourth edition</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> found its modern look with the prototype " </font></font><code>pipe(fildes)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">":</font></font><br>
+<br>
+<blockquote>  <i>pipe</i>    ,   .          .  -   ,   ,   r1 (. fildes[1]),    4096  ,     .     ,   r0 (. fildes[0]),  .<br>
+<br>
+,      ( )   (   <i>fork</i>)         <i>read</i>  <i>write</i>.<br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The shell has syntax for defining a linear array of processes connected via a pipeline. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Read calls from an empty pipeline (not containing buffered data) that has only one end (all writing file descriptors are closed) return the “end of file”. </font><font style="vertical-align: inherit;">Recording calls in a similar situation are ignored.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The earliest </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">surviving pipeline implementation</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dates back </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to the fifth edition of Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (June 1974), but it is almost identical to the one that appeared in the next release. </font><font style="vertical-align: inherit;">Only comments were added, so the fifth edition can be skipped.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sixth Edition of Unix (1975)</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We begin to read the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sixth edition</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Unix source code </font><font style="vertical-align: inherit;">(May 1975). </font><font style="vertical-align: inherit;">Largely thanks to </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lions,</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> finding it is much easier than the source code of earlier versions:</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">For many years, </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lions has</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> been the only Unix core document available outside the walls of Bell Labs. </font><font style="vertical-align: inherit;">Although the license of the sixth edition allowed teachers to use its source code, the license of the seventh edition excluded this possibility, so the book was distributed in the form of illegal typewritten copies.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Today you can buy a reprint copy of the book, on the cover of which students are shown at the photocopier. And thanks to Warren Tumi (who launched the TUHS project), you can download the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PDF file with the source code for the sixth edition</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . I want to give you an idea of ​​how much effort it took to create the file:</font></font><br>
+<br>
+<blockquote> 15       ,   <i>Lions</i>,             . TUHS   ,         .   1988-      9 ,        PDP11.   ,   ,      /usr/src/,       1979- ,     .        PWB,   .<br>
+<br>
+            .     ,    ,    +=   =+. -  ,  -   ,    .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And today we can read online on TUHS the source code of the sixth edition from the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">archive, to which Dennis Richie had a hand</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+By the way, at first glance, the main feature of the C-code before the Kernigan and Richie period is its </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">brevity</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Not so often, I manage to embed code snippets without extensive editing to fit a relatively narrow display area on my site. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the beginning of </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/usr/sys/ken/pipe.c</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> there is an explanatory comment (and yes, there is also </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ usr / sys / dmr</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ):</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Max allowable buffering per pipe.<font></font>
+ * This is also the max size of the<font></font>
+ * file created to implement the pipe.<font></font>
+ * If this size is bigger than 4096,<font></font>
+ * pipes will be implemented in LARG<font></font>
+ * files, which is probably not good.<font></font>
+ */<font></font>
+#define    PIPSIZ    4096<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The buffer size has not changed since the fourth edition. But here, without any public documentation, we see that once the pipelines used files as backup storage! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As for LARG files, they correspond </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to the LARG inode flag</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which is used by the "high addressing algorithm" to process </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">indirect blocks</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in order to support larger file systems. Since Ken said it’s better not to use them, I will gladly take his word for it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here is the real system call </font></font><code>pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * The sys-pipe entry.<font></font>
+ * Allocate an inode on the root device.<font></font>
+ * Allocate 2 file structures.<font></font>
+ * Put it all together with flags.<font></font>
+ */<font></font>
+pipe()<font></font>
+{<font></font>
+    register *ip, *rf, *wf;<font></font>
+    int r;<font></font>
+<font></font>
+    ip = ialloc(rootdev);<font></font>
+    if(ip == NULL)<font></font>
+        return;<font></font>
+    rf = falloc();<font></font>
+    if(rf == NULL) {<font></font>
+        iput(ip);<font></font>
+        return;<font></font>
+    }<font></font>
+    r = u.u_ar0[R0];<font></font>
+    wf = falloc();<font></font>
+    if(wf == NULL) {<font></font>
+        rf-&gt;f_count = 0;<font></font>
+        u.u_ofile[r] = NULL;<font></font>
+        iput(ip);<font></font>
+        return;<font></font>
+    }<font></font>
+    u.u_ar0[R1] = u.u_ar0[R0]; /* wf's fd */<font></font>
+    u.u_ar0[R0] = r;           /* rf's fd */<font></font>
+    wf-&gt;f_flag = FWRITE|FPIPE;<font></font>
+    wf-&gt;f_inode = ip;<font></font>
+    rf-&gt;f_flag = FREAD|FPIPE;<font></font>
+    rf-&gt;f_inode = ip;<font></font>
+    ip-&gt;i_count = 2;<font></font>
+    ip-&gt;i_flag = IACC|IUPD;<font></font>
+    ip-&gt;i_mode = IALLOC;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The commentary clearly describes what is happening here. But to understand the code is not easy, partly because of the way with the help of « </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">a struct user u</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> » and registers </font></font><code>R0</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>R1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">transferred parameters of system calls and return values. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's try using </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ialloc () to</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> place </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">inode (inode </font></font></a><font style="vertical-align: inherit;"><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">)</font></a><font style="vertical-align: inherit;"> on the disk </font><font style="vertical-align: inherit;">, and using </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">falloc ()</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to place two </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">files</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in memory </font><font style="vertical-align: inherit;">. If everything goes well, we will set flags to define these files as the two ends of the pipeline, point them to the same inode (whose reference count will be 2), and mark inode as changed and used. Pay attention to calls to </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">iput ()</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in error paths to decrease the reference count in the new inode. </font></font><br>
+<br>
+<code>pipe()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">must through </font></font><code>R0</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>R1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">return the file descriptor numbers for reading and writing. </font></font><code>falloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">returns a pointer to the file structure, but also “returns” through the </font></font><code>u.u_ar0[R0]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">file descriptor. That is, the code saves to a </font></font><code>r</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">file descriptor for reading and assigns a descriptor for writing directly from </font></font><code>u.u_ar0[R0]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">after the second call </font></font><code>falloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The flag </font></font><code>FPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">that we set when creating the pipeline controls the behavior of the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">rdwr ()</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> function </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">in sys2.c</font></a><font style="vertical-align: inherit;"> , which calls specific I / O I / O routines:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * common code for read and write calls:<font></font>
+ * check permissions, set base, count, and offset,<font></font>
+ * and switch out to readi, writei, or pipe code.<font></font>
+ */<font></font>
+rdwr(mode)<font></font>
+{<font></font>
+    register *fp, m;<font></font>
+<font></font>
+    m = mode;<font></font>
+    fp = getf(u.u_ar0[R0]);<font></font>
+        /* … */<font></font>
+<font></font>
+    if(fp-&gt;f_flag&amp;FPIPE) {<font></font>
+        if(m==FREAD)<font></font>
+            readp(fp); else<font></font>
+            writep(fp);<font></font>
+    }<font></font>
+        /* … */<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Then the function </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">reads the data from the pipeline. </font><font style="vertical-align: inherit;">But tracing the implementation is better starting with </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Once again, the code got more complicated due to the specifics of the argument transfer agreement, but some details can be omitted.</font></font><br>
+<br>
+<pre><code class="plaintext hljs">writep(fp)<font></font>
+{<font></font>
+    register *rp, *ip, c;<font></font>
+<font></font>
+    rp = fp;<font></font>
+    ip = rp-&gt;f_inode;<font></font>
+    c = u.u_count;<font></font>
+<font></font>
+loop:<font></font>
+    /* If all done, return. */<font></font>
+<font></font>
+    plock(ip);<font></font>
+    if(c == 0) {<font></font>
+        prele(ip);<font></font>
+        u.u_count = 0;<font></font>
+        return;<font></font>
+    }<font></font>
+<font></font>
+    /*<font></font>
+     * If there are not both read and write sides of the<font></font>
+     * pipe active, return error and signal too.<font></font>
+     */<font></font>
+<font></font>
+    if(ip-&gt;i_count &lt; 2) {<font></font>
+        prele(ip);<font></font>
+        u.u_error = EPIPE;<font></font>
+        psignal(u.u_procp, SIGPIPE);<font></font>
+        return;<font></font>
+    }<font></font>
+<font></font>
+    /*<font></font>
+     * If the pipe is full, wait for reads to deplete<font></font>
+     * and truncate it.<font></font>
+     */<font></font>
+<font></font>
+    if(ip-&gt;i_size1 == PIPSIZ) {<font></font>
+        ip-&gt;i_mode =| IWRITE;<font></font>
+        prele(ip);<font></font>
+        sleep(ip+1, PPIPE);<font></font>
+        goto loop;<font></font>
+    }<font></font>
+<font></font>
+    /* Write what is possible and loop back. */<font></font>
+<font></font>
+    u.u_offset[0] = 0;<font></font>
+    u.u_offset[1] = ip-&gt;i_size1;<font></font>
+    u.u_count = min(c, PIPSIZ-u.u_offset[1]);<font></font>
+    c =- u.u_count;<font></font>
+    writei(ip);<font></font>
+    prele(ip);<font></font>
+    if(ip-&gt;i_mode&amp;IREAD) {<font></font>
+        ip-&gt;i_mode =&amp; ~IREAD;<font></font>
+        wakeup(ip+2);<font></font>
+    }<font></font>
+    goto loop;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We want to write bytes to the input of the pipeline </font></font><code>u.u_count</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">First we need to lock the inode (see below </font></font><code>plock</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>prele</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Then check the inode reference count. </font><font style="vertical-align: inherit;">While both ends of the pipeline remain open, the counter should be 2. We keep one link (out </font></font><code>rp-&gt;f_inode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">), so if the counter is less than 2, this should mean that the reading process has closed its end of the pipeline. </font><font style="vertical-align: inherit;">In other words, we are trying to write in a closed pipeline, and this is a mistake. </font><font style="vertical-align: inherit;">The error code </font></font><code>EPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and signal first </font></font><code>SIGPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">appeared in the sixth edition of Unix.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But even if the conveyor is open, it can be full. In this case, we remove the lock and go to sleep in the hope that another process will read from the pipeline and free up enough space in it. Having woken up, we return to the beginning, again we block the lock and start a new recording cycle. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If there is enough free space in the pipeline, then we write data to it using </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">writei ()</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . The parameter </font></font><code>i_size1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in inode (with an empty pipeline can be 0) indicates the end of the data that it already contains. If there is enough recording space, we can fill the conveyor from </font></font><code>i_size1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to</font></font><code>PIPESIZ</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Then we remove the lock and try to awaken any process that is waiting for the opportunity to read from the pipeline. We go back to the beginning to see if we managed to write as many bytes as we needed. If it failed, then we begin a new recording cycle. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Typically </font></font><code>i_mode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, an inode </font><font style="vertical-align: inherit;">parameter is </font><font style="vertical-align: inherit;">used to store permissions </font></font><code>r</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>w</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. But in the case of pipelines, we signal that some process is waiting to write or read using bits </font></font><code>IREAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and, </font></font><code>IWRITE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">respectively. A process sets a flag and calls </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, and it is expected that some other process will call in the future </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Real magic happens in </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. They are implemented in </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">slp.c</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, the source of the famous commentary, “You are not expected to understand this.” </font><font style="vertical-align: inherit;">Fortunately, we are not required to understand the code, just see some comments:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Give up the processor till a wakeup occurs<font></font>
+ * on chan, at which time the process<font></font>
+ * enters the scheduling queue at priority pri.<font></font>
+ * The most important effect of pri is that when<font></font>
+ * pri&lt;0 a signal cannot disturb the sleep;<font></font>
+ * if pri&gt;=0 signals will be processed.<font></font>
+ * Callers of this routine must be prepared for<font></font>
+ * premature return, and check that the reason for<font></font>
+ * sleeping has gone away.<font></font>
+ */<font></font>
+sleep(chan, pri) /* … */<font></font>
+<font></font>
+/*<font></font>
+ * Wake up all processes sleeping on chan.<font></font>
+ */<font></font>
+wakeup(chan) /* … */<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A process that invokes </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for a particular channel may later be woken up by another process that will invoke </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for the same channel. </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">coordinate their actions through such paired calls. </font><font style="vertical-align: inherit;">Please note that </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">always gives priority </font></font><code>PPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">when calling </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, so everyone </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">can interrupt on signal. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we have everything to understand the function </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">readp(fp)<font></font>
+int *fp;<font></font>
+{<font></font>
+    register *rp, *ip;<font></font>
+<font></font>
+    rp = fp;<font></font>
+    ip = rp-&gt;f_inode;<font></font>
+<font></font>
+loop:<font></font>
+    /* Very conservative locking. */<font></font>
+<font></font>
+    plock(ip);<font></font>
+<font></font>
+    /*<font></font>
+     * If the head (read) has caught up with<font></font>
+     * the tail (write), reset both to 0.<font></font>
+     */<font></font>
+<font></font>
+    if(rp-&gt;f_offset[1] == ip-&gt;i_size1) {<font></font>
+        if(rp-&gt;f_offset[1] != 0) {<font></font>
+            rp-&gt;f_offset[1] = 0;<font></font>
+            ip-&gt;i_size1 = 0;<font></font>
+            if(ip-&gt;i_mode&amp;IWRITE) {<font></font>
+                ip-&gt;i_mode =&amp; ~IWRITE;<font></font>
+                wakeup(ip+1);<font></font>
+            }<font></font>
+        }<font></font>
+<font></font>
+        /*<font></font>
+         * If there are not both reader and<font></font>
+         * writer active, return without<font></font>
+         * satisfying read.<font></font>
+         */<font></font>
+<font></font>
+        prele(ip);<font></font>
+        if(ip-&gt;i_count &lt; 2)<font></font>
+            return;<font></font>
+        ip-&gt;i_mode =| IREAD;<font></font>
+        sleep(ip+2, PPIPE);<font></font>
+        goto loop;<font></font>
+    }<font></font>
+<font></font>
+    /* Read and return */<font></font>
+<font></font>
+    u.u_offset[0] = 0;<font></font>
+    u.u_offset[1] = rp-&gt;f_offset[1];<font></font>
+    readi(ip);<font></font>
+    rp-&gt;f_offset[1] = u.u_offset[1];<font></font>
+    prele(ip);<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You may find it easier to read this function from the bottom up. The “read and return” branch is usually used when there is some data in the pipeline. In this case, we use </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">readi () to</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> read as much data as is available starting from the current </font></font><code>f_offset</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">read, and then update the value of the corresponding offset. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On subsequent reads, the pipeline will be empty if the read offset has reached the value of </font></font><code>i_size1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the inode. We reset the position to 0 and try to awaken any process that it wants to write to the pipeline. We know that when the conveyor is full, it </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">will fall asleep on </font></font><code>ip+1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. And now that the pipeline is empty, we can wake it up so that it resumes its recording cycle. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If there is nothing to read, it </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">can set a flag </font></font><code>IREAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and fall asleep on</font></font><code>ip+2</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">We know what will awaken him </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">when he writes some data to the pipeline. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The comments on </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">readi () and writei ()</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> will help to understand that instead of passing parameters through " </font></font><code>u</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">", we can treat them as usual I / O functions that take a file, position, buffer in memory, and count the number of bytes to read or write .</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Read the file corresponding to<font></font>
+ * the inode pointed at by the argument.<font></font>
+ * The actual read arguments are found<font></font>
+ * in the variables:<font></font>
+ *    u_base        core address for destination<font></font>
+ *    u_offset    byte offset in file<font></font>
+ *    u_count        number of bytes to read<font></font>
+ *    u_segflg    read to kernel/user<font></font>
+ */<font></font>
+readi(aip)<font></font>
+struct inode *aip;<font></font>
+/* … */<font></font>
+<font></font>
+/*<font></font>
+ * Write the file corresponding to<font></font>
+ * the inode pointed at by the argument.<font></font>
+ * The actual write arguments are found<font></font>
+ * in the variables:<font></font>
+ *    u_base        core address for source<font></font>
+ *    u_offset    byte offset in file<font></font>
+ *    u_count        number of bytes to write<font></font>
+ *    u_segflg    write to kernel/user<font></font>
+ */<font></font>
+writei(aip)<font></font>
+struct inode *aip;<font></font>
+/* … */<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As for the "conservative" lock, then </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">block inode for as long as they finish a job or do not get the result (ie the cause </font></font><code>wakeup</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">). </font></font><code>plock()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and they </font></font><code>prele()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">work simply: using a different set of calls </font></font><code>sleep</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>wakeup</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">allow us to wake up any process that needs a lock that we just removed:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Lock a pipe.<font></font>
+ * If its already locked, set the WANT bit and sleep.<font></font>
+ */<font></font>
+plock(ip)<font></font>
+int *ip;<font></font>
+{<font></font>
+    register *rp;<font></font>
+<font></font>
+    rp = ip;<font></font>
+    while(rp-&gt;i_flag&amp;ILOCK) {<font></font>
+        rp-&gt;i_flag =| IWANT;<font></font>
+        sleep(rp, PPIPE);<font></font>
+    }<font></font>
+    rp-&gt;i_flag =| ILOCK;<font></font>
+}<font></font>
+<font></font>
+/*<font></font>
+ * Unlock a pipe.<font></font>
+ * If WANT bit is on, wakeup.<font></font>
+ * This routine is also used to unlock inodes in general.<font></font>
+ */<font></font>
+prele(ip)<font></font>
+int *ip;<font></font>
+{<font></font>
+    register *rp;<font></font>
+<font></font>
+    rp = ip;<font></font>
+    rp-&gt;i_flag =&amp; ~ILOCK;<font></font>
+    if(rp-&gt;i_flag&amp;IWANT) {<font></font>
+        rp-&gt;i_flag =&amp; ~IWANT;<font></font>
+        wakeup(rp);<font></font>
+    }<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At first I could not understand why it </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">did not call </font></font><code>prele(ip)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">before the call </font></font><code>wakeup(ip+1)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. The first thing that </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">causes in its loop is that it </font></font><code>plock(ip)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">leads to deadlock if </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">it has not yet removed its block, so the code must somehow work correctly. If you look at it </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, it becomes clear that he only marks the sleeping process as ready for execution, so that in the future it </font></font><code>sched()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">really launches it. So it </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">causes </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, unlocks, sets </font></font><code>IREAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and calls </font></font><code>sleep(ip+2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- all this before it </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">resumes the cycle. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This completes the description of the conveyors in the sixth edition. Simple code, far-reaching consequences. </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Seventh Edition of Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(January 1979) was the new major release (four years later), in which many new applications and kernel properties appeared. </font><font style="vertical-align: inherit;">Also, there have been significant changes in connection with the use of type casting, union'ov and typed pointers to structures. </font><font style="vertical-align: inherit;">However, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the pipeline code</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> has not changed much. </font><font style="vertical-align: inherit;">We can skip this edition.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Xv6, a simple Unix-shaped kernel</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The </font><font style="vertical-align: inherit;">sixth edition of Unix influenced the </font><font style="vertical-align: inherit;">creation of the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Xv6</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> core </font><font style="vertical-align: inherit;">, but it is written in modern C to run on x86 processors. The code is easy to read, it is clear. In addition, unlike Unix sources with TUHS, you can compile it, modify it and run it on something else besides PDP 11/70. Therefore, this core is widely used in universities as educational material on operating systems. Sources </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">are on Github</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The code contains a clear and well-thought-out implementation of </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe.c</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , backed up by a buffer in memory instead of inode on disk. Here I give only the definition of “structural pipeline” and function </font></font><code>pipealloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">#define PIPESIZE 512<font></font>
+<font></font>
+struct pipe {<font></font>
+  struct spinlock lock;<font></font>
+  char data[PIPESIZE];<font></font>
+  uint nread;     // number of bytes read<font></font>
+  uint nwrite;    // number of bytes written<font></font>
+  int readopen;   // read fd is still open<font></font>
+  int writeopen;  // write fd is still open<font></font>
+};<font></font>
+<font></font>
+int<font></font>
+pipealloc(struct file **f0, struct file **f1)<font></font>
+{<font></font>
+  struct pipe *p;<font></font>
+<font></font>
+  p = 0;<font></font>
+  *f0 = *f1 = 0;<font></font>
+  if((*f0 = filealloc()) == 0 || (*f1 = filealloc()) == 0)<font></font>
+    goto bad;<font></font>
+  if((p = (struct pipe*)kalloc()) == 0)<font></font>
+    goto bad;<font></font>
+  p-&gt;readopen = 1;<font></font>
+  p-&gt;writeopen = 1;<font></font>
+  p-&gt;nwrite = 0;<font></font>
+  p-&gt;nread = 0;<font></font>
+  initlock(&amp;p-&gt;lock, "pipe");<font></font>
+  (*f0)-&gt;type = FD_PIPE;<font></font>
+  (*f0)-&gt;readable = 1;<font></font>
+  (*f0)-&gt;writable = 0;<font></font>
+  (*f0)-&gt;pipe = p;<font></font>
+  (*f1)-&gt;type = FD_PIPE;<font></font>
+  (*f1)-&gt;readable = 0;<font></font>
+  (*f1)-&gt;writable = 1;<font></font>
+  (*f1)-&gt;pipe = p;<font></font>
+  return 0;<font></font>
+<font></font>
+ bad:<font></font>
+  if(p)<font></font>
+    kfree((char*)p);<font></font>
+  if(*f0)<font></font>
+    fileclose(*f0);<font></font>
+  if(*f1)<font></font>
+    fileclose(*f1);<font></font>
+  return -1;<font></font>
+}<font></font>
+</code></pre><br>
+<code>pipealloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sets the state of the rest of the implementation, which includes functions </font></font><code>piperead()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>pipewrite()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>pipeclose()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">The actual system call </font></font><code>sys_pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">is a wrapper implemented in </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sysfile.c</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">I recommend reading all of its code. </font><font style="vertical-align: inherit;">The complexity is at the source level of the sixth edition, but it is much easier and more pleasant to read.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Linux 0.01</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can find the source code for Linux 0.01. </font><font style="vertical-align: inherit;">It will be instructive to study the implementation of pipelines in his </font></font><code>fs</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Here, inode is used to represent the pipeline, but the pipeline itself is written in modern C. If you got through the sixth edition code, then you will not experience difficulties. </font><font style="vertical-align: inherit;">This is how the function looks </font></font><code>write_pipe()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">int write_pipe(struct m_inode * inode, char * buf, int count)<font></font>
+{<font></font>
+    char * b=buf;<font></font>
+<font></font>
+    wake_up(&amp;inode-&gt;i_wait);<font></font>
+    if (inode-&gt;i_count != 2) { /* no readers */<font></font>
+        current-&gt;signal |= (1&lt;&lt;(SIGPIPE-1));<font></font>
+        return -1;<font></font>
+    }<font></font>
+    while (count--&gt;0) {<font></font>
+        while (PIPE_FULL(*inode)) {<font></font>
+            wake_up(&amp;inode-&gt;i_wait);<font></font>
+            if (inode-&gt;i_count != 2) {<font></font>
+                current-&gt;signal |= (1&lt;&lt;(SIGPIPE-1));<font></font>
+                return b-buf;<font></font>
+            }<font></font>
+            sleep_on(&amp;inode-&gt;i_wait);<font></font>
+        }<font></font>
+        ((char *)inode-&gt;i_size)[PIPE_HEAD(*inode)] =<font></font>
+            get_fs_byte(b++);<font></font>
+        INC_PIPE( PIPE_HEAD(*inode) );<font></font>
+        wake_up(&amp;inode-&gt;i_wait);<font></font>
+    }<font></font>
+    wake_up(&amp;inode-&gt;i_wait);<font></font>
+    return b-buf;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Even without looking at the definitions of structures, you can figure out how the inode reference counter is used to check if the write operation leads to </font></font><code>SIGPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">In addition to byte work, this function is easily correlated with the above ideas. </font><font style="vertical-align: inherit;">Even the logic </font></font><code>sleep_on</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>wake_up</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">does not look so alien.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Modern Linux, FreeBSD, NetBSD, OpenBSD kernels</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I quickly went over some modern kernels. None of them already have a disk implementation (not surprisingly). Linux has its own implementation. Although the three modern BSD kernels contain implementations based on code that was written by John Dyson, over the years they have become too different from each other. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To read </font></font><code>fs</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(on Linux) or </font></font><code>sys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>kern</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>sys_pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(on * BSD), true dedication is required. Performance and support for features such as vector and asynchronous I / O are important in code today. And the details of memory allocation, locks and kernel configuration - all this is very different. This is not what universities need for an introductory course on operating systems.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In any case, it was interesting for me to unearth several old patterns (for example, generating </font></font><code>SIGPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and returning </font></font><code>EPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">when writing to a closed pipeline) in all of these, so different, modern cores. </font><font style="vertical-align: inherit;">I probably will never see a live PDP-11 computer, but there is still much to learn from the code that was written a few years before my birth. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Written by Divi Kapoor in 2011, the article “ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The Linux Kernel Implementation of Pipes and FIFOs</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ” provides an overview of how (so far) pipelines work on Linux. </font><font style="vertical-align: inherit;">And the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">recent Linux commit</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> illustrates a pipelined interaction model whose capabilities exceed the capabilities of temporary files; </font><font style="vertical-align: inherit;">and also shows how far the pipelines have gone from “very conservative locking” in the sixth edition Unix kernel.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en495472/index.html">Switching to vegetarianism will not prevent people from becoming infected from diseases like COVID-19</a></li>
+<li><a href="../en495474/index.html">DataGrip 2020.1: Launch configurations, export to Excel, results in the editor and more</a></li>
+<li><a href="../en495476/index.html">Why the Atari DeepMind AI success is disappointing</a></li>
+<li><a href="../en495478/index.html">Big and small data tester: trends, theory, my story</a></li>
+<li><a href="../en495480/index.html">Creating Python bindings for C / C ++ libraries using SIP. Part 1</a></li>
+<li><a href="../en495486/index.html">New Threats to Confidential Data: Acronis Global Survey Results</a></li>
+<li><a href="../en495490/index.html">Testing and QA section at the DUMP 2020 conference. What to expect this year? Spoiler: a pair of painkillers and cherries</a></li>
+<li><a href="../en495492/index.html">Unreal Engine 4 iOS Game Release Features</a></li>
+<li><a href="../en495494/index.html">Creating an additional kube-scheduler with a custom set of planning rules</a></li>
+<li><a href="../en495500/index.html">Alexey Klyanin: “Until 2018, I used OSM only as a substrate in my blog”</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

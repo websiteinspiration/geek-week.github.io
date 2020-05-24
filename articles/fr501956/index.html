@@ -1,0 +1,409 @@
+<!doctype html>
+<html class="no-js" lang="fr">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🖐🏿 👶🏻 〰️ Notre expérience de travail avec les données dans etcd Kubernetes-cluster directement (sans K8s API) 👲🏻 🏂🏼 🙆🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="De plus en plus souvent, les clients se tournent vers nous avec une demande d'accès au cluster Kubernetes pour la possibilité d'accéder à des services...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Notre expérience de travail avec les données dans etcd Kubernetes-cluster directement (sans K8s API)</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/501956/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">De plus en plus souvent, les clients se tournent vers nous avec une demande d'accès au cluster Kubernetes pour la possibilité d'accéder à des services au sein du cluster: afin de pouvoir se connecter directement à une base de données ou un service, pour connecter l'application locale avec des applications au sein du cluster ... </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ri/mh/du/rimhduzpzbuwtylhnil4dorhzw4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Par exemple, il est nécessaire de se connecter de votre machine locale au service </font></font><code>memcached.staging.svc.cluster.local</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Nous fournissons cette opportunité avec un VPN à l'intérieur du cluster auquel le client se connecte. Pour ce faire, nous annonçons les sous-réseaux de pods, services et push DNS du cluster au client. Ainsi, lorsque le client tente de se connecter au service </font></font><code>memcached.staging.svc.cluster.local</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, la demande est envoyée au DNS du cluster et reçoit en réponse l'adresse de ce service du réseau de services du cluster ou l'adresse du pod.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nous configurons les clusters K8s à l'aide de kubeadm, où le sous-réseau de service est par défaut </font></font><code>192.168.0.0/16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">et le réseau de pods </font></font><code>10.244.0.0/16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Habituellement, tout fonctionne bien, mais il y a quelques points:</font></font><a name="habracut"></a><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Le sous-réseau est </font></font><code>192.168.*.*</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">souvent utilisé dans les réseaux bureautiques de clients, et encore plus souvent dans les réseaux domestiques de développeurs. </font><font style="vertical-align: inherit;">Et puis nous obtenons des conflits: les routeurs domestiques fonctionnent sur ce sous-réseau et le VPN pousse ces sous-réseaux du cluster vers le client.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nous avons plusieurs clusters (production, étape et / ou plusieurs clusters de développement). </font><font style="vertical-align: inherit;">Ensuite, dans chacun d'eux par défaut, il y aura les mêmes sous-réseaux pour les pods et les services, ce qui crée de grandes difficultés pour travailler avec des services dans plusieurs clusters simultanément.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Depuis un certain temps, nous avons adopté la pratique d'utiliser différents sous-réseaux pour les services et les pods dans le cadre d'un projet - en général, de sorte que tous les clusters soient avec des réseaux différents. </font><font style="vertical-align: inherit;">Cependant, il existe un grand nombre de clusters en fonctionnement que je ne voudrais pas rouler à partir de zéro, car ils exécutent de nombreux services, applications avec état, etc. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Et puis nous nous sommes demandé: comment changer le sous-réseau dans un cluster existant?</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Recherche de décisions</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La pratique la plus courante consiste à recréer </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tous les</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> services avec le type ClusterIP. </font><font style="vertical-align: inherit;">Alternativement, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ils peuvent également le conseiller</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Le processus suivant a un problème: après tout configuré, les pods proposent l'ancien IP en tant que serveur de noms DNS dans /etc/resolv.conf. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Comme je n'ai toujours pas trouvé la solution, j'ai dû réinitialiser l'ensemble du cluster avec la réinitialisation de kubeadm et l'initier à nouveau.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mais cela ne convient pas à tout le monde ... Voici des notes d'introduction plus détaillées pour notre cas: </font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Utilisé par Flannel;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Il y a des grappes à la fois dans les nuages ​​et sur le fer;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Je voudrais éviter le déploiement répété de tous les services du cluster;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Il faut tout faire avec un minimum de problèmes;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> La version de Kubernetes est 1.16.6 (cependant, d'autres actions seront similaires pour les autres versions);</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">La tâche principale consiste à le </font></font><code>192.168.0.0/16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">remplacer </font><font style="vertical-align: inherit;">par un cluster déployé à l'aide de kubeadm avec un sous-réseau de service </font></font><code>172.24.0.0/16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Et il se trouve que pendant longtemps, il était intéressant pour nous de voir quoi et comment dans Kubernetes il est stocké dans etcd, ce qui peut être fait avec tout cela ... Nous avons donc pensé: « </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pourquoi ne pas simplement mettre à jour les données dans etcd en remplaçant les anciennes adresses IP (sous-réseau) aux nouveaux</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ? " </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+À la recherche d'outils prêts à l'emploi pour travailler avec des données dans etcd, nous n'avons rien trouvé qui résout complètement la tâche. </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(Soit dit en passant, si vous connaissez des utilitaires pour travailler directement avec des données dans etcd, nous vous serons reconnaissants pour les liens.)</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Cependant, </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;">OpenShift </font></a></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">etcdhelper</font></font></b><font style="vertical-align: inherit;"></font></a> <font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> est devenu un bon point de départ </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(grâce à ses auteurs!)</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Cet utilitaire est capable de </font><font style="vertical-align: inherit;">se connecter à l' </font><font style="vertical-align: inherit;">aide de </font><font style="vertical-align: inherit;">certificats ETCD et lire les données en </font><font style="vertical-align: inherit;">utilisant les commandes </font></font><code>ls</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>get</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>dump</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ajouter etcdhelper</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La pensée suivante est logique: "Qu'est-ce qui empêche d'ajouter cet utilitaire, ajoutant la possibilité d'écrire des données dans etcd?" </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Il a été traduit dans une version modifiée de etcdhelper avec deux nouvelles </font></font><code>changeServiceCIDR</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">et </font><font style="vertical-align: inherit;">fonctionnalités </font></font><code>changePodCIDR</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Vous </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pouvez voir</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"></font></a></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> son </font><b><font style="vertical-align: inherit;">code </font></b><b><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;">ici</font></a></b><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Que font les nouvelles fonctionnalités? </font><font style="vertical-align: inherit;">Algorithme </font></font><code>changeServiceCIDR</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> créer un désérialiseur;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> compiler une expression régulière pour remplacer CIDR;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> nous passons par tous les services avec le type ClusterIP dans le cluster:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> décode la valeur de etcd en l'objet Go;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> en utilisant une expression régulière, remplacez les deux premiers octets de l'adresse;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> attribuer au service une adresse IP à partir d'un nouveau sous-réseau;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> créer un sérialiseur, convertir l'objet Go en protobuf, écrire de nouvelles données dans etcd.</font></font></li>
+</ul></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La fonction </font></font><code>changePodCIDR</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">est essentiellement la même </font></font><code>changeServiceCIDR</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- seulement au lieu de modifier la spécification de service, nous le faisons pour le nœud et le changeons </font></font><code>.spec.PodCIDR</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">en un nouveau sous-réseau.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Entraine toi</font></font></h2><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Changer de serviceCIDR</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Le plan de mise en œuvre de la tâche est très simple, mais implique des temps d'arrêt au moment de la recréation de tous les pods du cluster. </font><font style="vertical-align: inherit;">Après avoir décrit les principales étapes, nous partagerons également nos réflexions sur la façon dont, en théorie, cette simple étape peut être minimisée. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Actions préparatoires:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> installer le logiciel nécessaire et assembler le etcdhelper patché;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sauvegarde etcd et </font></font><code>/etc/kubernetes</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Plan d'action court pour changer de serviceCIDR:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Modification des manifestes Apiserver et Controller-Manager</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> réémission de certificats;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Les services ClusterIP changent dans etcd;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> redémarrez tous les pods d'un cluster.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ce qui suit est une séquence complète d'actions en détail. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. Installez etcd-client pour le vidage des données:</font></font><br>
+<br>
+<pre><code class="bash hljs">apt install etcd-client</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2. Nous collectons etcdhelper:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Nous mettons golang:</font></font><br>
+<br>
+<pre><code class="bash hljs">GOPATH=/root/golang<font></font>
+mkdir -p <span class="hljs-variable">$GOPATH</span>/<span class="hljs-built_in">local</span>
+curl -sSL https://dl.google.com/go/go1.14.1.linux-amd64.tar.gz | tar -xzvC <span class="hljs-variable">$GOPATH</span>/<span class="hljs-built_in">local</span>
+<span class="hljs-built_in">echo</span> <span class="hljs-string">"export GOPATH=\"<span class="hljs-variable">$GOPATH</span>\""</span> &gt;&gt; ~/.bashrc
+<span class="hljs-built_in">echo</span> <span class="hljs-string">'export GOROOT="$GOPATH/local/go"'</span> &gt;&gt; ~/.bashrc
+<span class="hljs-built_in">echo</span> <span class="hljs-string">'export PATH="$PATH:$GOPATH/local/go/bin"'</span> &gt;&gt; ~/.bashrc</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nous nous sauvons </font></font><code>etcdhelper.go</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, chargeons les dépendances, collectons:</font></font><br>
+<br>
+<pre><code class="bash hljs">wget https://raw.githubusercontent.com/flant/examples/master/2020/04-etcdhelper/etcdhelper.go<font></font>
+go get go.etcd.io/etcd/clientv3 k8s.io/kubectl/pkg/scheme k8s.io/apimachinery/pkg/runtime<font></font>
+go build -o etcdhelper etcdhelper.go</code></pre></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3. Faites une sauvegarde etcd:</font></font><br>
+<br>
+<pre><code class="bash hljs">backup_dir=/root/backup<font></font>
+mkdir <span class="hljs-variable">${backup_dir}</span>
+cp -rL /etc/kubernetes <span class="hljs-variable">${backup_dir}</span>
+ETCDCTL_API=3 etcdctl --cacert=/etc/kubernetes/pki/etcd/ca.crt --key=/etc/kubernetes/pki/etcd/server.key --cert=/etc/kubernetes/pki/etcd/server.crt --endpoints https://192.168.199.100:2379 snapshot save <span class="hljs-variable">${backup_dir}</span>/etcd.snapshot</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+4. Modifiez le sous-réseau de service dans les manifestes du plan de contrôle Kubernetes. </font><font style="vertical-align: inherit;">Dans les fichiers </font></font><code>/etc/kubernetes/manifests/kube-apiserver.yaml</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">et </font></font><code>/etc/kubernetes/manifests/kube-controller-manager.yaml</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">remplacez le paramètre </font></font><code>--service-cluster-ip-range</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">par un nouveau sous-réseau: à la </font></font><code>172.24.0.0/16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">place </font></font><code>192.168.0.0/16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+5. Étant donné que nous modifions le sous-réseau de service auquel kubeadm émet des certificats pour apiserver (y compris), ils doivent être réémis:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Voyons quels domaines et adresses IP le certificat actuel est émis:</font></font><br>
+<br>
+<pre><code class="bash hljs">openssl x509 -noout -ext subjectAltName &lt;/etc/kubernetes/pki/apiserver.crt<font></font>
+X509v3 Subject Alternative Name:<font></font>
+    DNS:dev-1-master, DNS:kubernetes, DNS:kubernetes.default, DNS:kubernetes.default.svc, DNS:kubernetes.default.svc.cluster.local, DNS:apiserver, IP Address:192.168.0.1, IP Address:10.0.0.163, IP Address:192.168.199.100</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Préparez la configuration minimale pour kubeadm:</font></font><br>
+<br>
+<pre><code class="bash hljs">cat kubeadm-config.yaml<font></font>
+apiVersion: kubeadm.k8s.io/v1beta1<font></font>
+kind: ClusterConfiguration<font></font>
+networking:<font></font>
+  podSubnet: <span class="hljs-string">"10.244.0.0/16"</span>
+  serviceSubnet: <span class="hljs-string">"172.24.0.0/16"</span><font></font>
+apiServer:<font></font>
+  certSANs:<font></font>
+  - <span class="hljs-string">"192.168.199.100"</span> <span class="hljs-comment"># IP-  </span></code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Supprimons l'ancien crt et la clé, car sans cela, aucun nouveau certificat ne sera émis:</font></font><br>
+<br>
+<pre><code class="bash hljs">rm /etc/kubernetes/pki/apiserver.{key,crt}</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Réémettez les certificats pour le serveur API:</font></font><br>
+<br>
+<pre><code class="bash hljs">kubeadm init phase certs apiserver --config=kubeadm-config.yaml</code></pre></li>
+<li> ,      :<br>
+<br>
+<pre><code class="bash hljs">openssl x509 -noout -ext subjectAltName &lt;/etc/kubernetes/pki/apiserver.crt<font></font>
+X509v3 Subject Alternative Name:<font></font>
+    DNS:kube-2-master, DNS:kubernetes, DNS:kubernetes.default, DNS:kubernetes.default.svc, DNS:kubernetes.default.svc.cluster.local, IP Address:172.24.0.1, IP Address:10.0.0.163, IP Address:192.168.199.100</code></pre></li>
+<li>    API-   :<br>
+<br>
+<pre><code class="bash hljs">docker ps | grep k8s_kube-apiserver | awk <span class="hljs-string">'{print $1}'</span> | xargs docker restart</code></pre></li>
+<li>    <code>admin.conf</code>:<br>
+<br>
+<pre><code class="bash hljs">kubeadm alpha certs renew admin.conf</code></pre></li>
+<li>    etcd:<br>
+<br>
+<pre><code class="bash hljs">./etcdhelper -cacert /etc/kubernetes/pki/etcd/ca.crt -cert /etc/kubernetes/pki/etcd/server.crt -key /etc/kubernetes/pki/etcd/server.key -endpoint https://127.0.0.1:2379 change-service-cidr 172.24.0.0/16 </code></pre><br>
+<b>!</b>         ,      pod'  <code>/etc/resolv.conf</code>    CoreDNS (kube-dns),  kube-proxy   iptables     .         .</li>
+<li>  ConfigMap'    <code>kube-system</code>:<br>
+<br>
+<pre><code class="bash hljs">kubectl -n kube-system edit cm kubelet-config-1.16</code></pre><br>
+—   <code>clusterDNS</code>   IP-  kube-dns: <code>kubectl -n kube-system get svc kube-dns</code>.<br>
+<br>
+<pre><code class="bash hljs">kubectl -n kube-system edit cm kubeadm-config</code></pre><br>
+—  <code>data.ClusterConfiguration.networking.serviceSubnet</code>   .</li>
+<li>     kube-dns,    kubelet   :<br>
+<br>
+<pre><code class="bash hljs">kubeadm upgrade node phase kubelet-config &amp;&amp; systemctl restart kubelet</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Il reste à redémarrer tous les pods du cluster:</font></font><br>
+<br>
+<pre><code class="bash hljs">kubectl get pods --no-headers=<span class="hljs-literal">true</span> --all-namespaces |sed -r <span class="hljs-string">'s/(\S+)\s+(\S+).*/kubectl --namespace \1 delete pod \2/e'</span></code></pre></li>
+</ol><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Temps d'arrêt minimisés</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Réflexions sur la façon de minimiser les temps d'arrêt:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Après avoir modifié les manifestations du plan de contrôle, créez un nouveau service kube-dns, par exemple, avec un nom </font></font><code>kube-dns-tmp</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">et une nouvelle adresse </font></font><code>172.24.0.10</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Make </font></font><code>if</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in etcdhelper, qui ne modifiera pas le service kube-dns.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Remplacez l'adresse dans tous les kubelet </font></font><code>ClusterDNS</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">par une nouvelle, tandis que l'ancien service continuera de fonctionner simultanément avec le nouveau.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Attendez que les modules contenant des applications se déplacent seuls pour des raisons naturelles ou à une heure convenue.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Supprimez le service </font></font><code>kube-dns-tmp</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">et modifiez-le </font></font><code>serviceSubnetCIDR</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pour le service kube-dns.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ce plan minimisera les temps d'arrêt jusqu'à ~ une minute - au moment de la suppression du service </font></font><code>kube-dns-tmp</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">et du remplacement du sous-réseau du service </font></font><code>kube-dns</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PodNetwork de modification</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dans le même temps, nous avons décidé de voir comment modifier podNetwork en utilisant le etcdhelper résultant. </font><font style="vertical-align: inherit;">La séquence d'actions est la suivante:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">nous corrigeons les configurations </font></font><code>kube-system</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> nous corrigeons le manifeste de kube-controller-manager;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> nous changeons podCIDR directement dans etcd;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> redémarrez tous les nœuds du cluster.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En savoir plus sur ces actions: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. Modifiez ConfigMap dans l'espace de noms </font></font><code>kube-system</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="bash hljs">kubectl -n kube-system edit cm kubeadm-config</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+- fixé </font></font><code>data.ClusterConfiguration.networking.podSubnet</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sur un nouveau sous-réseau </font></font><code>10.55.0.0/16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<pre><code class="bash hljs">kubectl -n kube-system edit cm kube-proxy</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+- nous corrigeons </font></font><code>data.config.conf.clusterCIDR: 10.55.0.0/16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2. Modifiez le manifeste du contrôleur-gestionnaire:</font></font><br>
+<br>
+<pre><code class="bash hljs">vim /etc/kubernetes/manifests/kube-controller-manager.yaml</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+- nous corrigeons </font></font><code>--cluster-cidr=10.55.0.0/16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3. Regardez les valeurs actuelles </font></font><code>.spec.podCIDR</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>.spec.podCIDRs</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>.InternalIP</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>.status.addresses</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pour tous les </font><font style="vertical-align: inherit;">nœuds du cluster:</font></font><br>
+<br>
+<pre><code class="bash hljs">kubectl get no -o json | jq <span class="hljs-string">'[.items[] | {"name": .metadata.name, "podCIDR": .spec.podCIDR, "podCIDRs": .spec.podCIDRs, "InternalIP": (.status.addresses[] | select(.type == "InternalIP") | .address)}]'</span></code></pre><br>
+<pre><code class="json hljs">[<font></font>
+  {<font></font>
+    <span class="hljs-attr">"name"</span>: <span class="hljs-string">"kube-2-master"</span>,
+    <span class="hljs-attr">"podCIDR"</span>: <span class="hljs-string">"10.244.0.0/24"</span>,
+    <span class="hljs-attr">"podCIDRs"</span>: [
+      <span class="hljs-string">"10.244.0.0/24"</span><font></font>
+    ],<font></font>
+    <span class="hljs-attr">"InternalIP"</span>: <span class="hljs-string">"192.168.199.2"</span><font></font>
+  },<font></font>
+  {<font></font>
+    <span class="hljs-attr">"name"</span>: <span class="hljs-string">"kube-2-master"</span>,
+    <span class="hljs-attr">"podCIDR"</span>: <span class="hljs-string">"10.244.0.0/24"</span>,
+    <span class="hljs-attr">"podCIDRs"</span>: [
+      <span class="hljs-string">"10.244.0.0/24"</span><font></font>
+    ],<font></font>
+    <span class="hljs-attr">"InternalIP"</span>: <span class="hljs-string">"10.0.1.239"</span><font></font>
+  },<font></font>
+  {<font></font>
+    <span class="hljs-attr">"name"</span>: <span class="hljs-string">"kube-2-worker-01f438cf-579f9fd987-5l657"</span>,
+    <span class="hljs-attr">"podCIDR"</span>: <span class="hljs-string">"10.244.1.0/24"</span>,
+    <span class="hljs-attr">"podCIDRs"</span>: [
+      <span class="hljs-string">"10.244.1.0/24"</span><font></font>
+    ],<font></font>
+    <span class="hljs-attr">"InternalIP"</span>: <span class="hljs-string">"192.168.199.222"</span><font></font>
+  },<font></font>
+  {<font></font>
+    <span class="hljs-attr">"name"</span>: <span class="hljs-string">"kube-2-worker-01f438cf-579f9fd987-5l657"</span>,
+    <span class="hljs-attr">"podCIDR"</span>: <span class="hljs-string">"10.244.1.0/24"</span>,
+    <span class="hljs-attr">"podCIDRs"</span>: [
+      <span class="hljs-string">"10.244.1.0/24"</span><font></font>
+    ],<font></font>
+    <span class="hljs-attr">"InternalIP"</span>: <span class="hljs-string">"10.0.4.73"</span><font></font>
+  }<font></font>
+]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+4. Remplacez podCIDR en apportant des modifications directement à etcd:</font></font><br>
+<br>
+<pre><code class="bash hljs">./etcdhelper -cacert /etc/kubernetes/pki/etcd/ca.crt -cert /etc/kubernetes/pki/etcd/server.crt -key /etc/kubernetes/pki/etcd/server.key -endpoint https://127.0.0.1:2379 change-pod-cidr 10.55.0.0/16</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+5. Vérifiez que podCIDR a vraiment changé:</font></font><br>
+<br>
+<pre><code class="bash hljs">kubectl get no -o json | jq <span class="hljs-string">'[.items[] | {"name": .metadata.name, "podCIDR": .spec.podCIDR, "podCIDRs": .spec.podCIDRs, "InternalIP": (.status.addresses[] | select(.type == "InternalIP") | .address)}]'</span></code></pre><br>
+<pre><code class="json hljs">[<font></font>
+  {<font></font>
+    <span class="hljs-attr">"name"</span>: <span class="hljs-string">"kube-2-master"</span>,
+    <span class="hljs-attr">"podCIDR"</span>: <span class="hljs-string">"10.55.0.0/24"</span>,
+    <span class="hljs-attr">"podCIDRs"</span>: [
+      <span class="hljs-string">"10.55.0.0/24"</span><font></font>
+    ],<font></font>
+    <span class="hljs-attr">"InternalIP"</span>: <span class="hljs-string">"192.168.199.2"</span><font></font>
+  },<font></font>
+  {<font></font>
+    <span class="hljs-attr">"name"</span>: <span class="hljs-string">"kube-2-master"</span>,
+    <span class="hljs-attr">"podCIDR"</span>: <span class="hljs-string">"10.55.0.0/24"</span>,
+    <span class="hljs-attr">"podCIDRs"</span>: [
+      <span class="hljs-string">"10.55.0.0/24"</span><font></font>
+    ],<font></font>
+    <span class="hljs-attr">"InternalIP"</span>: <span class="hljs-string">"10.0.1.239"</span><font></font>
+  },<font></font>
+  {<font></font>
+    <span class="hljs-attr">"name"</span>: <span class="hljs-string">"kube-2-worker-01f438cf-579f9fd987-5l657"</span>,
+    <span class="hljs-attr">"podCIDR"</span>: <span class="hljs-string">"10.55.1.0/24"</span>,
+    <span class="hljs-attr">"podCIDRs"</span>: [
+      <span class="hljs-string">"10.55.1.0/24"</span><font></font>
+    ],<font></font>
+    <span class="hljs-attr">"InternalIP"</span>: <span class="hljs-string">"192.168.199.222"</span><font></font>
+  },<font></font>
+  {<font></font>
+    <span class="hljs-attr">"name"</span>: <span class="hljs-string">"kube-2-worker-01f438cf-579f9fd987-5l657"</span>,
+    <span class="hljs-attr">"podCIDR"</span>: <span class="hljs-string">"10.55.1.0/24"</span>,
+    <span class="hljs-attr">"podCIDRs"</span>: [
+      <span class="hljs-string">"10.55.1.0/24"</span><font></font>
+    ],<font></font>
+    <span class="hljs-attr">"InternalIP"</span>: <span class="hljs-string">"10.0.4.73"</span><font></font>
+  }<font></font>
+]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+6. À son tour, nous redémarrerons tous les nœuds du cluster. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+7. Si au moins un nœud </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">quitte l'ancien podCIDR</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , le gestionnaire de contrôleur de kube ne pourra pas démarrer et les pods du cluster ne seront pas planifiés. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En fait, le changement de podCIDR peut être facilité (par exemple, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">comme ceci</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). </font><font style="vertical-align: inherit;">Mais nous voulions apprendre à travailler directement avec etcd, car il y a des cas où l'édition d'objets Kubernetes dans etcd est la </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">seule</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> option possible. </font><font style="vertical-align: inherit;">(Par exemple, vous ne pouvez pas simplement modifier le champ d'un service sans interruption </font></font><code>spec.clusterIP</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.)</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Total</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+L'article considère la possibilité de travailler directement avec des données dans etcd, c'est-à-dire </font><font style="vertical-align: inherit;">contourner l'API Kubernetes. </font><font style="vertical-align: inherit;">Parfois, cette approche vous permet de faire des «choses délicates». </font><font style="vertical-align: inherit;">Les opérations décrites dans le texte ont été testées sur de vrais clusters K8. </font><font style="vertical-align: inherit;">Cependant, leur état de préparation à une utilisation généralisée est </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PoC (preuve de concept)</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Par conséquent, si vous souhaitez utiliser une version modifiée de l'utilitaire etcdhelper sur vos clusters, faites-le à vos risques et périls.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PS</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lisez aussi dans notre blog:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">« </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Etcd 3.4.3: recherche sur la fiabilité et la sécurité du stockage</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> »;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">« </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Calico pour le web chez Kubernetes: apprendre à connaître et un peu d'expérience</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> »;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">« </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">6 bugs système divertissants dans le fonctionnement de Kubernetes [et leur solution]</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> »;</font></font></li>
+<li> «<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u=">      Kubernetes</a>».</li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr501938/index.html">Prométhée, ne partez pas: 6 outils de surveillance alternatifs pour Kubernetes</a></li>
+<li><a href="../fr501940/index.html">Un peu sur Neutralino.js</a></li>
+<li><a href="../fr501942/index.html">Méthode Kanban: comprendre votre processus comme un processus d'apprentissage collectif</a></li>
+<li><a href="../fr501948/index.html">Comment un train se déplace de gare en gare: fonctionnalités de routage</a></li>
+<li><a href="../fr501954/index.html">Que la VR attend Microsoft Kinect ou est-ce l'avenir du jeu - parlons ensemble</a></li>
+<li><a href="../fr501960/index.html">Mise à l'échelle de la recherche. Elasticsearch Ses avantages et exigences de base pour l'installation</a></li>
+<li><a href="../fr501964/index.html">À quoi servent les ordinateurs industriels?</a></li>
+<li><a href="../fr501968/index.html">Modèle architectural MVI dans Kotlin Multiplatform, Partie 1</a></li>
+<li><a href="../fr501970/index.html">De quoi avez-vous besoin pour créer un bon donjon en RPG?</a></li>
+<li><a href="../fr501976/index.html">Comment apprendre à tester des logiciels</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

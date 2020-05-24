@@ -1,0 +1,441 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👁️ 💍 🤾🏾 SSH自己动手的单点登录 🕯️ 🥕 🔠</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="TL; DR在本文中，我们将安装Google的SSH单点登录。在幕后，我们使用OpenID Connect（OICD），SSH的短期证书，一些SSH配置技巧和opensorsnymi软件包step-ca以及stepSmallstep。我们将配置SSH证书颁发机构，并使用它在系统中加载新用户和新主机。...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>SSH自己动手的单点登录</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/itsumma/blog/500828/"><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TL; DR</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在本文中，我们将安装Google的SSH单点登录。</font><font style="vertical-align: inherit;">在幕后，我们使用OpenID Connect（OICD），SSH的短期证书，一些SSH配置技巧和opensorsnymi软件包</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>step-ca</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">以及</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>step</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Smallstep。</font><font style="vertical-align: inherit;">我们将配置SSH证书颁发机构，并使用它在系统中加载新用户和新主机。</font><font style="vertical-align: inherit;">这种方法除了单点登录外，还具有许多优点，因为</font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">与设置典型的公用/专用SSH密钥对相比，尽管需要更多的准备工作，但</font><font style="vertical-align: inherit;">无需收集，传输和控制文件</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如何不使用SSH</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+早在2004年，有人教我如何将公钥复制到文件中</font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。从那时起，我继续无辜地将相同的旧公共密钥复制到必须使用的每个服务器上，由于忘记了正确配置，所以我第一次始终无法这样做</font></font><code>chmod</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+仅一次，当OpenSSH在2015年宣布我的密钥类型已弃用时，我不愿更换密钥。</font><font style="vertical-align: inherit;">几年前的现在，只能猜测我的公钥仍位于哪些服务器上。</font><font style="vertical-align: inherit;">也许我曾经与之合作的老创业公司？</font><font style="vertical-align: inherit;">自由客户有吗？</font><font style="vertical-align: inherit;">在我侄女的加密农场吗？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从组织的角度来看，文件</font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">很烂。</font><font style="vertical-align: inherit;">也许起初有人像我一样手动编写它们，但是随着主机和用户数量的增加，这样的任务变成了一场噩梦。</font><font style="vertical-align: inherit;">一天早晨，您在拖延了基础架构的大量公共密钥中醒来。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+大多数组织通常会创建一个剧本来自动执行文件管理。</font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">但是，无论执行的合理性如何，它们的收集，卸载和维护都一团糟。</font></font><br>
+<br>
+<h2>Single Sign-On  OpenID Connect  SSH </h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们不使用文件，</font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">而是配置SSH证书颁发机构并通过SSH通过短期证书进行访问，并且为了支持单点登录，我们添加了</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OpenID Connect（OICD）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。一旦成功，结果将非常好，所以请耐心等待，因为与开箱即用的典型SSH配置相比，我们需要更多的准备设置。</font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">什么是SSH证书？</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> SSH证书是替代一对公共/秘密SSH密钥的替代方案。用户和主机在SSH连接（握手）期间交换证书，这是TLX X.509证书的一种截断版本，其方式与一对SSH密钥相同。为了进行更深入的分析，我们建议您阅读下</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一篇文章</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以在下面看到解密的SSH证书：</font></font><br>
+<br>
+<pre><code class="bash hljs">-:<font></font>
+        Type: ecdsa-sha2-nistp256-cert-v01@openssh.com user certificate<font></font>
+        Public key: ECDSA-CERT SHA256:N7ErGTPjhmruRS/4OiwyRi6Iyr59z0Ur1ifkHIHu4V8<font></font>
+        Signing CA: ECDSA SHA256:E0GH/kZ/CGUIe8mMzzpujIiEYGC2IHDHafYBnye1WSU<font></font>
+        Key ID: <span class="hljs-string">"carl@smallstep.com"</span><font></font>
+        Serial: 16253962425132258867<font></font>
+        Valid: from 2020-03-23T16:01:39 to 2020-03-24T08:01:39<font></font>
+        Principals:<font></font>
+                carl<font></font>
+                carl@smallstep.com<font></font>
+        Critical Options: (none)<font></font>
+        Extensions:<font></font>
+                permit-X11-forwarding<font></font>
+                permit-agent-forwarding<font></font>
+                permit-port-forwarding<font></font>
+                permit-pty<font></font>
+                permit-user-rc</code></pre><br>
+<i><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如上例所示，</font><b><font style="vertical-align: inherit;">用户证书</font></b><font style="vertical-align: inherit;">允许主机对用户进行身份验证，而</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">主机证书可</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">帮助用户识别主机。</font><font style="vertical-align: inherit;">关键区别在于领域</font></font></i><code>Principals</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+默认情况下，在SSH连接期间，SSHD将允许您在</font></font></i><code>Principals</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用户证书</font></font></i><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;">字段的</font></i><i><font style="vertical-align: inherit;">用户</font></i><i><font style="vertical-align: inherit;">名下输入主机</font></i><i><font style="vertical-align: inherit;">。</font></i><i><font style="vertical-align: inherit;">同样，SSH希望在</font></i></font><code>Principals</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">主机证书</font></font><br>
+<br><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;">字段中看到主机名</font></i><i><font style="vertical-align: inherit;">。</font></i><i><font style="vertical-align: inherit;">
+此外，证书可以具有允许特权SSH功能（例如，代理转发和端口转发）或强制配置指令的扩展。</font></i></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为使一切正常，我们将配置SSH证书颁发机构（CA），即-</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>step-ca</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Smallstep的服务器。</font><font style="vertical-align: inherit;">如果他们具有适当的权限，则用户和主机将从我们的CA接收SSH证书。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下面是Alice如何获得用户证书并输入主机的示意图：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ya/w-/0g/yaw-0gjayzwcdbwtd3xmgbpq2_a.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们将通过与</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">命令行工具</font></font></a> <font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一起使用的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>step</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OpenSSH配置单元来</font><font style="vertical-align: inherit;">配置CA。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">好处</font></font></h2><br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">不再需要公共密钥管理。</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您将不再遇到基础结构分散了无数（实际上相等</font></font><code>users * hosts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）个文件的情况</font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">主机上的用户将不再需要分区</font></font><code>.ssh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+<li><b>       .</b>   SSH    ,     SSH     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="> </a>,     SSH     ,      OAuth.</li>
+<li><b>   .</b>  SSH   OAuth OICD        Google ( 2FA   ).       .</li>
+<li><b>  .</b>   EC2 <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=">Instance Identity Documents (IIDs)</a>,          AWS .</li>
+<li><b>    .</b>       —    .</li>
+<li><b>  Trust On First Use (TOFU).</b>   ,      :<br>
+<br>
+<pre><code class="bash hljs">The authenticity of host <span class="hljs-string">'ec2-3-15-28-130.us-east-2.compute.amazonaws.com (3.15.28.130)'</span> can`t be established.<font></font>
+<font></font>
+ECDSA key fingerprint is SHA256:HYDAjwFL/qEmTuKm903tIk0fbPNk1CSRqH/usavToLw.<font></font>
+Are you sure you want to <span class="hljs-built_in">continue</span> connecting (yes/no/[fingerprint])?
+	</code></pre></li>
+</ul><br>
+<h2>    </h2><br>
+<ul>
+<li>      (,    SCIM  LDAP).</li>
+<li>     <code>sudo</code>.</li>
+<li>    (access control lists, ACLs)        .</li>
+<li>    CA.</li>
+<li>   , <i>   .</i></li>
+</ul><br>
+<h2>   </h2><br>
+<ul>
+<li>    EC2.</li>
+<li>      GSuite.</li>
+<li>      <code>step</code><br>
+ <ul>
+<li> macOS    <code>brew install step</code>.</li>
+<li>  Linux    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="> Debian</a>.</li>
+</ul></li>
+</ul><br>
+<h2>     Certificate Authority!</h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+也许您认为这很困难和可怕。这种声誉赢得了证书颁发机构的神秘细节TLS X.509证书，只有一个号码在PKI（公钥基础设施，PKI）的世界首字母缩写，而仪器，如复杂</font></font><code>openssl.</code><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此外，大型CA，例如</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对于咱们加密</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，有一个巨大的确保Internet安全的职责数量。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们不会使用“让我们加密”。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+SSH证书比TLS证书简单。 SSH CA仅允许我们将对多台主机进行身份验证和授权的部分责任委托给一个集中式服务。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在这个项目中，我们将建立一个由三个</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">提供者</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">组成的CA，这是</font><font style="vertical-align: inherit;">三种颁发证书的方法：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对于用户证书，我们将使用与</font><font style="vertical-align: inherit;">Google OAuth应用</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">程序</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">相对应</font><font style="vertical-align: inherit;">的</font><b><font style="vertical-align: inherit;">OAuth OIDC提供</font></b><font style="vertical-align: inherit;">程序。</font><font style="vertical-align: inherit;">我们相信Google可以安全地访问人员，并仅向经过身份验证的用户发布有效的，由Google签名的OAuth身份验证令牌。</font><font style="vertical-align: inherit;">CA将使用Google的公钥验证令牌。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对于新的EC2主机，我们需要</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一个</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">与我们的AWS账户匹配</font><b><font style="vertical-align: inherit;">的AWS提供程序</font></b><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">新主机将通过此提供程序请求SSH主机证书。</font><font style="vertical-align: inherit;">我们信任AWS提供签名的Amazon IID，CA将使用Amazon的公钥验证它们。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最后，我们使用</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SSHPOP提供程序</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">进行每周主机证书更新</font><font style="vertical-align: inherit;">。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们开始吧？</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.创建一个Google OAuth凭证</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在此项目中，您将需要</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Google 2.0 OAuth凭据</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，这需要花费几分钟的时间来创建它们。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如果还没有，请创建</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Google Cloud Console项目</font></font></a><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在将使用单点登录的GSuite组织中创建它。</font></font></li>
+</ul></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在</font><b><font style="vertical-align: inherit;">内部</font></b><font style="vertical-align: inherit;">项目</font><font style="vertical-align: inherit;">下</font><font style="vertical-align: inherit;">配置</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OAuth 2.0同意屏幕</font></font></a><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">创建</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OAuth 2.0凭据</font></font></a><br>
+ <ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">选择应用程序类型（应用程序类型）时，选择</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">其他（其他）</font></font></b></li>
+</ul></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+写下</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">客户ID</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">客户机密</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，下一步将需要它们！</font></font><br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您的CA仅会向与您的Google Cloud项目帐户相对应的GSuite组织中授权的用户颁发用户证书。</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.启动您的证书颁发机构</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们将</font><font style="vertical-align: inherit;">在AWS实例的</font><b><font style="vertical-align: inherit;">Ubuntu 18.04</font></b></font><code>step-ca</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">上</font><font style="vertical-align: inherit;">安装</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LTS</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我们应该有足够的免费AWS实例级别（t2.micro / t3.micro）。</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">采取此CA启动脚本</font></font></b></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并将所需值粘贴在顶部：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">客户OICD ID</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OICD客户机密</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您的GSuite的域名</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您的CA名称</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">根密钥密码</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">你的邮件</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+将其下载为</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">EC2用户数据脚本</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，然后在启动EC2实例时在第3步（设置实例）中使用它。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为了实现互连，您的VPC将需要连接的Internet网关，并且您的实例应位于一个安全组中，所有主机和用户都可以通过端口22（SSH）和443（HTTPS）访问该组。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+需要注意的是，它</font></font></i><code>step-ca</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">仅通过mTLS接受HTTPS连接-与典型的Web服务器相比，可以更好地保护其免受攻击。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+使用您的PEM密钥连接到您的CA实例。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+用户数据脚本的结果在中</font></font><code>/var/log/cloud-init-output.log</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。检查它，并确保一切均已正确初始化并且</font></font><code>step-ca</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">可以</font><font style="vertical-align: inherit;">正常</font><font style="vertical-align: inherit;">工作。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+CA必须创建以下密钥和证书：</font></font><br>
+<br>
+<ul>
+<li><code>/etc/step-ca/certs/root_ca.crt</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -您的CA的根TLS证书（自签名）。</font></font></li>
+<li><code>/etc/step-ca/certs/ssh_host_ca_key.pub</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -CA SSH主机密钥允许用户验证主机证书。</font></font></li>
+<li><code>/etc/step-ca/certs/ssh_user_ca_key.pub</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -CA SSH用户密钥允许主机验证用户证书。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您还将具有</font></font><code>/etc/step-ca/secrets</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">上述证书和密钥的</font><font style="vertical-align: inherit;">CA私钥签名</font><font style="vertical-align: inherit;">密钥。</font><font style="vertical-align: inherit;">要解密这些密钥，CA会在启动时从文件中读取其密码</font></font><code>/etc/step-ca/password.txt</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在根目录下，使用根CA密码删除用户数据脚本：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-comment"># rm /var/lib/cloud/instances/i-**/user-data.txt**</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您将需要来自CA的一些信息：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">公共主机名，以便我们可以再次找到它。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">根证书的指纹-与该主机建立公共TLS连接。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在根目录下运行以下命令：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-comment"># step certificate fingerprint $(step path)/certs/root_ca.crt</span>
+5bc2b4779ad1562f6ed0809857fbed7925d2432eb25083f41a468532495ca658</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+记得写下来。</font><font style="vertical-align: inherit;">您的CA已获得！</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">下载新主机</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们加载Ubuntu实例，它将是我们的第一个</font></font><code>ssh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">目标主机。</font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您的CA仅将主机证书颁发给其AWS账户上的实例。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这次，要启动新实例，请使用“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用户数据”主机脚本</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并填写以下值：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您的CA地址（</font></font><code>https://[CA hostname]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA的根证书的指纹。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在下面，您可以看到用户数据脚本应该做什么：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/2s/n_/4h/2sn_4hau6ibpp9ngtjvgas5bezg.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，我们获得了主机证书，以换取</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实例身份文档（IID）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">及其签名。</font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">谈到IID ...</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如果您以前从未与他们合作过，这就是其中之一的样子：</font></font></i><br>
+<br>
+<pre><code class="bash hljs">$ TOKEN=`curl -X PUT <span class="hljs-string">"http://169.254.169.254/latest/api/token"</span> -H <span class="hljs-string">"X-aws-ec2-metadata-token-ttl-seconds: 21600"</span>` \<font></font>
+&amp;&amp; curl -H <span class="hljs-string">"X-aws-ec2-metadata-token: <span class="hljs-variable">$TOKEN</span>"</span> –v http://169.254.169.254/latest/dynamic/instance-identity/document<font></font>
+{<font></font>
+  <span class="hljs-string">"accountId"</span> : <span class="hljs-string">"8072125551212"</span>,
+  <span class="hljs-string">"architecture"</span> : <span class="hljs-string">"x86_64"</span>,
+  <span class="hljs-string">"availabilityZone"</span> : <span class="hljs-string">"us-east-2c"</span>,
+  <span class="hljs-string">"billingProducts"</span> : null,
+  <span class="hljs-string">"devpayProductCodes"</span> : null,
+  <span class="hljs-string">"marketplaceProductCodes"</span> : null,
+  <span class="hljs-string">"imageId"</span> : <span class="hljs-string">"ami-0fc20dd1da406780b"</span>,
+  <span class="hljs-string">"instanceId"</span> : <span class="hljs-string">"i-01bd292377d6d8fec"</span>,
+  <span class="hljs-string">"instanceType"</span> : <span class="hljs-string">"t2.micro"</span>,
+  <span class="hljs-string">"kernelId"</span> : null,
+  <span class="hljs-string">"pendingTime"</span> : <span class="hljs-string">"2020-03-11T23:18:12Z"</span>,
+  <span class="hljs-string">"privateIp"</span> : <span class="hljs-string">"172.31.46.150"</span>,
+  <span class="hljs-string">"ramdiskId"</span> : null,
+  <span class="hljs-string">"region"</span> : <span class="hljs-string">"us-east-2"</span>,
+  <span class="hljs-string">"version"</span> : <span class="hljs-string">"2017-09-30"</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此JSON段由Amazon签名，签名如下所示：</font></font><br>
+<br>
+<pre><code class="bash hljs">$ TOKEN=`curl -X PUT <span class="hljs-string">"http://169.254.169.254/latest/api/token"</span> -H <span class="hljs-string">"X-aws-ec2-metadata-token-ttl-seconds: 21600"</span>` \<font></font>
+    &amp;&amp; curl -H <span class="hljs-string">"X-aws-ec2-metadata-token: <span class="hljs-variable">$TOKEN</span>"</span> –v http://169.254.169.254/latest/dynamic/instance-identity/signature<font></font>
+c0p6ygyFNFxyjs/73QGCQN+7khkZBr6H5cP/gefBgAwe80GmSTNlQy68LBSQQYrQczv2aHTXj3xa<font></font>
+CFkaGE4GPYiAogCkywcnt5VAp3t176GQwVxqfmawTliPMs31dY7ZeZvixN/1uoe8x1pt0EXAMPLE</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用您的PEM密钥登录并验证一切是否正确启动。</font><font style="vertical-align: inherit;">用户数据脚本的结果应为</font></font><code>/var/log/cloud-init-output.log</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在主机上创建用户</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您创建的新用户的登录</font><font style="vertical-align: inherit;">名</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">必须</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">与您登录Google所使用的邮件名称相同，例如：</font></font><br>
+<br>
+<pre><code class="bash hljs">$ sudo adduser --quiet --disabled-password --gecos <span class="hljs-string">''</span> carl</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+至此，我们在主机端完成了配置！</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4.开设新帐户</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们设置您的第一个用户帐户。</font><font style="vertical-align: inherit;">在本地设备上运行以下命令：</font></font><br>
+<br>
+<pre><code class="bash hljs">$ CA_URL=https://[YOUR CA].compute.amazonaws.com<font></font>
+$ CA_FINGERPRINT=[CA FINGERPRINT]<font></font>
+$ step ca bootstrap \<font></font>
+       --ca-url <span class="hljs-variable">$CA_URL</span> \<font></font>
+       --fingerprint <span class="hljs-variable">$CA_FINGERPRINT</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此命令将在您的设备上安装和配置根CA证书。</font><font style="vertical-align: inherit;">您将拥有两个新文件：（</font></font><code>~/.step/config/defaults.json</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">配置文件</font></font><code>step</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）和</font></font><code>~/.step/certs/root_ca.crt</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（您的根CA的TSL证书）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+之后，我们可以为自己颁发用户证书：</font></font><br>
+<br>
+<pre><code class="bash hljs">$ step ssh login [your email address] --provisioner <span class="hljs-string">"Google"</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这个团队做什么？</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">启动系统浏览器并启动Google OICD授权过程。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">授权后，将从Google收到的令牌发送到您的CA。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您的CA会确认令牌并颁发与您的邮件相对应的SSH证书。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">证书已添加到您的SSH代理中。</font><font style="vertical-align: inherit;">要查看它，请使用它</font></font><code>step ssh list</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，然后对其进行分析和研究</font></font><code>step ssh list --raw | step ssh inspect</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最后，让我们配置SSH以使用我们的CA：</font></font><br>
+<br>
+<pre><code class="bash hljs">$ step ssh config</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该命令执行以下操作：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">首先，她检索CA主机的公共密钥（用于验证主机证书），并将此密钥安装在SSH配置中，并显示以下结果（存储在中</font></font><code>~/.step/known_hosts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）：</font></font><br>
+<br>
+<pre><code class="bash hljs">@cert-authority * ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHyWTo9TLDwhyLlHq2ANkjtSGLyJ3xPtfL+7faiV+YA0k4kLUc8cJ5rWFHdUShbwtkOsLhkqeDDXoFnH/C5BG+4=</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">然后，将</font></font><code>.step/ssh/config</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这个不显眼的块</font><font style="vertical-align: inherit;">导入到您的SSH配置（c </font><font style="vertical-align: inherit;">）中：</font></font><br>
+<br>
+<pre><code class="bash hljs">Match <span class="hljs-built_in">exec</span> <span class="hljs-string">"step ssh check-host %h"</span><font></font>
+		ForwardAgent yes<font></font>
+		User carl<font></font>
+		UserKnownHostsFile <span class="hljs-string">"/Users/carl/.step/ssh/known_hosts"</span>
+		ProxyCommand step ssh proxycommand %r %h %p --provisioner <span class="hljs-string">"Google"</span></code></pre></li>
+</ol><br><font style="vertical-align: inherit;"></font><code>Match exec</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">仅当以上命令返回true时，才考虑</font><font style="vertical-align: inherit;">
+块</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该命令联系您的CA，并询问您尝试通过SSH连接的主机名是否具有适当的证书。如果是，则命令返回true。我们不希望CA托管的主机干扰您sconfig中的任何其他主机。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该指令</font></font><code>ProxyCommand</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实现了单点登录过程的所有魔力。在启动连接之前，它将</font></font><code>step ssh proxycommand</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">验证您的SSH证书，如果它丢失或过期，它将引导您完成OAuth OIDC流程并从您的CA请求新证书。</font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> CA的配置块由模板确定，该模板存储在&lt;</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">代码&gt; / etc / step-ca / templates / ssh中</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，如果要更改某些内容（例如，删除指令）</font></font></i><code>ForwardAgent</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，则只需引用此模板即可。</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">是时候尝试了！</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们准备通过SSH连接到您配置的主机。</font><font style="vertical-align: inherit;">您可以使用命令运行SSH </font></font><code>-v</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">来观察握手。</font><font style="vertical-align: inherit;">特别是，您应该看到以下内容：</font></font><br>
+<br>
+<pre><code class="bash hljs">debug1: Server host certificate: ecdsa-sha2-nistp256-cert-v01@openssh.com SHA256:KUwZbRewusotBbO4Wbrj1EpPexMqKEj0ZUr1Fvf41+g, serial 782<font></font>
+1790606781444805 ID <span class="hljs-string">"i-0fa7218db55ac0536"</span> CA ecdsa-sha2-nistp256 SHA256:VIwnVtTJJwdUsjGaPyOS5yT1O/uxyxj0CQJd+Ce/w0M valid from 2020-03-2<font></font>
+3T16:23:32 to 2020-04-22T16:24:32<font></font>
+debug1: Host <span class="hljs-string">'ec2-3-135-235-172.us-east-2.compute.amazonaws.com'</span> is known and matches the ECDSA-CERT host certificate.<font></font>
+debug1: Found CA key <span class="hljs-keyword">in</span> /Users/carl/.step/ssh/known_hosts:1<font></font>
+...<font></font>
+debug1: Offering public key: carl@smallstep.com ECDSA-CERT SHA256:mBQXA0znZvd+21hhvViUVEybzrO4x190xZftFXAYCFY agent<font></font>
+debug1: Server accepts key: carl@smallstep.com ECDSA-CERT SHA256:mBQXA0znZvd+21hhvViUVEybzrO4x190xZftFXAYCFY agent</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+瞧！</font><font style="vertical-align: inherit;">你做到了。</font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">提示：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您可以要求CA通过命令列出已向其颁发证书的所有主机的列表</font></font></i><code>step ssh hosts</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">问答环节</font></font></h2><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如何在CA中注册现有主机？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于Ubuntu 18.04 LTS主机，此过程类似于加载新主机，只需</font><font style="vertical-align: inherit;">在root下</font><font style="vertical-align: inherit;">运行</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">主机</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">启动</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">脚本</font></a><font style="vertical-align: inherit;">。对于其他平台，您将需要根据需要移植脚本。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+启动并配置所有主机后，您可能需要调整</font></font><code>instanceAge</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA的AWS提供程序</font><font style="vertical-align: inherit;">设置</font><font style="vertical-align: inherit;">。这些设置存储在中</font></font><code>/etc/step-ca/config/ca.json</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。任何年龄的实例默认情况下都可以运行。将设置设置为例如将设置为</font></font><code>5m</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，这将产生附加的预防措施，有效地迫使CA仅接受小于五分钟的实例的IID令牌。</font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">笔记：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实例身份脚本创建的令牌是一次性令牌。</font><font style="vertical-align: inherit;">您不能重新注册主机；只能更新其证书。</font><font style="vertical-align: inherit;">为什么？</font><font style="vertical-align: inherit;">因为主机上的任何用户都可以随时访问IID，所以我们不希望用户能够从CA获取主机证书。</font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我可以使用其他OAuth OIDC提供程序吗？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当然！</font><font style="vertical-align: inherit;">为此，只需更改OAuth配置服务器的网络地址并在CA的用户数据脚本中更改OIDC提供程序的名称。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我可以使用GCP或Azure代替AWS吗？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+是! </font><font style="vertical-align: inherit;">这</font></font><code>step-ca</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">三个都有提供程序，您只需更改CA配置和主机启动脚本。</font><font style="vertical-align: inherit;">您可以在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">供应商文档中</font></font></a> <font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阅读有关此内容的更多信息</font></font><code>step-ca</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我可以使用主机堡垒（安装服务器）吗？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以。</font><font style="vertical-align: inherit;">首先，向所有主机颁发证书，然后将</font></font><code>known_hosts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">主机密钥</font><font style="vertical-align: inherit;">添加</font><font style="vertical-align: inherit;">到您的CA堡垒中：</font></font><br>
+<br>
+<pre><code class="bash hljs">$ CA_URL=https://[YOUR CA].compute.amazonaws.com<font></font>
+$ CA_FINGERPRINT=[CA FINGERPRINT]<font></font>
+$ step ca bootstrap \<font></font>
+      --ca-url <span class="hljs-variable">$CA_URL</span> \<font></font>
+      --fingerprint <span class="hljs-variable">$CA_FINGERPRINT</span>
+$ mkdir -p ~/.ssh &amp;&amp; <span class="hljs-built_in">echo</span> <span class="hljs-string">"@cert-authority * <span class="hljs-subst">$(step ssh config --host --roots)</span>"</span> &gt; ~/.ssh/known_hosts</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+之后，</font></font><code>ssh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对堡垒而言再</font></font><code>ssh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对内部主机而言</font><font style="vertical-align: inherit;">就足够</font><font style="vertical-align: inherit;">了</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我可以更改SSH证书的到期日期吗？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+是。</font><font style="vertical-align: inherit;">默认情况下，它们的有效期为16小时，并且在</font><font style="vertical-align: inherit;">OIDC提供程序</font></font><code>ca.json</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的object下</font><font style="vertical-align: inherit;">的CA（</font><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">配置文件中</font></font><code>claims</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，您可以在相应的行中进行更改，例如：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-string">"defaultUserSSHCertDuration"</span>: <span class="hljs-string">"720h"</span>,
+<span class="hljs-string">"maxUserSSHCertDuration"</span>: <span class="hljs-string">"720h"</span></code></pre><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">断开CA的连接后，我会与所有主机断开连接吗？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您将，尽管SSH和SHHD不会直接与CA交互。</font><font style="vertical-align: inherit;">CA颁发证书并维护主机数据库。</font><font style="vertical-align: inherit;">您的用户依靠此基础来确定您是否应该尝试通过证书身份验证连接到主机。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了系统安全，请勿使用SSH证书直接连接到CA：这是您应继续使用密钥对的唯一位置。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我可以在多个AWS账户上使用主机吗？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当然。</font><font style="vertical-align: inherit;">为此，只需将帐户ID添加到CA（</font></font><code>/etc/step-ca/config/ca.json</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">配置文件中，</font><font style="vertical-align: inherit;">然后重新启动CA服务器。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如何添加支持</font></font><code>sudo</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用代理转发和</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">身份验证插件</font></font></a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><code>pam_ussh</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我的CA还可以做什么？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+许多！</font><font style="vertical-align: inherit;">有了个人CA之后，您就可以配置TSL证书，以</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通过共享TLS加密所有内部流量</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">如果您想了解有关CA，供应商，配置选项等的更多信息，请阅读“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">步骤证书文档”</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">总结</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通过我们的基本设置，您Google组织的任何用户都可以获取证书。</font><font style="vertical-align: inherit;">他还将仅访问其拥有帐户的那些主机。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN500806/index.html">护送</a></li>
+<li><a href="../zh-CN500816/index.html">米克罗莎。第一章。SD卡控制器</a></li>
+<li><a href="../zh-CN500818/index.html">游戏的神经计算机接口：今天所知</a></li>
+<li><a href="../zh-CN500822/index.html">谁来掩盖现代网络？</a></li>
+<li><a href="../zh-CN500824/index.html">您需要有关应用程序和Web服务的视频的语音旁白吗？</a></li>
+<li><a href="../zh-CN500834/index.html">网络存储</a></li>
+<li><a href="../zh-CN500836/index.html">5月7日运输将会发生什么-不同地区的隔离区</a></li>
+<li><a href="../zh-CN500840/index.html">真人快打11框架分析</a></li>
+<li><a href="../zh-CN500844/index.html">在VictoriaMetrics中进行优化。亚历山大·瓦里亚金（Alexander Valyalkin）</a></li>
+<li><a href="../zh-CN500848/index.html">单个开发人员的MVP</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,356 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😫 😮 ♐️ Asynchronous code in Startup ASP.NET Core: 4 ways to get around GetAwaiter (). GetResult () 🛑 🎪 🏂🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Since the async / await mechanism was introduced in C # 5.0, we have been constantly taught in all articles and docs that using asynchronous code in s...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Asynchronous code in Startup ASP.NET Core: 4 ways to get around GetAwaiter (). GetResult ()</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/dodopizzadev/blog/496300/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Since the async / await mechanism was introduced in C # 5.0, we have been constantly taught in all articles and docs that using asynchronous code in synchronous is very bad. </font><font style="vertical-align: inherit;">And they call for fear like GetAwaiter (). GetResult () constructions. </font><font style="vertical-align: inherit;">However, there is one case where Microsoft programmers themselves do not disdain this design.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/yl/m9/nb/ylm9nbu--2sz9pzjxu-tgx8k5t4.png"><br>
+ <a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Background about the work task</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We are now in the process of transitioning from legacy authentication to OAuth 2.0, which is already a standard in our industry. </font><font style="vertical-align: inherit;">The service I'm working on now has become a pilot for integration with the new system and for the transition to JWT authentication. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+During the integration process, we experimented, considering various options, how to reduce the load on the token provider (IdentityServer in our case) and ensure greater reliability of the entire system. </font><font style="vertical-align: inherit;">Connecting JWT-based validation to ASP.NET Core is very simple and not tied to a specific implementation of the token provider:</font></font><br>
+<br>
+<pre><code class="cs hljs">services<font></font>
+      .AddAuthentication()<font></font>
+      .AddJwtBearer(); <font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But what is hidden behind these two lines? </font><font style="vertical-align: inherit;">Under their hood, a JWTBearerHandler is created, which already deals with JWT from the API client.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/fs/sx/ce/fssxce2duwjnem0_zgekkezhglm.jpeg" width="550"></div><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Interaction of the client, API and the token provider when requesting</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+When the JWTBearerHandler receives the token from the client, it does not send the token to the provider for validation, but rather requests the Signing Key provider - the public part of the key that the token is signed with. Based on this key, it is verified that the token is signed by the correct provider. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Inside JWTBearerHandler sits HttpClient, which interacts with the provider over the network. But, if we assume that the Signing Key of our provider does not plan to change often, then you can pick it up once when you start the application, cache yourself and get rid of constant network requests. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I got this code for Signing Key:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> AuthenticationBuilder <span class="hljs-title">AddJwtAuthentication</span>(<span class="hljs-params"><span class="hljs-keyword">this</span> AuthenticationBuilder builder, AuthJwtOptions options</span>)</span><font></font>
+{<font></font>
+    <span class="hljs-keyword">var</span> signingKeys = <span class="hljs-keyword">new</span> List&lt;SecurityKey&gt;();<font></font>
+<font></font>
+    <span class="hljs-keyword">var</span> jwtBearerOptions = <span class="hljs-keyword">new</span> JwtBearerOptions {Authority = options?.Authority};<font></font>
+    <font></font>
+    <span class="hljs-keyword">new</span> JwtBearerPostConfigureOptions().PostConfigure(<span class="hljs-keyword">string</span>.Empty, jwtBearerOptions);
+    <span class="hljs-keyword">try</span><font></font>
+    {<font></font>
+        <span class="hljs-keyword">var</span> config = jwtBearerOptions.ConfigurationManager<font></font>
+            .GetConfigurationAsync(<span class="hljs-keyword">new</span> CancellationTokenSource(options?.AuthorityTimeoutInMs ?? <span class="hljs-number">5000</span>).Token)<font></font>
+            .GetAwaiter().GetResult();<font></font>
+        <span class="hljs-keyword">var</span> providerSigningKeys = config.SigningKeys;<font></font>
+        signingKeys.AddRange(providerSigningKeys);<font></font>
+    }<font></font>
+    <span class="hljs-keyword">catch</span> (Exception)<font></font>
+    {<font></font>
+        <span class="hljs-comment">// ignored</span><font></font>
+    }<font></font>
+<font></font>
+    builder<font></font>
+        .AddJwtBearer(options =&gt;<font></font>
+        {<font></font>
+            options.TokenValidationParameters = <span class="hljs-keyword">new</span> TokenValidationParameters<font></font>
+            {<font></font>
+                <span class="hljs-comment">// ...</span><font></font>
+                IssuerSigningKeys = signingKeys,<font></font>
+                <span class="hljs-comment">// ...</span><font></font>
+            };<font></font>
+        });<font></font>
+    <span class="hljs-keyword">return</span> builder;<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In line 12 we meet .GetAwaiter (). GetResult (). </font><font style="vertical-align: inherit;">That's because AuthenticationBuilder is configured inside public void ConfigureServices (IServiceCollection services) {...} of the Startup class, and this method does not have an asynchronous version. </font><font style="vertical-align: inherit;">Trouble. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Starting with C # 7.1, we have an asynchronous Main (). </font><font style="vertical-align: inherit;">But the asynchronous Startup configuration methods in Asp.NET Core have not yet been delivered. </font><font style="vertical-align: inherit;">I was aesthetically bothered to write GetAwaiter (). GetResult () (I was taught not to do this!), So I went online to look for how others deal with this problem.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I'm bothered by GetAwaiter (). GetResult (), but Microsoft is not</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+One of the first I found an option that Microsoft programmers used in a similar task to </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">get secrets from Azure KeyVault</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . If you go down through several layers of abstraction, then we will see:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">override</span> <span class="hljs-keyword">void</span> <span class="hljs-title">Load</span>(<span class="hljs-params"></span>)</span> =&gt; LoadAsync().ConfigureAwait(<span class="hljs-literal">false</span>).GetAwaiter().GetResult();</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hello again, GetAwaiter (). GetResult ()! </font><font style="vertical-align: inherit;">Are there any other solutions? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After a short google, I found a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">series of great articles by</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Andrew Lock, who a year ago thought about the same issue as me. </font><font style="vertical-align: inherit;">Even for the same reasons - he aesthetically doesn't like synchronously invoking asynchronous code. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, I recommend everyone who is interested in this topic to read the entire series of five articles by Andrew. </font><font style="vertical-align: inherit;">There, he analyzes in detail which work tasks lead to this problem, then considers several incorrect approaches, and only then describes solutions. </font><font style="vertical-align: inherit;">In my article I will try to present a brief squeeze of his research, concentrating more on solutions.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The role of asynchronous tasks in starting a web service</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Take a step back to see the whole picture. </font><font style="vertical-align: inherit;">What is the conceptual problem that I tried to solve, regardless of the framework?</font></font><br>
+<blockquote><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Problem:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> it is necessary to start the web service so that it processes the requests of its clients, but there is a set of some (relatively) lengthy operations, without which the service either cannot respond to the client, or its answers will be incorrect.</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Examples of such operations:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Validation of strongly typed configs.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Filling the cache.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Preliminary connection to the database or other services.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JIT and Assembly loading (service warming up).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Database Migration. </font><font style="vertical-align: inherit;">This is one of the examples of Andrew Lock, but he himself admits that after all, this operation is </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">undesirable when starting the service</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I would like to find a solution that will allow you to perform arbitrary asynchronous tasks at application startup, and in a natural way for them, without GetAwaiter (). GetResult (). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+These tasks must be completed before the application starts accepting requests, but for their work they may need the configuration and registered services of the application. </font><font style="vertical-align: inherit;">Therefore, these tasks must be performed after the DI configuration. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This idea can be represented in the form of a diagram:</font></font><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/nc/eh/ym/ncehymvjo0cm3yz5p3uq-uycvpq.jpeg"></div><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Solution # 1: a working solution that can confuse the heirs</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The first working solution </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">offered by Lock</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">class</span> <span class="hljs-title">Program</span><font></font>
+{<font></font>
+   <span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">async</span> Task <span class="hljs-title">Main</span>(<span class="hljs-params"><span class="hljs-keyword">string</span>[] args</span>)</span><font></font>
+   {<font></font>
+       IWebHost webHost = CreateWebHostBuilder(args).Build();<font></font>
+<font></font>
+       <span class="hljs-keyword">using</span> (<span class="hljs-keyword">var</span> scope = webHost.Services.CreateScope())<font></font>
+       {<font></font>
+           <span class="hljs-comment">//   </span>
+           <span class="hljs-keyword">var</span> myService = scope.ServiceProvider.GetRequiredService&lt;MyService&gt;();<font></font>
+<font></font>
+           <span class="hljs-keyword">await</span> myService.DoAsyncJob();<font></font>
+       }<font></font>
+<font></font>
+       <span class="hljs-keyword">await</span> webHost.RunAsync();<font></font>
+   }<font></font>
+<font></font>
+   <span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> IWebHostBuilder <span class="hljs-title">CreateWebHostBuilder</span>(<span class="hljs-params"><span class="hljs-keyword">string</span>[] args</span>)</span> =&gt;<font></font>
+       WebHost.CreateDefaultBuilder(args)<font></font>
+           .UseStartup&lt;Startup&gt;();<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This approach was made possible by the advent of the asynchronous Main () from C # 7.1. </font><font style="vertical-align: inherit;">Its only negative is that we transferred the configuration part from Startup.cs to Program.cs. </font><font style="vertical-align: inherit;">Such a non-standard solution for the ASP.NET framework can confuse a person who will inherit our code.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Solution # 2: embed asynchronous operations in DI</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Therefore, Andrew proposed an improved version of the solution. </font><font style="vertical-align: inherit;">An interface for asynchronous tasks is declared:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">interface</span> <span class="hljs-title">IStartupTask</span><font></font>
+{<font></font>
+    <span class="hljs-function">Task <span class="hljs-title">ExecuteAsync</span>(<span class="hljs-params">CancellationToken cancellationToken = <span class="hljs-keyword">default</span></span>)</span>;<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As well as an extension method that registers these tasks in DI:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">class</span> <span class="hljs-title">ServiceCollectionExtensions</span><font></font>
+{<font></font>
+    <span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> IServiceCollection AddStartupTask&lt;T&gt;(<span class="hljs-keyword">this</span> IServiceCollection services)
+        <span class="hljs-keyword">where</span> T : <span class="hljs-keyword">class</span>, <span class="hljs-title">IStartupTask</span><font></font>
+        =&gt; services.AddTransient&lt;IStartupTask, T&gt;();<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Next, another extension method is declared, already for IWebHost:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">class</span> <span class="hljs-title">StartupTaskWebHostExtensions</span><font></font>
+{<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">async</span> Task <span class="hljs-title">RunWithTasksAsync</span>(<span class="hljs-params"><span class="hljs-keyword">this</span> IWebHost webHost, CancellationToken cancellationToken = <span class="hljs-keyword">default</span></span>)</span><font></font>
+    {<font></font>
+        <span class="hljs-comment">//      DI</span>
+        <span class="hljs-keyword">var</span> startupTasks = webHost.Services.GetServices&lt;IStartupTask&gt;();<font></font>
+<font></font>
+        <span class="hljs-comment">//   </span>
+        <span class="hljs-keyword">foreach</span> (<span class="hljs-keyword">var</span> startupTask <span class="hljs-keyword">in</span> startupTasks)<font></font>
+        {<font></font>
+            <span class="hljs-keyword">await</span> startupTask.ExecuteAsync(cancellationToken);<font></font>
+        }<font></font>
+<font></font>
+        <span class="hljs-comment">//    </span>
+        <span class="hljs-keyword">await</span> webHost.RunAsync(cancellationToken);<font></font>
+    }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And in Program.cs we change only one line. </font><font style="vertical-align: inherit;">Instead:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">await</span> CreateWebHostBuilder(args).Build().Run();</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We call:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">await</span> CreateWebHostBuilder(args).Build().RunWithTasksAsync();</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In my opinion, a great approach that makes working with long operations as transparent as possible when starting the application.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Solution # 3: for those who switched to ASP.NET Core 3.x</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But if you are using ASP.NET Core 3.x, then there is another option. </font><font style="vertical-align: inherit;">I will again refer to </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">an article by Andrew Lock</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here is the WebHost launch code from ASP.NET Core 2.x:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">class</span> <span class="hljs-title">WebHost</span><font></font>
+{<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">virtual</span> <span class="hljs-keyword">async</span> Task <span class="hljs-title">StartAsync</span>(<span class="hljs-params">CancellationToken cancellationToken = <span class="hljs-keyword">default</span></span>)</span><font></font>
+    {<font></font>
+        <span class="hljs-comment">// ... initial setup</span>
+        <span class="hljs-keyword">await</span> Server.StartAsync(hostingApp, cancellationToken).ConfigureAwait(<span class="hljs-literal">false</span>);<font></font>
+<font></font>
+        <span class="hljs-comment">// Fire IApplicationLifetime.Started</span><font></font>
+        _applicationLifetime?.NotifyStarted();<font></font>
+<font></font>
+        <span class="hljs-comment">// Fire IHostedService.Start</span>
+        <span class="hljs-keyword">await</span> _hostedServiceExecutor.StartAsync(cancellationToken).ConfigureAwait(<span class="hljs-literal">false</span>);<font></font>
+<font></font>
+        <span class="hljs-comment">// ...remaining setup</span><font></font>
+    }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And here is </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the same method</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in ASP.NET Core 3.0:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">class</span> <span class="hljs-title">WebHost</span><font></font>
+{<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">virtual</span> <span class="hljs-keyword">async</span> Task <span class="hljs-title">StartAsync</span>(<span class="hljs-params">CancellationToken cancellationToken = <span class="hljs-keyword">default</span></span>)</span><font></font>
+    {<font></font>
+        <span class="hljs-comment">// ... initial setup</span><font></font>
+<font></font>
+        <span class="hljs-comment">// Fire IHostedService.Start</span>
+        <span class="hljs-keyword">await</span> _hostedServiceExecutor.StartAsync(cancellationToken).ConfigureAwait(<span class="hljs-literal">false</span>);<font></font>
+<font></font>
+        <span class="hljs-comment">// ... more setup</span>
+        <span class="hljs-keyword">await</span> Server.StartAsync(hostingApp, cancellationToken).ConfigureAwait(<span class="hljs-literal">false</span>);<font></font>
+<font></font>
+        <span class="hljs-comment">// Fire IApplicationLifetime.Started</span><font></font>
+        _applicationLifetime?.NotifyStarted();<font></font>
+<font></font>
+        <span class="hljs-comment">// ...remaining setup</span><font></font>
+    }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In ASP.NET Core 3.x, HostedServices is first launched, and only then the main WebHost, and earlier it was exactly the opposite. </font><font style="vertical-align: inherit;">What does this give us? </font><font style="vertical-align: inherit;">Now all asynchronous operations can be called inside the StartAsync (CancellationToken) method of the IHostedService interface and achieve the same effect without creating separate interfaces and extension methods.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Solution # 4: the story of health check and Kubernetes</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+One could calm down on this, but there is another approach, and it suddenly turns out to be important in the current realities. This is the use of health check. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The basic idea is to start the Kestrel server as early as possible in order to inform the load balancer that the service is ready to accept requests. But at the same time, all non-health check requests will return 503 (Service Unavailable). There is a fairly </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">extensive article</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> on the Microsoft site </font><font style="vertical-align: inherit;">about how to use health check in ASP.NET Core. I wanted to consider this approach without special details as applied to our task. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Andrew Lock has a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">separate article</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> for this approach. Its main advantage is that it avoids network timeouts.</font></font><br>
+<blockquote> ,          ,    ,     .  Kestrel   ,       ,       «   ».</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I will not give here the full Andrew Lock solution for the health check approach. It is quite voluminous, but there is nothing complicated in it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I’ll tell you in a nutshell: you need to start the web service without waiting for the completion of asynchronous operations. In this case, the health check endpoint should be aware of the status of these operations, issue 503 while they are being executed, and 200 when they have already completed. </font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Honestly, when I studied this option, I had a certain skepticism. The whole solution looked cumbersome compared to previous approaches. And if we draw an analogy, then this is how to again use the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">EAP approach</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> with event subscription, instead of the already familiar async / await.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But then Kubernetes came into play. </font><font style="vertical-align: inherit;">He has his own concept of readiness probe. </font><font style="vertical-align: inherit;">I will quote from the book “Kubernetes in Action” in my free presentation:</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Always determine readiness probe. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If you do not have a readiness probe, your pods become endpoints of services almost instantly. </font><font style="vertical-align: inherit;">If your application takes too much time preparing to accept incoming requests, client requests for the service will also get to start pods that are not yet ready to accept incoming connections. </font><font style="vertical-align: inherit;">As a result, clients will receive a “Connection refused” error.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I conducted a simple experiment: I created an ASP.NET Core 3 service with a long asynchronous task in HostedService:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">class</span> <span class="hljs-title">LongTaskHostedService</span> : <span class="hljs-title">IHostedService</span><font></font>
+{<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">async</span> Task <span class="hljs-title">StartAsync</span>(<span class="hljs-params">CancellationToken cancellationToken</span>)</span><font></font>
+    {<font></font>
+            Console.WriteLine(<span class="hljs-string">"Long task started..."</span>);
+            <span class="hljs-keyword">await</span> Task.Delay(<span class="hljs-number">5000</span>, cancellationToken);<font></font>
+            Console.WriteLine(<span class="hljs-string">"Long task finished."</span>);<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">public</span> Task <span class="hljs-title">StopAsync</span>(<span class="hljs-params">CancellationToken cancellationToken</span>)</span><font></font>
+    {...}<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When I started this service using minikube, and then increased the number under to two, within 5 seconds of the delay, every second request of mine did not produce useful information, but “Connection refused”.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes 1.16 UPD</font></font></b><div class="spoiler_text">    , ,   Kubernetes 1.16  startup probe (   ).     ,     readiness probe.    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="></a>.      .<br>
+</div></div><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">findings</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What conclusion can be drawn from all these studies? </font><font style="vertical-align: inherit;">Perhaps everyone should decide for his project which solution is best suited. </font><font style="vertical-align: inherit;">If it is assumed that the asynchronous operation will not take too much time, and the clients have some kind of retry policy, then you can use all approaches, starting with GetAwaiter (). GetResult () and ending with IHostedService in ASP.NET Core 3.x. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On the other hand, if you use Kubernetes and your asynchronous operations can be performed for a noticeably long time, then you can not do without a health check (aka readiness / startup probe).</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en496272/index.html">Differential privacy: comparing libraries</a></li>
+<li><a href="../en496278/index.html">Static Analysis in GCC 10</a></li>
+<li><a href="../en496286/index.html">How the new Federation / Eagle spacecraft was calculated. Interview with TESIS</a></li>
+<li><a href="../en496290/index.html">Kotlin / Java console utility using args4j library</a></li>
+<li><a href="../en496292/index.html">Neuro-stimulation of the spinal cord allows people paralyzed after spinal injuries to walk</a></li>
+<li><a href="../en496302/index.html">How not to give your company to a hacker while she is away. Tips for SOC Specialists</a></li>
+<li><a href="../en496304/index.html">How I keep learning UE4 while making my game</a></li>
+<li><a href="../en496308/index.html">Create seamless noise maps</a></li>
+<li><a href="../en499818/index.html">Uzbek Telegram Marketing</a></li>
+<li><a href="../en499820/index.html">Why we chose Kotlin as one of our target languages. Part 2: Kotlin Multiplatform</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

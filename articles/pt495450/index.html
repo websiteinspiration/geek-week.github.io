@@ -1,0 +1,214 @@
+<!doctype html>
+<html class="no-js" lang="pt">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔐 💉 ♈️ Depurando aplicativos Golang muito carregados ou como procuramos um problema no Kubernetes que não estava lá 👾 🤕 🎄</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="No mundo moderno das nuvens Kubernetes, de uma maneira ou de outra, é preciso enfrentar erros de software que não são cometidos por você ou seu colega...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Depurando aplicativos Golang muito carregados ou como procuramos um problema no Kubernetes que não estava lá</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/domclick/blog/495450/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">No mundo moderno das nuvens Kubernetes, de uma maneira ou de outra, é preciso enfrentar erros de software que não são cometidos por você ou seu colega, mas você terá que resolvê-los. </font><font style="vertical-align: inherit;">Este artigo pode ajudar um iniciante no mundo de Golang e Kubernetes a entender algumas maneiras de depurar seu próprio software e o estrangeiro.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ok/xx/pi/okxxpinnrmycv6thscy9dusxm5u.jpeg" alt="imagem"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Meu nome é Viktor Yagofarov, estou desenvolvendo a nuvem Kubernetes no DomKlik e hoje quero falar sobre como resolvemos o problema com um dos principais componentes do cluster de produção k8s (Kubernetes). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em nosso cluster de combate (no momento da redação):</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1890 </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pods</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e 577 serviços foram </font><font style="vertical-align: inherit;">lançados </font><font style="vertical-align: inherit;">(o número de microsserviços reais também está na região desta figura)</font></font></li>
+<li><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Os</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> controladores de </font><i><font style="vertical-align: inherit;">ingresso</font></i><font style="vertical-align: inherit;"> atendem a cerca de 6k RPS e a mesma quantia passa pelo Ingress diretamente para o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hostPort</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></li>
+</ul><a name="habracut"></a><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Problema</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Há alguns meses, nossos pods começaram a ter um problema na resolução de nomes DNS. O fato é que o DNS funciona principalmente sobre UDP, e no kernel do Linux existem </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">alguns problemas</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> com o conntrack e o UDP. DNAT ao acessar os endereços de serviço do k8s Service apenas agrava o problema com </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">raças conntrack</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Vale acrescentar que em nosso cluster no momento do problema havia cerca de 40k RPS para servidores DNS, CoreDNS. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/806/213/0a2/8062130a2c09d4c45735aec5b9a65420.jpg" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Decidiu-se usar o servidor DNS de cache local </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NodeLocal DNS</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (nodelocaldns) </font><font style="vertical-align: inherit;">criado especialmente pela comunidade </font><font style="vertical-align: inherit;">em cada nó de trabalho do cluster, que ainda está na versão beta e foi projetado para resolver </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">todos os problemas</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Resumindo: livre-se do UDP ao conectar-se ao DNS do cluster, remova o NAT e adicione uma camada de cache adicional. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Na primeira iteração da implementação nodelocaldns, usamos a versão </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.15.4</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (que não deve ser confundida com a versão do </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">cubo</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ), que veio com o «kubernetes-installer» </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubespray</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - estamos falando da nossa fork Fork da Southbridge. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quase imediatamente após a introdução, os problemas começaram: a memória fluiu e a lareira reiniciou de acordo com </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">os limites de memória</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (OOM-Kill). No momento de reiniciar isso, todo o tráfego no host foi perdido, pois em todos os pods o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/etc/resolv.conf</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> apontava exatamente para o endereço IP do nodelocaldns.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Definitivamente, essa situação não agradou a todos e nossa equipe de OPS tomou várias medidas para eliminá-la. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como eu mesmo sou novo na Golang, fiquei muito interessado em seguir todo esse caminho e me familiarizar com os aplicativos de depuração nessa maravilhosa linguagem de programação.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Estamos à procura de uma solução</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Então vamos! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A versão </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.15.7</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> foi baixada no cluster de desenvolvimento </font><font style="vertical-align: inherit;">, que já é considerado beta, e não alfa como 1.15.4, mas a donzela não possui esse tráfego no DNS (40k RPS). É triste. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No processo, desatamos o nodelocaldns da Kubespray e escrevemos um </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">gráfico</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> especial do </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;">Helm</font></a><font style="vertical-align: inherit;"> para uma implementação mais conveniente. Ao mesmo tempo, eles escreveram um manual para o Kubespray, que permite alterar </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">as</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> configurações do </font><i><font style="vertical-align: inherit;">kubelet</font></i><font style="vertical-align: inherit;"> sem digerir todo o </font><i><font style="vertical-align: inherit;">estado do</font></i><font style="vertical-align: inherit;"> cluster por hora; além disso, isso pode ser feito no sentido do ponto (verificando primeiro um pequeno número de nós). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em seguida, lançamos a versão do nodelocaldns 1.15.7 para prod. A situação, infelizmente, foi repetida. A memória estava fluindo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">repositório</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> oficial do </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;">nodelocaldns</font></a><font style="vertical-align: inherit;"> tinha uma versão </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;">marcada</font></a><font style="vertical-align: inherit;"> com 1.15. </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">8</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, mas, por algum motivo, não consegui fazer o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">docker puxar</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> esta versão e pensei que ainda não havia coletado a imagem oficial do Docker, portanto, essa versão não deve ser usada. </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Este é um ponto importante, e retornaremos a ele.</font></font></b><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Depuração: Etapa 1</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Por um longo tempo, eu não conseguia descobrir como montar minha versão do nodelocaldns em princípio, já que o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Makefile</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> do nabo caiu com erros incompreensíveis na imagem do docker, e eu realmente não entendi como criar um projeto Go com o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">govendor</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , que foi </font><i><font style="vertical-align: inherit;">resolvido de</font></i><font style="vertical-align: inherit;"> maneira estranha em diretórios imediatamente para várias opções diferentes de servidor DNS. </font><font style="vertical-align: inherit;">O ponto é que eu comecei a aprender o Go quando </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">o controle de versão normal</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> já havia aparecido </font><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pavel Selivanov me ajudou muito com o problema.</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pauljamm</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, pelo qual muito obrigado a ele. Consegui montar minha versão. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em seguida, parafusamos o perfilador </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pprof</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , testamos a montagem na donzela e </font><font style="vertical-align: inherit;">a </font><i><font style="vertical-align: inherit;">lançamos</font></i><font style="vertical-align: inherit;"> no produto. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Um colega da equipe de bate-papo realmente ajudou a entender a criação de perfil, para que você possa se apegar convenientemente ao utilitário pprof através da URL da CLI e estudar a memória e os threads de processo usando os menus interativos no navegador, pelos quais agradecemos também a ele. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+À primeira vista, com base na saída do criador de perfil, o processo estava indo bem - a maior parte da memória estava alocada na </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pilha</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e, ao que parece, era </font><font style="vertical-align: inherit;">constantemente </font><font style="vertical-align: inherit;">usada pelas </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">rotinas Go</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mas, em algum momento, ficou claro que os “maus” lares dos nodelocaldns tinham muitos segmentos ativos em comparação com os “saudáveis”. </font><font style="vertical-align: inherit;">E os fios não desapareceram em lugar nenhum, mas continuaram pendurados na memória. </font><font style="vertical-align: inherit;">Nesse momento, o palpite de Pavel Selivanov de que "os fios estão fluindo" foi confirmado.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/e19/328/56c/e1932856c5c346e5bb40aefeb6490926.jpg" alt="imagem"><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Depuração: Etapa 2</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tornou-se interessante por que isso está acontecendo (os threads estão fluindo) e a próxima etapa do estudo do processo nodelocaldns foi iniciada. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> código do </font><i><font style="vertical-align: inherit;">analisador estático </font></i></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">staticcheck</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> mostrou que há alguns problemas apenas no estágio de criação de um encadeamento na </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">biblioteca</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , que é usado no nodelocaldns (ele usa o CoreDNS, que usa o nodelocaldns'om). Pelo que entendi, em alguns lugares não </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">é</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> transmitido um </font><i><font style="vertical-align: inherit;">ponteiro para a estrutura</font></i><font style="vertical-align: inherit;"> , mas uma cópia de seus </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">valores</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Foi decidido fazer um </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">núcleo do processo</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> "ruim" usando o utilitário gcore e ver o que havia dentro. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Preso no coredump com a ferramenta </font><i><font style="vertical-align: inherit;">dlv do</font></i><font style="vertical-align: inherit;"> tipo gdb</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Percebi seu poder, mas percebi que procuraria uma razão dessa maneira por muito tempo. </font><font style="vertical-align: inherit;">Portanto, carreguei o coredump no Goland IDE e analisei o estado da memória do processo.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Depuração: Etapa 3</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Foi muito interessante estudar a estrutura do programa, vendo o código que os cria. </font><font style="vertical-align: inherit;">Em cerca de 10 minutos, ficou claro que muitas rotinas go criam algum tipo de estrutura para conexões TCP, as marcam como </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">falsas</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e nunca as excluem (lembra-se de 40k RPS?). </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/14e/b5c/cff/14eb5ccffcf7f257f04e88d8c5e4deae.jpg" alt="imagem"><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/0ff/3f0/b21/0ff3f0b210d54df3b398b23dbc639349.jpg" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nas capturas de tela, você pode ver a parte problemática do código e a estrutura que não foi limpa quando a sessão UDP foi fechada. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Além disso, a partir do coredump, o culpado de um número tão grande de RPS ficou conhecido pelos endereços IP nessas estruturas (obrigado por ajudar a encontrar um gargalo no nosso cluster :).</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Decisão</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Durante a luta contra esse problema, descobri com a ajuda de colegas da comunidade Kubernetes que ainda existe a imagem oficial do nodelocaldns 1.15.8 no Docker (e na verdade tenho mãos tortas e de alguma forma fiz o docker errado puxar, ou o WIFI foi mal-intencionado) momento de atração). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nesta versão, as versões das bibliotecas que ele usa são bastante “perturbadas”: especificamente, o </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“culpado”</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> “apnalizou” cerca de 20 versões acima! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Além disso, a nova versão já possui suporte para criação de perfil através do pprof e é ativada através do Configmap, não sendo necessário remontar nada. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Uma nova versão foi baixada primeiro no dev e depois no prod. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+III ... </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">vitória</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ! </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O processo começou a devolver sua memória ao sistema e os problemas pararam.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No gráfico abaixo, você pode ver a figura: "DNS do fumante x </font><font style="vertical-align: inherit;">DNS de uma pessoa saudável ".</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/fcd/70e/565/fcd70e56544fa4d0f482ee3413ecdf94.jpg" alt="imagem"><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">achados</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A conclusão é simples: verifique duas vezes o que você está fazendo várias vezes e não desdenhe a ajuda da comunidade. </font><font style="vertical-align: inherit;">Como resultado, passamos mais tempo com o problema por vários dias do que podíamos, mas recebemos uma operação à prova de falhas do DNS em contêineres. </font><font style="vertical-align: inherit;">Obrigado por ler até este ponto :) </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Links úteis: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">www.freecodecamp.org/news/how-i-investigated-memory-leaks-in-go-using-pprof-on-a-large-codebase-4bec4325e192</font></font></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+2 . </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">habr.com/en/company/roistat/blog/413175</font></font></a> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+3. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">rakyll.org</font></font></a></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt495436/index.html">Abrimos o acesso ao curso prático sobre como trabalhar com o sistema DLP</a></li>
+<li><a href="../pt495438/index.html">Linguagem R para usuários do Excel (curso em vídeo gratuito)</a></li>
+<li><a href="../pt495440/index.html">Os servidores na Holanda estão quase no fim: talvez não seja possível atender a novos pedidos, o VPS e a Internet terminarão?</a></li>
+<li><a href="../pt495446/index.html">Antigravidade não é o que você pensou</a></li>
+<li><a href="../pt495448/index.html">Mitaps on-line para toda a semana nas costas, front, QA, PM, DevOps e um pouco sobre robôs, a partir de 3 de abril</a></li>
+<li><a href="../pt495452/index.html">Como preparar um site para aumentar a carga</a></li>
+<li><a href="../pt495454/index.html">Breve introdução ao BPF e eBPF</a></li>
+<li><a href="../pt495456/index.html">Revisão de 14 plugins novos para o Figma que ajudarão a aumentar a produtividade enquanto todos nós</a></li>
+<li><a href="../pt495458/index.html">Como escrever código quando crianças correm ao seu redor e perguntar: "Para que você trabalha?"</a></li>
+<li><a href="../pt495460/index.html">Uma bolha de gás 22.000 vezes o tamanho da Terra explodiu em Urano</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

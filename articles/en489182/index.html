@@ -1,0 +1,296 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💅🏽 🕋 🏥 varchar (max) -varchar (max) and in production 🦗 👟 🙋🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I recently participated in a discussion on the impact on performance of specifying lengths in nvarchar columns. The arguments were reasonable on both ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>varchar (max) -varchar (max) and in production</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/489182/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I recently participated in a discussion on the impact on performance of specifying lengths in nvarchar columns. The arguments were reasonable on both sides, and since I had free time, I decided to test a little. The result was this post. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Spoiler - not so simple. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All tests were conducted on SQL Server 2014 Developer Edition, approximately the same results were obtained on SQL Server 2016 (with slight differences). The following should be relevant for SQL Server 2005-2016 (and testing is required in 2017/2019, as Adaptive Memory Grants have appeared there, which can somewhat correct the situation). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We need a stored procedure from Erik Darling </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sp_pressure_detector</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which allows you to get a lot of information about the current state of the system and</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SQL Query Stress</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> is a very cool open-source utility Adam Machanic / Erik Ejlskov Jensen for load testing MS SQL Server.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What are we talking about</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The question I'm trying to answer is whether the choice of the length of the (n) varchar field affects the performance (hereinafter simply varchar everywhere, although everything is also relevant for nvarchar), or you can use varchar (max) and not steam, because if the string length is &lt;8000 (4000 for nvarchar) characters, then varchar (max) and varchar (N) are stored IN-ROW.</font></font><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cooking stand</font></font></h3><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##v10  (i int, d datetime, v varchar(10));</span>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##v100 (i int, d datetime, v varchar(100));</span>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##vmax (i int, d datetime, v varchar(max));</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We create 3 tables of three fields, the difference is only in the length of varchar: 10/100 / max. </font><font style="vertical-align: inherit;">And fill them with the same data:</font></font><br>
+<br>
+<pre><code class="sql hljs">;<span class="hljs-keyword">with</span> x <span class="hljs-keyword">as</span> (<span class="hljs-keyword">select</span> <span class="hljs-number">1</span> x <span class="hljs-keyword">union</span> <span class="hljs-keyword">all</span> <span class="hljs-keyword">select</span> <span class="hljs-number">1</span>)<font></font>
+, xx <span class="hljs-keyword">as</span> (<span class="hljs-keyword">select</span> <span class="hljs-number">1</span> x <span class="hljs-keyword">from</span> x x1, x x2)<font></font>
+, xxx <span class="hljs-keyword">as</span> (<span class="hljs-keyword">select</span> <span class="hljs-number">1</span> x <span class="hljs-keyword">from</span> xx x1, xx x2, xx x3)<font></font>
+, xxxx <span class="hljs-keyword">as</span> (
+	<span class="hljs-keyword">select</span> row_number() <span class="hljs-keyword">over</span>(<span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> (<span class="hljs-keyword">select</span> <span class="hljs-literal">null</span>)) i<font></font>
+		, <span class="hljs-keyword">dateadd</span>(<span class="hljs-keyword">second</span>, row_number() <span class="hljs-keyword">over</span>(<span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> (<span class="hljs-keyword">select</span> <span class="hljs-literal">null</span>)), <span class="hljs-string">'20200101'</span>) d<font></font>
+		, <span class="hljs-keyword">cast</span> (row_number() <span class="hljs-keyword">over</span>(<span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> (<span class="hljs-keyword">select</span> <span class="hljs-literal">null</span>)) <span class="hljs-keyword">as</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-number">10</span>))  v 		
+	<span class="hljs-keyword">from</span> xxx x1, xxx x2, xxx x3<font></font>
+) <span class="hljs-comment">--262144 </span>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##v10			--varchar(10)</span>
+<span class="hljs-keyword">select</span> i, d, v <span class="hljs-keyword">from</span> xxxx;	<font></font>
+<font></font>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##v100			--varchar(100)</span>
+<span class="hljs-keyword">select</span> i, d, v <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10;</span><font></font>
+<font></font>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##vmax			--varchar(max)</span>
+<span class="hljs-keyword">select</span> i, d, v <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10;</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result, each table will contain 262144 rows. </font><font style="vertical-align: inherit;">Column I (integer) contains non-repeating numbers from 1 to 262145; </font><font style="vertical-align: inherit;">d (datetime) unique dates and v (varchar) - cast (I as varchar (10)). </font><font style="vertical-align: inherit;">To make it a bit more like real life, create a unique cluster index on i:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">unique</span> clustered <span class="hljs-keyword">index</span> <span class="hljs-comment">#cidx10 on ##v10(i);</span>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">unique</span> clustered <span class="hljs-keyword">index</span> <span class="hljs-comment">#cidx100 on ##v100(i);</span>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">unique</span> clustered <span class="hljs-keyword">index</span> <span class="hljs-comment">#cidxmax on ##vmax(i);</span></code></pre><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Go</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First, let's see the plans for the execution of different requests. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First, check that the selection by varchar field does not depend on its length (if &lt;8000 characters are stored there). </font><font style="vertical-align: inherit;">We include a valid execution plan and look:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10 where v = '123';</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v100 where v = '123';</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where v = '123';</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/jm/ae/ge/jmaegeqd37k-dqa1xelhluv0p7y.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Oddly enough, the difference, although small, is there. </font><font style="vertical-align: inherit;">The query plan with varchar (max) first selects all the rows and then filters them out, and varchar (10) and varchar (100) check for matches when scanning the clustered index. </font><font style="vertical-align: inherit;">Because of this, scanning takes almost 3 times longer - 0.068 seconds versus 0.022 for varchar (10). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now let's see what happens if we simply display the varchar column and select data by the cluster index key:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10  where i between 200000 and 201000;</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v100 where i between 200000 and 201000;</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where i between 200000 and 201000; </span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/cf/-s/kb/cf-skbsef6akggupmzetfl2p8go.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Everything is clear here - there is no difference for such requests. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now for the interesting part. </font><font style="vertical-align: inherit;">In the previous request, we got only 1001 rows, and now we want to sort them by non-indexed column. </font><font style="vertical-align: inherit;">We try:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v10  where i between 200000 and 201000 order by d;</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##v100 where i between 200000 and 201000 order by d;</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where i between 200000 and 201000 order by d;</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/yj/do/49/yjdo497l7navh17mbg02_gqx8us.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Oh, and what's so yellow?</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ey/me/42/eyme42eioy1wftu3xupiblsy4i8.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Funny, i.e. </font><font style="vertical-align: inherit;">the request requested and received 6.5 megabytes of RAM for sorting, and used only 96 kilobytes. </font><font style="vertical-align: inherit;">And how much worse will it be if there are more lines. </font><font style="vertical-align: inherit;">Well, let it be not 1000, but 100000:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/4e/m9/yj/4em9yjzwjh3nnoqfgfyx54rsing.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But here it’s more serious. </font><font style="vertical-align: inherit;">Moreover, the first request that works with the smallest varchar (10) is also dissatisfied with something:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/q8/ni/cq/q8nicqpp2upyxdn1tqkkrj9pmiw.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On the left there is a warning of the last request: 500 megabytes were requested, and only 9.5 megabytes were used. </font><font style="vertical-align: inherit;">And on the right is a sorting warning: 8840 kilobytes were requested, but there weren’t enough of them, and another 360 pages (8 kb each) were written and read from tempdb. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And here the question begs: WTF?</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The answer is how SQL Server Query Optimizer works. To sort something, you need to first put something into memory. How to understand how much memory is needed? In general, we know how much what type of data takes up space. But what about variable-length strings? But it’s more interesting with them. When allocating memory for / hash join sorts, SQL Server considers that they are half full on average. And allocates memory for them as (size / 2) * the expected number of lines. But varchar (max) can store as much as 2GB - how much to allocate? SQL Server believes that there will be half of varchar (8000) - i.e. approximately 4 kb per line.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What is interesting - this allocation of memory leads to problems not only with varchar (max) - if the size of your varchars is lovingly chosen so that most of them are half full and larger, this also leads to problems. </font><font style="vertical-align: inherit;">Problems of a different plan, but no less serious. </font><font style="vertical-align: inherit;">In the figure above there is a description - SQL Server could not correctly allocate memory for sorting a small varchar and used tempdb to store intermediate results. </font><font style="vertical-align: inherit;">If tempdb lies on slow disks, or is actively used by other requests, this can become a very bottleneck.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SQL Query Stress</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now let’s see what happens when bulk queries are executed. </font><font style="vertical-align: inherit;">Run SQL Query Stress, connect it to our server, and say to execute all these queries 10 times in 50 threads. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The results of the first query:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/qv/9r/q8/qv9rq8c7z6tbyqb9k7jqck2yhae.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/_9/vw/he/_9vwhedfjdaa22mkptjacumozfa.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/5c/um/uv/5cumuvx4-sfl5nojbis65jcdapo.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is interesting, but without indexes, when searching, varchar (max) shows itself worse than anyone, and it is solidly worse in terms of processor time for iteration and overall runtime. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+sp_pressure_detector does not show anything interesting here, so I don’t cite its output. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Results of the second query:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/om/nz/yo/omnzyo0dirov8grjqv_xknozi8a.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/um/l8/ck/uml8ckphegosxfz61vucy5cdhmc.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/jp/gc/qw/jpgcqwftgnarvin2dubbszhlb0e.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Everything is expected here - equally good. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now for the interesting part. </font><font style="vertical-align: inherit;">A query with sorting the resulting thousand rows:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/nk/s3/7g/nks37ghsmhyoeu2ufnwjtucspng.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/v5/k8/md/v5k8mduwaak5levom_53ew9tb-c.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ur/dt/cm/urdtcmhikdmqqn17is5z7lgwnom.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Everything turned out to be exactly the same as with the previous request - there are not many lines, sorting does not cause problems. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now the last query that sorts unreasonably many rows (I added top 1000 to it so as not to pull the entire sorted list):</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/so/qf/4x/soqf4xayshv3s96prh41gbho98o.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/2d/mo/xz/2dmoxznaetv7dae_o8yfwqewgx0.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ap/s5/0n/aps50nstvvlezyr4qq16jjw8xmu.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And here is the output of sp_pressure_detector:</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><div style="text-align:center;"><img src="https://habrastorage.org/webt/ta/-d/5v/ta-d5vvomd180-etwq7kvvkplyy.png"></div></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What does he tell us? </font><font style="vertical-align: inherit;">All sessions request 489 MB each (for sorting), but only 22 of them had enough memory for SQL Server, even considering that all these 22 sessions use only 9 MB each! </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In total, 11 GB of memory is available, 229 sessions were allocated 489.625 each and SQL Server had only 258 megabytes available, and they also want to get new sessions for 489. What should I do? </font><font style="vertical-align: inherit;">Wait until the memory becomes free - they wait, not even starting to run. </font><font style="vertical-align: inherit;">What will users do if such requests are made in their sessions? </font><font style="vertical-align: inherit;">Too to wait. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+By the way, pay attention to the figure with varchar (10) - requests with varchar (10) took longer than requests with varchar (100) - and this despite the fact that I have tempdb on a very fast disk. </font><font style="vertical-align: inherit;">The worse the drive under tempdb is, the slower the query will run.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Separate Note for SQL Server 2012/2014</font></font></b><div class="spoiler_text"> SQL Server 2012/2014       sort spills.      char/nchar –     spill’  tempdb. <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=">MS    </a>,        ,       .<br>
+<br>
+ :<br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##c6  (i int, d datetime, v char(6));</span>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##c6 (i, d, v)</span>
+<span class="hljs-keyword">select</span> i, d, v
+<span class="hljs-keyword">from</span> <span class="hljs-comment">##v10</span>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##c6 where i between 100000 and 200000 order by d;</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ui/f4/b8/uif4b8p9mykxr4vt6nzawwr67_e.png"></div><br>
+    (      ):<br>
+<br>
+<pre><code class="sql hljs">DBCC TRACEON (7470, -1);</code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/wy/re/lk/wyrelkcbyfaybdahpngtbvakkla.png"></div><br>
+    , spill’  .<br>
+</div></div><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">findings</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Use caution with sorting in your queries where you have (n) varchar columns. If sorting is still needed, it is highly desirable that the sorting column has an index. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Note that in order to get a sort it is not necessary to explicitly use order by - its appearance is also possible with merge joins, for example. The same problem with memory allocation is also possible with hash joins, for example, with varchar (max):</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> top <span class="hljs-number">100</span> * 
+<span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax v1</span>
+<span class="hljs-keyword">inner</span> <span class="hljs-keyword">hash</span> <span class="hljs-keyword">join</span> <span class="hljs-comment">##v10 v2 on v1.i = v2.i</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ui/zw/65/uizw65mjcy5wysloq-ujohovj1o.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2.5 GB of memory allocated, 25 megabytes used! </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The main conclusion for me</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : the size of the column (n) varchar - IMPORTANT! If the size is too small, spills in tempdb are possible; if too large, memory requests are too large. If there are sorts, it would be wise to declare the varchar length as the average record length * 2, and in the case of SQL Server 2012/2014 - even more. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unexpected conclusion for me</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : varchar (max), containing less than 8000 characters, actually works more slowly, with filters on it. I don’t know how to explain it yet - I’ll dig more. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Bonus withdrawal for me</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">: already almost clicking “publish”, I thought that even with varchar (max) you can experience the problem of “small varchar'a”. </font><font style="vertical-align: inherit;">Indeed, when stored in varchar (max) more than 4000 characters (2000 for nvarchar) - sorting can be a problem.</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##vmax(i, d, v)</span>
+<span class="hljs-keyword">select</span> i, d, <span class="hljs-keyword">replicate</span>(<span class="hljs-string">'a'</span>, <span class="hljs-number">4000</span>) v
+<span class="hljs-keyword">from</span> <span class="hljs-comment">##v10;</span><font></font>
+<font></font>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where i between 200000 and 201000 order by d;</span>
+</code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/1r/al/gj/1ralgj_dructufbdmv9okrtarqu.png"></div><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">truncate</span> <span class="hljs-keyword">table</span> <span class="hljs-comment">##vmax;</span><font></font>
+<font></font>
+<span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> <span class="hljs-comment">##vmax(i, d, v)</span>
+<span class="hljs-keyword">select</span> i, d, <span class="hljs-keyword">replicate</span>(<span class="hljs-string">'a'</span>, <span class="hljs-number">4100</span>) v
+<span class="hljs-keyword">from</span> <span class="hljs-comment">##v10;</span><font></font>
+<font></font>
+<span class="hljs-keyword">select</span> * <span class="hljs-keyword">from</span> <span class="hljs-comment">##vmax where i between 200000 and 201000 order by d;</span></code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/wa/hp/s7/wahps7atcyg7xmdkuo0rg6-ojhu.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Why at the very beginning I wrote that not everything is so simple? </font><font style="vertical-align: inherit;">Because, for example, on my home laptop with a half-dead disk, spills in tempdb when sorting “small” varchar led to the fact that such requests were executed ORDER slower than similar requests with varchar (max). </font><font style="vertical-align: inherit;">If you have good hardware, they may not be such a problem, but you should not forget about them. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What would be even more interesting is to see if there are any problems due to the too large / small sizes of varchars in other DBMSs. </font><font style="vertical-align: inherit;">If you have the opportunity to check - I will be glad if share.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Little bonus</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Unfortunately, it is not possible to catch such problems using the query plan cache. </font><font style="vertical-align: inherit;">Here are examples of plans from the cache: alas, there are no warnings in them.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/eu/g5/kg/eug5kgej0aai31sbnd3ukzp31qm.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/su/vg/yp/suvgypz4s5ejzxv_9zootujvoim.png"></div></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en489164/index.html">Kubernetes cluster upgrade without downtime</a></li>
+<li><a href="../en489166/index.html">About the operation of a PC using the example of Windows 10 and the keyboard of Part 2</a></li>
+<li><a href="../en489172/index.html">We fasten ActiveDirectory authorization to Kubernetes with Keycloak</a></li>
+<li><a href="../en489174/index.html">Single Responsibility Principle (SRP) with Laravel</a></li>
+<li><a href="../en489178/index.html">GSMout - receive SMS and calls “at home”</a></li>
+<li><a href="../en489188/index.html">Logging in a microservice .Net environment in practice</a></li>
+<li><a href="../en489190/index.html">RedHat study: open source displaces proprietary software from the enterprise segment</a></li>
+<li><a href="../en489192/index.html">Smart Engines entered the top three in the FWCI ranking among the basic organizations of FizTech</a></li>
+<li><a href="../en489194/index.html">How OpenShift is changing the organizational structure of an IT organization. The evolution of organizational models when moving to PaaS</a></li>
+<li><a href="../en489196/index.html">Magic Smoke: Microcontrollers vs. Linear Regulators</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

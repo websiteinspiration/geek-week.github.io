@@ -1,0 +1,186 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐨 😅 📬 Python中令人难以置信的并行Apache Parquet I / O性能 🧜🏾 ⚙️ 🍮</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="预期数据工程师课程的开始，我们准备了一些小而有趣的材料的翻译。
+ 
+ 
+ 
+ 在本文中，我将讨论Parquet如何将大型数据集压缩为较小的占用空间的文件，以及如何使用并发（多线程）实现远远超过I / O流带宽的带宽。
+ 
+ Apache Parquet：最适合低熵数据
+ 从Apache Parque...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Python中令人难以置信的并行Apache Parquet I / O性能</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/otus/blog/489062/"><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">预期</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数据工程师</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">课程的开始</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">，我们</font></a><font style="vertical-align: inherit;">准备了一些小而有趣的材料的翻译。</font></font></b></i><br>
+<br>
+<img src="https://habrastorage.org/webt/tq/qm/rv/tqqmrv0apg-z17hw8cqzzrgsuo8.png"><br>
+<hr><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在本文中，我将讨论Parquet如何将大型数据集压缩为较小的占用空间的文件，以及如何使用并发（多线程）实现远远超过I / O流带宽的带宽。</font></font><a name="habracut"></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Apache Parquet：最适合低熵数据</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从</font><font style="vertical-align: inherit;">Apache Parquet </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">格式</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的规范中可以了解到</font><font style="vertical-align: inherit;">，它包含几个编码级别，可以显着减小文件大小，其中包括：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用字典进行编码（压缩）（类似于熊猫。表示数据的分类方式，但是概念本身不同）；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">压缩数据页（Snappy，Gzip，LZO或Brotli）；</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">执行长度（对于null-字典的指针和索引）和整数位打包的编码；</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了向您展示这是如何工作的，让我们看一个数据集：</font></font><br>
+<br>
+<pre><code class="python hljs">[<span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>,
+ <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'apple'</span>, <span class="hljs-string">'apple'</span>, <span class="hljs-string">'apple'</span>]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+几乎所有的Parquet实现都使用默认字典进行压缩。</font><font style="vertical-align: inherit;">因此，编码数据如下：</font></font><br>
+<br>
+<pre><code class="python hljs">dictionary: [<span class="hljs-string">'banana'</span>, <span class="hljs-string">'apple'</span>]<font></font>
+indices: [<span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, <span class="hljs-number">1</span>, <span class="hljs-number">1</span>]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+字典中的索引还通过重复编码算法进行压缩：</font></font><br>
+<br>
+<pre><code class="python hljs">dictionary: [<span class="hljs-string">'banana'</span>, <span class="hljs-string">'apple'</span>]<font></font>
+indices (RLE): [(<span class="hljs-number">8</span>, <span class="hljs-number">0</span>), (<span class="hljs-number">3</span>, <span class="hljs-number">1</span>)]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+按照返回路径，您可以轻松地恢复原始的字符串数组。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在上</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一篇文章中，</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我创建了一个以这种方式很好压缩的数据集。</font><font style="vertical-align: inherit;">使用时</font></font><code>pyarrow</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，我们可以使用字典（默认情况下已启用）启用和禁用编码，以了解这将如何影响文件大小：</font></font><br>
+<br>
+<pre><code class="python hljs"><span class="hljs-keyword">import</span> pyarrow.parquet <span class="hljs-keyword">as</span> pq<font></font>
+<font></font>
+pq.write_table(dataset, out_path, use_dictionary=<span class="hljs-literal">True</span>,<font></font>
+               compression=<span class="hljs-string">'snappy)</span></code></pre><br><font style="vertical-align: inherit;"></font><code>pandas.DataFrame</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">包含Snappy压缩和使用字典压缩的</font><font style="vertical-align: inherit;">
+占用1 GB（1024 MB）的数据集</font><font style="vertical-align: inherit;">仅需1.436 MB，即，甚至可以将其写入软盘。</font><font style="vertical-align: inherit;">如果不使用字典进行压缩，则它将占用44.4 MB。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用PyArrow在Parquet-cpp中并发读取</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在C ++中的Apache Parquet的实现</font><font style="vertical-align: inherit;">-parquet </font></font><i><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-cpp中</font></font></a></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，我们在PyArrow中将其提供给Python使用，其中添加了并行读取列的功能。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要尝试此功能，请从conda </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> forge安装PyArrow </font><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="python hljs">conda install pyarrow -c conda-forge</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，当读取Parquet文件时，可以使用参数</font></font><code>nthreads</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="python hljs"><span class="hljs-keyword">import</span> pyarrow.parquet <span class="hljs-keyword">as</span> pq<font></font>
+<font></font>
+table = pq.read_table(file_path, nthreads=<span class="hljs-number">4</span>)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ 对于低熵的数据，解压缩和解码与处理器紧密相关。由于C ++为我们完成了所有工作，因此GIL并行性没有问题，并且可以显着提高速度。通过</font><font style="vertical-align: inherit;">在四核笔记本电脑（至强E3-1505M，NVMe SSD）上</font><font style="vertical-align: inherit;">的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pandas DataFrame中</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">读取1 GB </font><i><font style="vertical-align: inherit;">数据集</font></i><font style="vertical-align: inherit;">，可以了解我的能力</font><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/8e/y-/6b/8ey-6bfhwivej3ikb9vjhyscuhs.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">此处</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">查看完整的基准测试方案</font><font style="vertical-align: inherit;">。</font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于使用字典的压缩情况和不使用字典的情况，我都在此处包括了性能。</font><font style="vertical-align: inherit;">对于低熵的数据，尽管事实上所有文件都很小（使用字典时约为1.5 MB，使用字典时约为45 MB），但使用字典进行压缩会显着影响性能。</font><font style="vertical-align: inherit;">借助4个线程，熊猫的读取性能提高到4 GB / s。</font><font style="vertical-align: inherit;">这比Feather格式或我所知道的任何其他格式快得多。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结论</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+随着1.0版本</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">parquet-cpp（C ++中的Apache Parquet）的发布，</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您可以亲眼看到Python用户现在可以使用的提高的I / O性能。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于所有基本机制都是用C ++实现的，因此使用其他语言（例如R），您可以为Apache Arrow（列数据结构）和</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">parquet-cpp</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">创建接口</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">Python绑定是核心</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">libarrow</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">libparquet</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> C ++库</font><font style="vertical-align: inherit;">的轻量级外壳</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+就这样。</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如果您想进一步了解我们的课程，请注册一个</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">开放日</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，该</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">日</font></a><font style="vertical-align: inherit;">将在今天举行！</font></font></b></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN489046/index.html">自动驾驶GAZ66怪物卡车1/16</a></li>
+<li><a href="../zh-CN489048/index.html">日志记录和查询跟踪是最佳实践。Yandex报告</a></li>
+<li><a href="../zh-CN489050/index.html">Windows与Sysmon</a></li>
+<li><a href="../zh-CN489058/index.html">具有PyTorch和Sklearn的神经网络的集成</a></li>
+<li><a href="../zh-CN489060/index.html">分析：高风险和低风险投资有什么区别</a></li>
+<li><a href="../zh-CN489070/index.html">这将花费354双袜子。2月23日精选礼品</a></li>
+<li><a href="../zh-CN489072/index.html">3CX在构建分布式网络中的优势</a></li>
+<li><a href="../zh-CN489074/index.html">如何通过电话号码确定运营商和地区</a></li>
+<li><a href="../zh-CN489076/index.html">CNC车床切削加工材料过程的仿真模型</a></li>
+<li><a href="../zh-CN489080/index.html">利用Tacman的发展阶段加强您的敏捷团队</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,614 @@
+<!doctype html>
+<html class="no-js" lang="id">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💆🏽 🚣🏼 🖋️ Bagaimana Unix pipeline diimplementasikan 🚶🏾 🙎🏽 🔺</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Artikel ini menjelaskan implementasi saluran pipa di kernel Unix. Saya agak kecewa dengan artikel terbaru yang berjudul " Bagaimana cara kerja pipelin...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Bagaimana Unix pipeline diimplementasikan</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/495484/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/ge/sl/9i/gesl9iqjuhatlmgyrdps28zgje0.jpeg"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Artikel ini menjelaskan implementasi saluran pipa di kernel Unix. </font><font style="vertical-align: inherit;">Saya agak kecewa dengan artikel terbaru yang berjudul " </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Bagaimana cara kerja pipeline pada Unix?" </font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Bukan</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> tentang perangkat internal. </font><font style="vertical-align: inherit;">Saya menjadi tertarik, dan saya membenamkan diri dalam sumber-sumber lama untuk menemukan jawabannya.</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Apa yang kita bicarakan?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pipa - "mungkin penemuan paling penting di Unix" - adalah ciri khas dari filosofi dasar Unix dalam menggabungkan program kecil bersama-sama, serta baris perintah yang sudah dikenal:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">$ echo hello | wc -c<font></font>
+6<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Fungsionalitas ini tergantung pada panggilan sistem yang disediakan oleh kernel </font></font><code>pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, yang dijelaskan pada halaman dokumentasi </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe (7)</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe (2)</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Konveyor menyediakan saluran komunikasi antar proses searah. </font><font style="vertical-align: inherit;">Pipeline memiliki input (akhir penulisan) dan output (akhir baca). </font><font style="vertical-align: inherit;">Data yang ditulis ke input dari pipa dapat dibacakan. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pipeline dibuat menggunakan panggilan </font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">yang mengembalikan dua deskriptor file: satu merujuk pada input dari pipeline, yang kedua ke output.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Jejak hasil dari perintah di atas menunjukkan penciptaan pipa dan aliran data melalui itu dari satu proses ke proses lain:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">$ strace -qf -e execve,pipe,dup2,read,write \<font></font>
+    sh -c 'echo hello | wc -c'<font></font>
+<font></font>
+execve("/bin/sh", ["sh", "-c", "echo hello | wc -c"], …)<font></font>
+pipe([3, 4])                            = 0<font></font>
+[pid 2604795] dup2(4, 1)                = 1<font></font>
+[pid 2604795] write(1, "hello\n", 6)    = 6<font></font>
+[pid 2604796] dup2(3, 0)                = 0<font></font>
+[pid 2604796] execve("/usr/bin/wc", ["wc", "-c"], …)<font></font>
+[pid 2604796] read(0, "hello\n", 16384) = 6<font></font>
+[pid 2604796] write(1, "6\n", 2)        = 2<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Proses induk memanggil </font></font><code>pipe()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">untuk mendapatkan deskriptor file terlampir. </font><font style="vertical-align: inherit;">Satu proses anak menulis ke satu deskriptor, dan proses lain membaca data yang sama dari deskriptor lain. </font><font style="vertical-align: inherit;">Pembungkus menggunakan dup2 “renames” deskriptor 3 dan 4 untuk mencocokkan stdin dan stdout. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tanpa pipa, shell harus menulis hasil dari satu proses ke file dan mentransfernya ke proses lain sehingga membaca data dari file. </font><font style="vertical-align: inherit;">Akibatnya, kami akan menghabiskan lebih banyak sumber daya dan ruang disk. </font><font style="vertical-align: inherit;">Namun, jalur pipa bagus bukan hanya karena mereka menghindari penggunaan file sementara:</font></font><br>
+<br>
+<blockquote>      ,  <code>read(2)</code>    ,     .       ,  <code>write(2)</code>    ,           .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Seperti persyaratan POSIX, ini adalah properti penting: menulis ke saluran pipa hingga </font></font><code>PIPE_BUF</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">byte (setidaknya 512) harus berupa atom sehingga proses dapat berinteraksi satu sama lain melalui pipa dengan cara yang sama seperti file biasa (yang tidak memberikan jaminan seperti itu) dapat. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Saat menggunakan file biasa, suatu proses dapat menulis semua data outputnya ke sana dan mentransfernya ke proses lain. </font><font style="vertical-align: inherit;">Atau proses dapat beroperasi dalam mode paralelisasi keras, menggunakan mekanisme pensinyalan eksternal (seperti semaphore) untuk saling menginformasikan tentang penyelesaian penulisan atau membaca. </font><font style="vertical-align: inherit;">Konveyor menyelamatkan kita dari semua masalah ini.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Apa yang kita cari</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Saya akan menjelaskannya dengan jari saya untuk memudahkan Anda membayangkan bagaimana konveyor dapat bekerja. </font><font style="vertical-align: inherit;">Anda perlu mengalokasikan buffer dan beberapa status dalam memori. </font><font style="vertical-align: inherit;">Anda akan membutuhkan fungsi untuk menambah dan menghapus data dari buffer. </font><font style="vertical-align: inherit;">Dibutuhkan beberapa cara untuk memanggil fungsi selama operasi baca dan tulis ke file deskriptor. </font><font style="vertical-align: inherit;">Dan kunci diperlukan untuk menerapkan perilaku khusus yang dijelaskan di atas. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sekarang kita siap untuk menginterogasi dalam cahaya terang dari kode sumber kernel untuk mengkonfirmasi atau menyangkal model mental samar kita. </font><font style="vertical-align: inherit;">Tapi selalu bersiap untuk yang tak terduga.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Di mana kita mencari?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Saya tidak tahu di mana salinan buku terkenal " </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lions book</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> " dengan kode sumber Unix 6 berada, tetapi berkat </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The Unix Heritage Society,</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Anda dapat mencari </font><font style="vertical-align: inherit;">versi Unix yang lebih lama </font><font style="vertical-align: inherit;">di </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kode sumber</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Berkeliaran di sekitar arsip TUHS mirip dengan mengunjungi museum. </font><font style="vertical-align: inherit;">Kita dapat melihat sejarah umum kita, dan saya menghargai upaya bertahun-tahun untuk memulihkan semua materi ini sedikit demi sedikit dari kaset dan cetakan lama. </font><font style="vertical-align: inherit;">Dan saya sangat menyadari fragmen-fragmen yang masih hilang. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Setelah memuaskan keingintahuan kami tentang sejarah kuno konveyor, kita dapat melihat core modern untuk perbandingan. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Omong-omong, </font></font><code>pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">adalah nomor sistem panggilan 42 dalam tabel </font></font><code>sysent[]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Kebetulan?</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kernel Unix Tradisional (1970–1974)</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Saya tidak menemukan jejak apa pun </font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">di </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PDP-7 Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (Januari 1970), atau dalam </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">edisi pertama Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (November 1971), atau dalam kode sumber tidak lengkap dari </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">edisi kedua</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (Juni 1972). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+TUHS mengklaim bahwa </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">edisi ketiga Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (Februari 1973) adalah versi pertama dengan saluran pipa:</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Edisi ketiga Unix adalah versi terbaru dengan kernel yang ditulis dalam bahasa assembly, tetapi versi pertama dengan saluran pipa. </font><font style="vertical-align: inherit;">Selama tahun 1973, pekerjaan dilakukan untuk memperbaiki edisi ketiga, intinya ditulis ulang dalam bahasa C, sehingga muncullah edisi keempat Unix.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Salah satu pembaca menemukan pemindaian dokumen di mana Doug McIlroy mengusulkan gagasan "menghubungkan program dengan prinsip selang kebun."</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/c6c/8c2/c8c/c6c8c2c8c5720d79227246af98c9b8d5.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dalam buku Brian Kernighan " </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unix: A History and a Memoir</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ", dalam sejarah penampilan konveyor, dokumen ini juga disebutkan: "... itu tergantung di dinding di kantor saya di Bell Labs selama 30 tahun." Berikut </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wawancara dengan McIlroy</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , dan kisah lain dari </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">karya McIlroy yang ditulis pada tahun 2014</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<blockquote>  Unix,        ,  ,  ,   - ,     ,       .  ,   . ,  ,  ,       .                ?           «»     , , -, : «  !».<br>
+<br>
+ .        ,    ,       (    ),     .          .              .      API          ,      .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sayangnya, kode sumber kernel untuk Unix edisi ketiga hilang. Dan meskipun kami memiliki kode sumber untuk kernel </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">edisi keempat yang</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ditulis dalam C </font><font style="vertical-align: inherit;">, dirilis pada November 1973, itu dirilis beberapa bulan sebelum rilis resmi dan tidak mengandung implementasi pipa. Sangat disayangkan bahwa kode sumber fungsi Unix yang legendaris hilang, mungkin selamanya. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kami memiliki teks dokumentasi </font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dari kedua rilis, sehingga Anda dapat mulai dengan mencari </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">edisi ketiga dari</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dokumentasi </font><font style="vertical-align: inherit;">(untuk kata-kata tertentu, digarisbawahi "secara manual", serangkaian literal ^ H, diikuti oleh garis bawah!). Proto ini </font></font><code>pipe(2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ditulis dalam assembler dan hanya mengembalikan satu deskriptor file, tetapi sudah menyediakan fungsionalitas dasar yang diharapkan:</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Panggilan sistem </font></font><u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipa</font></font></u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> menciptakan mekanisme input output yang disebut pipeline. </font><font style="vertical-align: inherit;">Deskriptor file yang dikembalikan dapat digunakan untuk operasi baca dan tulis. </font><font style="vertical-align: inherit;">Ketika sesuatu ditulis ke saluran pipa, hingga 504 byte data buffer, setelah itu proses penulisan dijeda. </font><font style="vertical-align: inherit;">Saat membaca dari saluran pipa, data buffer diambil.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pada tahun berikutnya, kernel ditulis ulang dalam C, dan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe (2) pada edisi keempat</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> menemukan tampilan modernnya dengan prototipe " </font></font><code>pipe(fildes)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">":</font></font><br>
+<br>
+<blockquote>  <i>pipe</i>    ,   .          .  -   ,   ,   r1 (. fildes[1]),    4096  ,     .     ,   r0 (. fildes[0]),  .<br>
+<br>
+,      ( )   (   <i>fork</i>)         <i>read</i>  <i>write</i>.<br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Shell memiliki sintaks untuk mendefinisikan array linier dari proses yang terhubung melalui pipa. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Baca panggilan dari saluran pipa kosong (tidak mengandung data buffered) yang hanya memiliki satu ujung (semua deskriptor file penulisan ditutup) mengembalikan "akhir file". </font><font style="vertical-align: inherit;">Merekam panggilan dalam situasi yang sama diabaikan.</font></font></blockquote><br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Implementasi pipa yang masih ada</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+paling awal </font><font style="vertical-align: inherit;">berasal </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dari Unix edisi kelima</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (Juni 1974), tetapi hampir identik dengan yang muncul pada rilis berikutnya. </font><font style="vertical-align: inherit;">Hanya komentar yang ditambahkan, sehingga edisi kelima dapat dilewati.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Edisi Keenam Unix (1975)</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kita mulai membaca kode sumber Unix </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">edisi keenam</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (Mei 1975). </font><font style="vertical-align: inherit;">Berkat </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lions,</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> menemukannya jauh lebih mudah daripada kode sumber versi sebelumnya:</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Selama bertahun-tahun, </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lions telah</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> menjadi satu-satunya dokumen inti Unix yang tersedia di luar dinding Bell Labs. </font><font style="vertical-align: inherit;">Meskipun lisensi edisi keenam memungkinkan guru untuk menggunakan kode sumbernya, lisensi edisi ketujuh mengecualikan kemungkinan ini, sehingga buku itu didistribusikan dalam bentuk salinan tulisan tangan yang tidak sah.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hari ini Anda dapat membeli salinan cetak ulang buku tersebut, di sampulnya siswa diperlihatkan di mesin fotokopi. Dan terima kasih kepada Warren Tumi (yang meluncurkan proyek TUHS), Anda dapat mengunduh </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">file PDF dengan kode sumber untuk edisi keenam</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Saya ingin memberi Anda gambaran tentang berapa banyak upaya yang diperlukan untuk membuat file:</font></font><br>
+<br>
+<blockquote> 15       ,   <i>Lions</i>,             . TUHS   ,         .   1988-      9 ,        PDP11.   ,   ,      /usr/src/,       1979- ,     .        PWB,   .<br>
+<br>
+            .     ,    ,    +=   =+. -  ,  -   ,    .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dan hari ini kita dapat membaca secara online di TUHS kode sumber edisi keenam dari </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">arsip, yang dimiliki oleh Dennis Ritchie</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ngomong-ngomong, pada pandangan pertama, fitur utama dari C-code sebelum periode Kernigan dan Richie adalah </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">singkatnya</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Tidak sering, saya berhasil menyematkan cuplikan kode tanpa pengeditan ekstensif agar sesuai dengan area tampilan yang relatif sempit di situs saya. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Di awal </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/usr/sys/ken/pipe.c</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ada komentar penjelasan (dan ya, ada juga </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ usr / sys / dmr</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ):</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Max allowable buffering per pipe.<font></font>
+ * This is also the max size of the<font></font>
+ * file created to implement the pipe.<font></font>
+ * If this size is bigger than 4096,<font></font>
+ * pipes will be implemented in LARG<font></font>
+ * files, which is probably not good.<font></font>
+ */<font></font>
+#define    PIPSIZ    4096<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ukuran buffer tidak berubah sejak edisi keempat. Tapi di sini, tanpa dokumentasi publik, kita melihat bahwa sekali pipa menggunakan file sebagai penyimpanan cadangan! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Adapun file LARG, mereka sesuai </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dengan flag inode LARG</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , yang digunakan oleh "algoritma pengalamatan tinggi" untuk memproses </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">blok tidak langsung</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> untuk mendukung sistem file yang lebih besar. Karena Ken mengatakan lebih baik tidak menggunakannya, saya dengan senang hati akan mengambil kata-katanya untuk itu. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Inilah panggilan sistem yang sebenarnya </font></font><code>pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * The sys-pipe entry.<font></font>
+ * Allocate an inode on the root device.<font></font>
+ * Allocate 2 file structures.<font></font>
+ * Put it all together with flags.<font></font>
+ */<font></font>
+pipe()<font></font>
+{<font></font>
+    register *ip, *rf, *wf;<font></font>
+    int r;<font></font>
+<font></font>
+    ip = ialloc(rootdev);<font></font>
+    if(ip == NULL)<font></font>
+        return;<font></font>
+    rf = falloc();<font></font>
+    if(rf == NULL) {<font></font>
+        iput(ip);<font></font>
+        return;<font></font>
+    }<font></font>
+    r = u.u_ar0[R0];<font></font>
+    wf = falloc();<font></font>
+    if(wf == NULL) {<font></font>
+        rf-&gt;f_count = 0;<font></font>
+        u.u_ofile[r] = NULL;<font></font>
+        iput(ip);<font></font>
+        return;<font></font>
+    }<font></font>
+    u.u_ar0[R1] = u.u_ar0[R0]; /* wf's fd */<font></font>
+    u.u_ar0[R0] = r;           /* rf's fd */<font></font>
+    wf-&gt;f_flag = FWRITE|FPIPE;<font></font>
+    wf-&gt;f_inode = ip;<font></font>
+    rf-&gt;f_flag = FREAD|FPIPE;<font></font>
+    rf-&gt;f_inode = ip;<font></font>
+    ip-&gt;i_count = 2;<font></font>
+    ip-&gt;i_flag = IACC|IUPD;<font></font>
+    ip-&gt;i_mode = IALLOC;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Komentar jelas menggambarkan apa yang terjadi di sini. Tetapi untuk memahami kode itu tidak mudah, sebagian karena cara dengan bantuan « </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pengguna struct</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> » dan mendaftar </font></font><code>R0</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan </font></font><code>R1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mentransfer parameter panggilan sistem dan mengembalikan nilai. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mari kita coba menggunakan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ialloc () untuk</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> menempatkan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">inode (inode </font></font></a><font style="vertical-align: inherit;"><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;">)</font></a><font style="vertical-align: inherit;"> pada disk </font><font style="vertical-align: inherit;">, dan menggunakan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">falloc ()</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> untuk menempatkan dua </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">file</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dalam memori </font><font style="vertical-align: inherit;">. Jika semuanya berjalan dengan baik, maka kita akan mengatur flag untuk mendefinisikan file-file ini sebagai dua ujung pipa, arahkan mereka ke inode yang sama (yang jumlah referensi akan 2), dan tandai inode sebagai diubah dan digunakan. Perhatikan panggilan ke </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">iput ()</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">di jalur kesalahan untuk mengurangi jumlah referensi di inode baru. </font></font><br>
+<br>
+<code>pipe()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">harus melalui </font></font><code>R0</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan </font></font><code>R1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mengembalikan nomor deskriptor file untuk membaca dan menulis. </font></font><code>falloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mengembalikan pointer ke struktur file, tetapi juga "mengembalikan" melalui </font></font><code>u.u_ar0[R0]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">deskriptor file. Artinya, kode menyimpan ke </font></font><code>r</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">deskriptor file untuk membaca dan menetapkan deskriptor untuk menulis langsung dari </font></font><code>u.u_ar0[R0]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">setelah panggilan kedua </font></font><code>falloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Bendera </font></font><code>FPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">yang kita atur saat membuat pipeline mengontrol perilaku fungsi </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">rdwr () di sys2.c</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , yang memanggil rutin I / O I / O tertentu:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * common code for read and write calls:<font></font>
+ * check permissions, set base, count, and offset,<font></font>
+ * and switch out to readi, writei, or pipe code.<font></font>
+ */<font></font>
+rdwr(mode)<font></font>
+{<font></font>
+    register *fp, m;<font></font>
+<font></font>
+    m = mode;<font></font>
+    fp = getf(u.u_ar0[R0]);<font></font>
+        /* … */<font></font>
+<font></font>
+    if(fp-&gt;f_flag&amp;FPIPE) {<font></font>
+        if(m==FREAD)<font></font>
+            readp(fp); else<font></font>
+            writep(fp);<font></font>
+    }<font></font>
+        /* … */<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kemudian fungsi </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dalam </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">membaca data dari pipeline. </font><font style="vertical-align: inherit;">Tetapi melacak implementasi lebih baik dimulai dengan </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Sekali lagi, kode menjadi lebih rumit karena spesifikasi perjanjian transfer argumen, tetapi beberapa detail dapat dihilangkan.</font></font><br>
+<br>
+<pre><code class="plaintext hljs">writep(fp)<font></font>
+{<font></font>
+    register *rp, *ip, c;<font></font>
+<font></font>
+    rp = fp;<font></font>
+    ip = rp-&gt;f_inode;<font></font>
+    c = u.u_count;<font></font>
+<font></font>
+loop:<font></font>
+    /* If all done, return. */<font></font>
+<font></font>
+    plock(ip);<font></font>
+    if(c == 0) {<font></font>
+        prele(ip);<font></font>
+        u.u_count = 0;<font></font>
+        return;<font></font>
+    }<font></font>
+<font></font>
+    /*<font></font>
+     * If there are not both read and write sides of the<font></font>
+     * pipe active, return error and signal too.<font></font>
+     */<font></font>
+<font></font>
+    if(ip-&gt;i_count &lt; 2) {<font></font>
+        prele(ip);<font></font>
+        u.u_error = EPIPE;<font></font>
+        psignal(u.u_procp, SIGPIPE);<font></font>
+        return;<font></font>
+    }<font></font>
+<font></font>
+    /*<font></font>
+     * If the pipe is full, wait for reads to deplete<font></font>
+     * and truncate it.<font></font>
+     */<font></font>
+<font></font>
+    if(ip-&gt;i_size1 == PIPSIZ) {<font></font>
+        ip-&gt;i_mode =| IWRITE;<font></font>
+        prele(ip);<font></font>
+        sleep(ip+1, PPIPE);<font></font>
+        goto loop;<font></font>
+    }<font></font>
+<font></font>
+    /* Write what is possible and loop back. */<font></font>
+<font></font>
+    u.u_offset[0] = 0;<font></font>
+    u.u_offset[1] = ip-&gt;i_size1;<font></font>
+    u.u_count = min(c, PIPSIZ-u.u_offset[1]);<font></font>
+    c =- u.u_count;<font></font>
+    writei(ip);<font></font>
+    prele(ip);<font></font>
+    if(ip-&gt;i_mode&amp;IREAD) {<font></font>
+        ip-&gt;i_mode =&amp; ~IREAD;<font></font>
+        wakeup(ip+2);<font></font>
+    }<font></font>
+    goto loop;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kami ingin menulis byte ke input pipa </font></font><code>u.u_count</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Pertama kita perlu mengunci inode (lihat di bawah </font></font><code>plock</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>prele</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kemudian periksa jumlah referensi inode. </font><font style="vertical-align: inherit;">Sementara kedua ujung pipa tetap terbuka, penghitung harus 2. Kami menyimpan satu tautan (keluar </font></font><code>rp-&gt;f_inode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">), jadi jika penghitung kurang dari 2, ini harus berarti bahwa proses pembacaan telah menutup ujung pipa. </font><font style="vertical-align: inherit;">Dengan kata lain, kami mencoba menulis dalam saluran tertutup, dan ini adalah kesalahan. </font><font style="vertical-align: inherit;">Kode </font></font><code>EPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan sinyal </font><font style="vertical-align: inherit;">kesalahan </font><font style="vertical-align: inherit;">pertama kali </font></font><code>SIGPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">muncul di edisi keenam Unix.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tetapi bahkan jika konveyor terbuka, itu bisa penuh. Dalam hal ini, kami melepas kunci dan tidur dengan harapan proses lain akan membaca dari saluran pipa dan membebaskan ruang yang cukup di dalamnya. Setelah bangun, kami kembali ke awal, lagi-lagi kami memblokir kunci dan memulai siklus perekaman baru. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Jika ada cukup ruang kosong di dalam pipa, maka kami menulis data ke sana menggunakan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">writei ()</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Parameter </font></font><code>i_size1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dalam inode (dengan pipeline kosong bisa 0) menunjukkan akhir data yang sudah dikandungnya. Jika ada cukup ruang perekaman, kita dapat mengisi conveyor dari </font></font><code>i_size1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ke</font></font><code>PIPESIZ</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Kemudian kami melepas kunci dan mencoba membangunkan setiap proses yang menunggu kesempatan untuk membaca dari saluran pipa. Kami kembali ke awal untuk melihat apakah kami berhasil menulis byte sebanyak yang kami butuhkan. Jika gagal, maka kami memulai siklus perekaman baru. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Biasanya </font></font><code>i_mode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font><font style="vertical-align: inherit;">parameter </font><font style="vertical-align: inherit;">inode digunakan untuk menyimpan izin </font></font><code>r</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>w</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan </font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Tetapi dalam kasus jalur pipa, kami memberi sinyal bahwa beberapa proses menunggu untuk menulis atau membaca menggunakan bit </font></font><code>IREAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan, </font></font><code>IWRITE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">masing-masing. Suatu proses menetapkan bendera dan panggilan </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, dan diharapkan beberapa proses lain akan memanggil di masa depan </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sihir nyata terjadi di </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Mereka diimplementasikan dalam </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">slp.c</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, sumber komentar terkenal, "Kamu tidak diharapkan untuk memahami ini." </font><font style="vertical-align: inherit;">Untungnya, kita tidak diharuskan untuk memahami kodenya, cukup lihat beberapa komentar:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Give up the processor till a wakeup occurs<font></font>
+ * on chan, at which time the process<font></font>
+ * enters the scheduling queue at priority pri.<font></font>
+ * The most important effect of pri is that when<font></font>
+ * pri&lt;0 a signal cannot disturb the sleep;<font></font>
+ * if pri&gt;=0 signals will be processed.<font></font>
+ * Callers of this routine must be prepared for<font></font>
+ * premature return, and check that the reason for<font></font>
+ * sleeping has gone away.<font></font>
+ */<font></font>
+sleep(chan, pri) /* … */<font></font>
+<font></font>
+/*<font></font>
+ * Wake up all processes sleeping on chan.<font></font>
+ */<font></font>
+wakeup(chan) /* … */<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suatu proses yang memanggil </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">untuk saluran tertentu nanti dapat dibangunkan oleh proses lain yang akan meminta </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">untuk saluran yang sama. </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mengoordinasikan tindakan mereka melalui panggilan berpasangan tersebut. </font><font style="vertical-align: inherit;">Harap dicatat bahwa </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">selalu memberikan prioritas </font></font><code>PPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">saat menelepon </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, sehingga semua orang </font></font><code>sleep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dapat mengganggu sinyal. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sekarang kita memiliki segalanya untuk memahami fungsinya </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">readp(fp)<font></font>
+int *fp;<font></font>
+{<font></font>
+    register *rp, *ip;<font></font>
+<font></font>
+    rp = fp;<font></font>
+    ip = rp-&gt;f_inode;<font></font>
+<font></font>
+loop:<font></font>
+    /* Very conservative locking. */<font></font>
+<font></font>
+    plock(ip);<font></font>
+<font></font>
+    /*<font></font>
+     * If the head (read) has caught up with<font></font>
+     * the tail (write), reset both to 0.<font></font>
+     */<font></font>
+<font></font>
+    if(rp-&gt;f_offset[1] == ip-&gt;i_size1) {<font></font>
+        if(rp-&gt;f_offset[1] != 0) {<font></font>
+            rp-&gt;f_offset[1] = 0;<font></font>
+            ip-&gt;i_size1 = 0;<font></font>
+            if(ip-&gt;i_mode&amp;IWRITE) {<font></font>
+                ip-&gt;i_mode =&amp; ~IWRITE;<font></font>
+                wakeup(ip+1);<font></font>
+            }<font></font>
+        }<font></font>
+<font></font>
+        /*<font></font>
+         * If there are not both reader and<font></font>
+         * writer active, return without<font></font>
+         * satisfying read.<font></font>
+         */<font></font>
+<font></font>
+        prele(ip);<font></font>
+        if(ip-&gt;i_count &lt; 2)<font></font>
+            return;<font></font>
+        ip-&gt;i_mode =| IREAD;<font></font>
+        sleep(ip+2, PPIPE);<font></font>
+        goto loop;<font></font>
+    }<font></font>
+<font></font>
+    /* Read and return */<font></font>
+<font></font>
+    u.u_offset[0] = 0;<font></font>
+    u.u_offset[1] = rp-&gt;f_offset[1];<font></font>
+    readi(ip);<font></font>
+    rp-&gt;f_offset[1] = u.u_offset[1];<font></font>
+    prele(ip);<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Anda mungkin lebih mudah membaca fungsi ini dari bawah ke atas. Cabang "baca dan kembali" biasanya digunakan ketika ada beberapa data dalam pipa. Dalam hal ini, kami menggunakan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">readi () untuk</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> membaca sebanyak mungkin data yang tersedia mulai dari </font></font><code>f_offset</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pembacaan </font><font style="vertical-align: inherit;">saat ini </font><font style="vertical-align: inherit;">, dan kemudian memperbarui nilai offset yang sesuai. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pada pembacaan berikutnya, pipa akan kosong jika pembacaan offset telah mencapai nilai </font></font><code>i_size1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">inode. Kami mengatur ulang posisi ke 0 dan mencoba membangunkan setiap proses yang ingin ditulisnya ke saluran pipa. Kita tahu bahwa ketika konveyor sudah penuh, konveyor </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">akan tertidur </font></font><code>ip+1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Dan sekarang setelah pipanya kosong, kita bisa membangunkannya sehingga melanjutkan siklus rekamannya. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Jika tidak ada yang dibaca, itu </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bisa mengatur bendera </font></font><code>IREAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan tertidur</font></font><code>ip+2</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Kita tahu apa yang akan membangunkannya </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ketika dia menulis beberapa data ke saluran pipa. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Komentar pada </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">readi () dan writei ()</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> akan membantu untuk memahami bahwa alih-alih melewati parameter melalui " </font></font><code>u</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">", kita dapat memperlakukannya seperti fungsi I / O biasa, yang mengambil file, posisi, buffer dalam memori, dan menghitung jumlah byte untuk membaca atau menulis .</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Read the file corresponding to<font></font>
+ * the inode pointed at by the argument.<font></font>
+ * The actual read arguments are found<font></font>
+ * in the variables:<font></font>
+ *    u_base        core address for destination<font></font>
+ *    u_offset    byte offset in file<font></font>
+ *    u_count        number of bytes to read<font></font>
+ *    u_segflg    read to kernel/user<font></font>
+ */<font></font>
+readi(aip)<font></font>
+struct inode *aip;<font></font>
+/* … */<font></font>
+<font></font>
+/*<font></font>
+ * Write the file corresponding to<font></font>
+ * the inode pointed at by the argument.<font></font>
+ * The actual write arguments are found<font></font>
+ * in the variables:<font></font>
+ *    u_base        core address for source<font></font>
+ *    u_offset    byte offset in file<font></font>
+ *    u_count        number of bytes to write<font></font>
+ *    u_segflg    write to kernel/user<font></font>
+ */<font></font>
+writei(aip)<font></font>
+struct inode *aip;<font></font>
+/* … */<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Adapun kunci "konservatif", lalu </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">blok inode selama mereka menyelesaikan pekerjaan atau tidak mendapatkan hasilnya (yaitu penyebabnya </font></font><code>wakeup</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">). </font></font><code>plock()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan mereka </font></font><code>prele()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bekerja secara sederhana: menggunakan serangkaian panggilan yang berbeda </font></font><code>sleep</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan </font></font><code>wakeup</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memungkinkan kami untuk membangunkan setiap proses yang membutuhkan kunci yang baru saja kami hapus:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/*<font></font>
+ * Lock a pipe.<font></font>
+ * If its already locked, set the WANT bit and sleep.<font></font>
+ */<font></font>
+plock(ip)<font></font>
+int *ip;<font></font>
+{<font></font>
+    register *rp;<font></font>
+<font></font>
+    rp = ip;<font></font>
+    while(rp-&gt;i_flag&amp;ILOCK) {<font></font>
+        rp-&gt;i_flag =| IWANT;<font></font>
+        sleep(rp, PPIPE);<font></font>
+    }<font></font>
+    rp-&gt;i_flag =| ILOCK;<font></font>
+}<font></font>
+<font></font>
+/*<font></font>
+ * Unlock a pipe.<font></font>
+ * If WANT bit is on, wakeup.<font></font>
+ * This routine is also used to unlock inodes in general.<font></font>
+ */<font></font>
+prele(ip)<font></font>
+int *ip;<font></font>
+{<font></font>
+    register *rp;<font></font>
+<font></font>
+    rp = ip;<font></font>
+    rp-&gt;i_flag =&amp; ~ILOCK;<font></font>
+    if(rp-&gt;i_flag&amp;IWANT) {<font></font>
+        rp-&gt;i_flag =&amp; ~IWANT;<font></font>
+        wakeup(rp);<font></font>
+    }<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pada awalnya saya tidak mengerti mengapa </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tidak menelepon </font></font><code>prele(ip)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sebelum panggilan </font></font><code>wakeup(ip+1)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Hal pertama yang </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">menyebabkan dalam perulangannya adalah ia </font></font><code>plock(ip)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">menyebabkan kebuntuan jika </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">belum menghapus bloknya, jadi kodenya harus entah bagaimana bekerja dengan benar. Jika Anda melihatnya </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, menjadi jelas bahwa ia hanya menandai proses tidur sebagai siap untuk dieksekusi, sehingga di masa depan itu </font></font><code>sched()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">benar </font><font style="vertical-align: inherit;">- </font><font style="vertical-align: inherit;">benar meluncurkannya. Jadi itu </font></font><code>readp()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">menyebabkan </font></font><code>wakeup()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, membuka kunci, set </font></font><code>IREAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan panggilan </font></font><code>sleep(ip+2)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- semua ini sebelum </font></font><code>writep()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">melanjutkan siklus. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ini melengkapi deskripsi konveyor di edisi keenam. Kode sederhana, konsekuensi luas. </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Edisi Ketujuh Unix</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(Januari 1979) adalah rilis utama baru (empat tahun kemudian), di mana banyak aplikasi baru dan sifat kernel muncul. </font><font style="vertical-align: inherit;">Juga, telah ada perubahan signifikan sehubungan dengan penggunaan tipe casting, union'ov dan pointer yang diketik untuk struktur. </font><font style="vertical-align: inherit;">Namun, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kode pipa</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> tidak banyak berubah. </font><font style="vertical-align: inherit;">Kita dapat melewati edisi ini.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Xv6, kernel berbentuk Unix yang sederhana</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Edisi keenam Unix memengaruhi </font><font style="vertical-align: inherit;">
+pembuatan inti </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Xv6</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , tetapi ditulis dalam C modern untuk dijalankan pada prosesor x86. Kode mudah dibaca, jelas. Selain itu, tidak seperti sumber Unix dengan TUHS, Anda dapat mengompilasinya, memodifikasinya, dan menjalankannya pada hal lain selain PDP 11/70. Oleh karena itu, inti ini banyak digunakan di universitas sebagai bahan pendidikan pada sistem operasi. Sumber </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ada di Github</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kode tersebut berisi implementasi </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pipe.c yang</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> jelas dan dipikirkan </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;">matang</font></a><font style="vertical-align: inherit;"> - </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;">matang</font></a><font style="vertical-align: inherit;"> , didukung oleh buffer dalam memori alih-alih inode pada disk. Di sini saya hanya memberikan definisi "pipa struktural" dan fungsi </font></font><code>pipealloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">#define PIPESIZE 512<font></font>
+<font></font>
+struct pipe {<font></font>
+  struct spinlock lock;<font></font>
+  char data[PIPESIZE];<font></font>
+  uint nread;     // number of bytes read<font></font>
+  uint nwrite;    // number of bytes written<font></font>
+  int readopen;   // read fd is still open<font></font>
+  int writeopen;  // write fd is still open<font></font>
+};<font></font>
+<font></font>
+int<font></font>
+pipealloc(struct file **f0, struct file **f1)<font></font>
+{<font></font>
+  struct pipe *p;<font></font>
+<font></font>
+  p = 0;<font></font>
+  *f0 = *f1 = 0;<font></font>
+  if((*f0 = filealloc()) == 0 || (*f1 = filealloc()) == 0)<font></font>
+    goto bad;<font></font>
+  if((p = (struct pipe*)kalloc()) == 0)<font></font>
+    goto bad;<font></font>
+  p-&gt;readopen = 1;<font></font>
+  p-&gt;writeopen = 1;<font></font>
+  p-&gt;nwrite = 0;<font></font>
+  p-&gt;nread = 0;<font></font>
+  initlock(&amp;p-&gt;lock, "pipe");<font></font>
+  (*f0)-&gt;type = FD_PIPE;<font></font>
+  (*f0)-&gt;readable = 1;<font></font>
+  (*f0)-&gt;writable = 0;<font></font>
+  (*f0)-&gt;pipe = p;<font></font>
+  (*f1)-&gt;type = FD_PIPE;<font></font>
+  (*f1)-&gt;readable = 0;<font></font>
+  (*f1)-&gt;writable = 1;<font></font>
+  (*f1)-&gt;pipe = p;<font></font>
+  return 0;<font></font>
+<font></font>
+ bad:<font></font>
+  if(p)<font></font>
+    kfree((char*)p);<font></font>
+  if(*f0)<font></font>
+    fileclose(*f0);<font></font>
+  if(*f1)<font></font>
+    fileclose(*f1);<font></font>
+  return -1;<font></font>
+}<font></font>
+</code></pre><br>
+<code>pipealloc()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">menetapkan status sisa implementasi, yang mencakup fungsi </font></font><code>piperead()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>pipewrite()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan </font></font><code>pipeclose()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Panggilan sistem yang sebenarnya </font></font><code>sys_pipe</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">adalah pembungkus yang diimplementasikan di </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sysfile.c</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Saya sarankan membaca semua kodenya. </font><font style="vertical-align: inherit;">Kompleksitasnya ada pada level sumber dari edisi keenam, tetapi jauh lebih mudah dan lebih menyenangkan untuk dibaca.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Linux 0,01</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Anda dapat menemukan kode sumber untuk Linux 0,01. </font><font style="vertical-align: inherit;">Ini akan menjadi pelajaran untuk mempelajari implementasi pipa dalam </font></font><code>fs</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font><font style="vertical-align: inherit;">nya </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Di sini, inode digunakan untuk mewakili pipeline, tetapi pipeline itu sendiri ditulis dalam C. modern. Jika Anda melewati kode edisi keenam, maka Anda tidak akan mengalami kesulitan. </font><font style="vertical-align: inherit;">Begini tampilannya </font></font><code>write_pipe()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">int write_pipe(struct m_inode * inode, char * buf, int count)<font></font>
+{<font></font>
+    char * b=buf;<font></font>
+<font></font>
+    wake_up(&amp;inode-&gt;i_wait);<font></font>
+    if (inode-&gt;i_count != 2) { /* no readers */<font></font>
+        current-&gt;signal |= (1&lt;&lt;(SIGPIPE-1));<font></font>
+        return -1;<font></font>
+    }<font></font>
+    while (count--&gt;0) {<font></font>
+        while (PIPE_FULL(*inode)) {<font></font>
+            wake_up(&amp;inode-&gt;i_wait);<font></font>
+            if (inode-&gt;i_count != 2) {<font></font>
+                current-&gt;signal |= (1&lt;&lt;(SIGPIPE-1));<font></font>
+                return b-buf;<font></font>
+            }<font></font>
+            sleep_on(&amp;inode-&gt;i_wait);<font></font>
+        }<font></font>
+        ((char *)inode-&gt;i_size)[PIPE_HEAD(*inode)] =<font></font>
+            get_fs_byte(b++);<font></font>
+        INC_PIPE( PIPE_HEAD(*inode) );<font></font>
+        wake_up(&amp;inode-&gt;i_wait);<font></font>
+    }<font></font>
+    wake_up(&amp;inode-&gt;i_wait);<font></font>
+    return b-buf;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Bahkan tanpa melihat definisi struktur, Anda dapat mengetahui bagaimana penghitung referensi inode digunakan untuk memeriksa apakah operasi penulisan mengarah ke </font></font><code>SIGPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Selain pekerjaan byte, fungsi ini mudah dikorelasikan dengan ide-ide di atas. </font><font style="vertical-align: inherit;">Bahkan logika </font></font><code>sleep_on</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>wake_up</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tidak terlihat begitu asing.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Linux modern, FreeBSD, NetBSD, kernel OpenBSD</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Saya segera memeriksa beberapa kernel modern. Tak satu pun dari mereka sudah memiliki implementasi disk (tidak mengherankan). Linux memiliki implementasinya sendiri. Meskipun ketiga kernel BSD modern berisi implementasi berdasarkan kode yang ditulis oleh John Dyson, selama bertahun-tahun mereka menjadi terlalu berbeda satu sama lain. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Untuk membaca </font></font><code>fs</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(di Linux) atau </font></font><code>sys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>kern</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ </font></font><code>sys_pipe.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(atas * BSD), dedikasi benar diperlukan. Kinerja dan dukungan untuk fitur seperti vektor dan I / O yang tidak sinkron penting dalam kode saat ini. Dan rincian alokasi memori, kunci dan konfigurasi kernel - semua ini sangat berbeda. Ini bukan yang dibutuhkan universitas untuk kursus pengantar tentang sistem operasi.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Bagaimanapun, menarik bagi saya untuk menggali beberapa pola lama (misalnya, menghasilkan </font></font><code>SIGPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan kembali </font></font><code>EPIPE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ketika menulis ke pipa tertutup) dalam semua inti modern yang sangat berbeda ini. </font><font style="vertical-align: inherit;">Saya mungkin tidak akan pernah melihat komputer PDP-11 yang hidup, tetapi masih banyak yang harus dipelajari dari kode yang ditulis beberapa tahun sebelum kelahiran saya. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ditulis oleh Divi Kapoor pada tahun 2011, artikel “ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Implementasi Kernel Linux untuk Pipes dan FIFOs</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ” memberikan gambaran tentang bagaimana (sejauh ini) pipeline bekerja di Linux. </font><font style="vertical-align: inherit;">Dan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Linux commit baru</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;">baru ini</font></a><font style="vertical-align: inherit;"> menggambarkan model interaksi pipelined yang kemampuannya melebihi kemampuan file sementara; </font><font style="vertical-align: inherit;">dan juga menunjukkan sejauh mana jalur pipa dari “penguncian sangat konservatif” di kernel Unix edisi keenam.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id495472/index.html">Beralih ke vegetarian tidak akan mencegah orang terinfeksi dari penyakit seperti COVID-19</a></li>
+<li><a href="../id495474/index.html">DataGrip 2020.1: Luncurkan konfigurasi, ekspor ke Excel, hasil dalam editor dan banyak lagi</a></li>
+<li><a href="../id495476/index.html">Mengapa kesuksesan Atari DeepMind AI mengecewakan?</a></li>
+<li><a href="../id495478/index.html">Penguji data besar dan kecil: tren, teori, kisah saya</a></li>
+<li><a href="../id495480/index.html">Membuat binding Python untuk pustaka C / C ++ menggunakan SIP. Bagian 1</a></li>
+<li><a href="../id495486/index.html">Ancaman Baru terhadap Data Rahasia: Hasil Survei Acronis Global</a></li>
+<li><a href="../id495490/index.html">Bagian Pengujian dan QA pada konferensi DUMP 2020. Apa yang diharapkan tahun ini? Spoiler: sepasang penghilang rasa sakit dan ceri</a></li>
+<li><a href="../id495492/index.html">Fitur Rilis Game Unreal Engine 4 iOS</a></li>
+<li><a href="../id495494/index.html">Membuat penjadwal-kubus tambahan dengan seperangkat aturan perencanaan khusus</a></li>
+<li><a href="../id495500/index.html">Alexey Klyanin: "Sampai 2018, saya menggunakan OSM hanya sebagai substrat di blog saya"</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

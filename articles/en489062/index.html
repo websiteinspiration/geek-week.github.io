@@ -1,0 +1,183 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚠 🙇🏼 🗝️ Incredible parallel Apache Parquet I / O performance in Python 🤴🏿 🤞🏻 🧗🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In anticipation of the start of the Data Engineer course , we prepared a translation of a small but interesting material.
+ 
+ 
+ 
+ In this article, I wi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Incredible parallel Apache Parquet I / O performance in Python</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/otus/blog/489062/"><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In anticipation of the start of </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the Data Engineer</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> course </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">, we</font></a><font style="vertical-align: inherit;"> prepared a translation of a small but interesting material.</font></font></b></i><br>
+<br>
+<img src="https://habrastorage.org/webt/tq/qm/rv/tqqmrv0apg-z17hw8cqzzrgsuo8.png"><br>
+<hr><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this article, I will talk about how Parquet compresses large datasets into a small footprint file, and how we can achieve a bandwidth far exceeding the bandwidth of the I / O stream using concurrency (multithreading).</font></font><a name="habracut"></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Apache Parquet: Best at Low Entropy Data</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As you can understand from the specification of </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Apache Parquet </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">format</font></a><font style="vertical-align: inherit;"> , it contains several levels of coding that can achieve a significant reduction in file size, among which are:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Encoding (compression) using a dictionary (similar to the pandas.Categorical way of presenting data, but the concepts themselves are different);</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Compression of data pages (Snappy, Gzip, LZO or Brotli);</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Encoding of the execution length (for null - pointers and indexes of the dictionary) and integer bit packing;</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To show you how this works, let's look at a dataset:</font></font><br>
+<br>
+<pre><code class="python hljs">[<span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>,
+ <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'apple'</span>, <span class="hljs-string">'apple'</span>, <span class="hljs-string">'apple'</span>]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Almost all Parquet implementations use the default dictionary for compression. </font><font style="vertical-align: inherit;">Thus, the encoded data is as follows:</font></font><br>
+<br>
+<pre><code class="python hljs">dictionary: [<span class="hljs-string">'banana'</span>, <span class="hljs-string">'apple'</span>]<font></font>
+indices: [<span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, <span class="hljs-number">1</span>, <span class="hljs-number">1</span>]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Indexes in the dictionary are additionally compressed by the repetition coding algorithm:</font></font><br>
+<br>
+<pre><code class="python hljs">dictionary: [<span class="hljs-string">'banana'</span>, <span class="hljs-string">'apple'</span>]<font></font>
+indices (RLE): [(<span class="hljs-number">8</span>, <span class="hljs-number">0</span>), (<span class="hljs-number">3</span>, <span class="hljs-number">1</span>)]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Following the return path, you can easily restore the original array of strings. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In my previous </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">article,</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> I created a dataset that compresses very well in this way. </font><font style="vertical-align: inherit;">When working with </font></font><code>pyarrow</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, we can enable and disable encoding using the dictionary (which is enabled by default) to see how this will affect the file size:</font></font><br>
+<br>
+<pre><code class="python hljs"><span class="hljs-keyword">import</span> pyarrow.parquet <span class="hljs-keyword">as</span> pq<font></font>
+<font></font>
+pq.write_table(dataset, out_path, use_dictionary=<span class="hljs-literal">True</span>,<font></font>
+               compression=<span class="hljs-string">'snappy)</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A data set that takes up 1 GB (1024 MB) in </font></font><code>pandas.DataFrame</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, with Snappy compression and compression using a dictionary, takes only 1.436 MB, that is, it can even be written to a diskette. </font><font style="vertical-align: inherit;">Without compression using the dictionary, it will occupy 44.4 MB.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Concurrent reading in parquet-cpp using PyArrow</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the implementation of Apache Parquet in C ++ - </font></font><i><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">parquet-cpp</font></font></a></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which we made available for Python in PyArrow, the ability to read columns in parallel was added. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To try this feature, install PyArrow from </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">conda-forge</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<pre><code class="python hljs">conda install pyarrow -c conda-forge</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now when reading the Parquet file, you can use the argument </font></font><code>nthreads</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="python hljs"><span class="hljs-keyword">import</span> pyarrow.parquet <span class="hljs-keyword">as</span> pq<font></font>
+<font></font>
+table = pq.read_table(file_path, nthreads=<span class="hljs-number">4</span>)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ For data with low entropy, decompression and decoding are strongly tied to the processor. Since C ++ does all the work for us, there are no problems with GIL concurrency and we can achieve a significant increase in speed. See what I was able to achieve by reading a 1 GB </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dataset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in a </font><i><font style="vertical-align: inherit;">pandas DataFrame</font></i><font style="vertical-align: inherit;"> on a quad-core laptop (Xeon E3-1505M, NVMe SSD): </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/8e/y-/6b/8ey-6bfhwivej3ikb9vjhyscuhs.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can see the full benchmarking scenario </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I have included performance here for both compression cases using a dictionary and cases without using a dictionary. </font><font style="vertical-align: inherit;">For data with low entropy, despite the fact that all files are small (~ 1.5 MB using dictionaries and ~ 45 MB without), compression using a dictionary significantly affects performance. </font><font style="vertical-align: inherit;">With 4 threads, pandas read performance increases to 4 GB / s. </font><font style="vertical-align: inherit;">This is much faster than the Feather format or any other I know.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusion</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+With the release of version 1.0 </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">parquet-cpp (Apache Parquet in C ++),</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> you can see for yourself the increased I / O performance that is now available to Python users. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since all the basic mechanisms are implemented in C ++, in other languages ​​(for example, R), you can create interfaces for Apache Arrow (columnar data structures) and </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">parquet-cpp</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Python binding is a lightweight shell of the core </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">libarrow</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">libparquet</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> C ++ libraries. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That's all. </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If you want to learn more about our course, sign up for an </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">open day</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which will be held today!</font></font></b></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en489046/index.html">Self-driving GAZ66 Monster Truck 1/16</a></li>
+<li><a href="../en489048/index.html">Logging and query tracing are best practices. Yandex Report</a></li>
+<li><a href="../en489050/index.html">Windows vs Sysmon</a></li>
+<li><a href="../en489058/index.html">Ensembles of neural networks with PyTorch and Sklearn</a></li>
+<li><a href="../en489060/index.html">Analysis: what is the difference between high-risk and low-risk investments</a></li>
+<li><a href="../en489068/index.html">Digital Immortality - An Engineering Approach</a></li>
+<li><a href="../en489070/index.html">It will cost 354 pairs of socks. A selection of gifts for February 23</a></li>
+<li><a href="../en489072/index.html">Advantages of 3CX in building a distributed network</a></li>
+<li><a href="../en489074/index.html">How to determine the operator and region by phone number</a></li>
+<li><a href="../en489076/index.html">Simulation model of the process of processing material by cutting on a CNC lathe</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

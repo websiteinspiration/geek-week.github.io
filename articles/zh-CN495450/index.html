@@ -1,0 +1,217 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧛🏻 🐗 🧕🏿 调试重载的Golang应用程序或我们如何查找Kubernetes中不存在的问题 👃 😡 😬</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在现代的Kubernetes云世界中，一种或另一种方式必须面对您或您的同事未犯的软件错误，但您必须解决它们。本文可能有助于Golang和Kubernetes领域的新手了解一些调试自己和外部软件的方法。
+ 
+ 
+ 我的名字叫Viktor Yagofarov，我正在DomKlik开发Kubernetes...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>调试重载的Golang应用程序或我们如何查找Kubernetes中不存在的问题</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/domclick/blog/495450/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在现代的Kubernetes云世界中，一种或另一种方式必须面对您或您的同事未犯的软件错误，但您必须解决它们。</font><font style="vertical-align: inherit;">本文可能有助于Golang和Kubernetes领域的新手了解一些调试自己和外部软件的方法。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ok/xx/pi/okxxpinnrmycv6thscy9dusxm5u.jpeg" alt="图片"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我的名字叫Viktor Yagofarov，我正在DomKlik开发Kubernetes云，今天我想谈谈如何使用生产k8s（Kubernetes）集群的关键组件之一解决问题。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在我们的战斗群中（在撰写本文时）：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">推出了1890个</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pod</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和577个服务（实际微服务的数量也在该数字范围内）</font></font></li>
+<li><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ingress</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">控制器提供大约6k RPS，Ingress直接将大约相同数量的RPS发送到</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hostPort</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+</ul><a name="habracut"></a><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">问题</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+几个月前，我们的Pod开始遇到解析DNS名称的问题。事实是DNS主要在UDP上工作，并且在Linux内核中</font><font style="vertical-align: inherit;">conntrack和UDP </font><font style="vertical-align: inherit;">存在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一些问题</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。访问k8s服务的服务地址时，DNAT只会加剧</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">conntrack</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">争用的问题</font><font style="vertical-align: inherit;">。值得补充的是，发生问题时，在我们的集群中，大约有40k RPS朝向DNS服务器CoreDNS。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/806/213/0a2/8062130a2c09d4c45735aec5b9a65420.jpg" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+决定使用社区专门在</font><font style="vertical-align: inherit;">群集的每个工作节点上</font><font style="vertical-align: inherit;">创建的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NodeLocal DNS</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（nodelocaldns）</font><font style="vertical-align: inherit;">本地缓存DNS服务器，该服务器</font><font style="vertical-align: inherit;">仍处于beta状态，旨在解决</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">所有问题</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。简而言之：连接到群集DNS时摆脱UDP，删除NAT，添加一个额外的缓存层。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在实现nodelocaldns的第一个迭代中，我们使用版本</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.15.4</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（不要与</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">cube</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的版本混淆），该版本</font><font style="vertical-align: inherit;">与«kubernetes-installer» </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubespray一起提供</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -我们正在谈论的是我们来自南桥的公司Fork fork。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+引入后几乎立即出现了问题：内存流动，并且根据</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内存限制</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（OOM-Kill）</font><font style="vertical-align: inherit;">重新启动了炉床</font><font style="vertical-align: inherit;">。重新启动此主机时，主机上的所有流量都丢失了，因为在所有Pod中</font><font style="vertical-align: inherit;">，/ etc / </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">resolv.conf都</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">精确指向nodelocaldns的IP地址。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这种情况肯定并不适合所有人，我们的OPS团队采取了许多措施来消除这种情况。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于我本人是Golang的新手，所以我非常感兴趣，要一路走来，并熟悉使用这种出色的编程语言调试应用程序。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们正在寻找解决方案</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+所以走吧！</font><b><font style="vertical-align: inherit;">1.15.7</font></b></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+版已下载到开发集群中</font><font style="vertical-align: inherit;">，该</font><font style="vertical-align: inherit;">集群</font><font style="vertical-align: inherit;">已经被认为是beta版本，而不是1.15.4版本的alpha版本，但是该少女在DNS（40k RPS）中没有此类流量。这是可悲的。</font><font style="vertical-align: inherit;">
+在此过程中，我们取消了Kubespray的nodelocaldns的约束，并编写了一个特殊的</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">Helm图表</font></a><font style="vertical-align: inherit;">以更方便地进行推广。同时，他们为Kubespray编写了一部剧本，使您可以更改</font><i><font style="vertical-align: inherit;">kubelet</font></i><font style="vertical-align: inherit;">设置，</font><font style="vertical-align: inherit;">而不必在一小时内消化整个群集</font><i><font style="vertical-align: inherit;">状态</font></i><font style="vertical-align: inherit;">。此外，这可以逐点完成（首先在少量节点上检查）。</font><font style="vertical-align: inherit;">
+接下来，我们将nodelocaldns 1.15.7的版本推出到prod。 las，情况再次发生。记忆正在流动。</font><font style="vertical-align: inherit;">
+官方的</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">nodelocaldns存储库</font></a><font style="vertical-align: inherit;">具有</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">标记</font></a><font style="vertical-align: inherit;">为1.15的版本。</font><b><font style="vertical-align: inherit;">8</font></b></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，但是由于某些原因，我无法让</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">docker</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用该版本，并以为我尚未收集到正式的Docker映像，因此不应使用此版本。</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这是重要的一点，我们将回到这一点。</font></font></b><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调试：第一阶段</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+很长一段时间以来，我原则上都不知道如何组装我的版本的nodelocaldns，因为</font><font style="vertical-align: inherit;">萝卜中</font><font style="vertical-align: inherit;">的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Makefile</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">崩溃了</font><font style="vertical-align: inherit;">，而docker镜像中</font><font style="vertical-align: inherit;">出现了无法理解的错误，而且我真的不明白如何用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">govendor</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">巧妙地构建Go项目</font><font style="vertical-align: inherit;">，该</font><font style="vertical-align: inherit;">项目</font><i><font style="vertical-align: inherit;">立即</font></i><font style="vertical-align: inherit;">以奇怪的方式被</font><i><font style="vertical-align: inherit;">整理</font></i><font style="vertical-align: inherit;">到目录中用于几个不同的DNS服务器选项。</font><font style="vertical-align: inherit;">事实是，当</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">普通的现成的依赖版本</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">已经出现时，我便开始学习Go </font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pavel Selivanov在这个问题上为我提供了很多帮助。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">保罗贾姆</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，对此深表感谢。我设法组装了我的版本。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接下来，我们拧紧</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pprof</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分析器</font><font style="vertical-align: inherit;">，在处女</font><i><font style="vertical-align: inherit;">架上</font></i><font style="vertical-align: inherit;">测试该组件，并将其推出产品。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+聊天团队的一位同事对整理配置文件非常有帮助，这样您就可以通过CLI URL方便地使用pprof实用程序，并使用浏览器中的交互式菜单来研究内存和进程线程，对此我也非常感谢。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+乍一看，基于事件探查器的输出，该过程运行良好-大多数内存分配在</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">堆栈上</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，并且看起来好像</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Go-routine</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">经常</font><font style="vertical-align: inherit;">使用它</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是到了某个时候，很明显，与“健康”线程相比，nodelocaldns的“坏”线程有太多线程处于活动状态。</font><font style="vertical-align: inherit;">而且线程并没有消失在任何地方，而是继续挂在内存中。</font><font style="vertical-align: inherit;">这时，帕维尔·塞里瓦诺夫（Pavel Selivanov）的“线程在流动”的预感得到了证实。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/e19/328/56c/e1932856c5c346e5bb40aefeb6490926.jpg" alt="图片"><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调试：阶段2</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为什么发生这种情况（线程在流动）变得很有趣，并且对nodelocaldns进程的研究的下一个阶段已经开始。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">静态分析器</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">代码</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">staticcheck</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">表明，仅在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">库</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">中创建线程的阶段存在一些问题，该线程</font><font style="vertical-align: inherit;">用在nodelocaldns中（它称为luluda CoreDNS，后者代表nodelocaldns'om）。据我了解，在某些地方不是传递</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">指向该结构</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的</font><i><font style="vertical-align: inherit;">指针</font></i><font style="vertical-align: inherit;">，而是</font><font style="vertical-align: inherit;">传递</font><font style="vertical-align: inherit;">其</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">值</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的副本</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+决定</font><font style="vertical-align: inherit;">使用gcore实用程序</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> “不良”过程进行核心转储，然后查看其中的内容。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+用类似gdb的</font><i><font style="vertical-align: inherit;">dlv</font></i><font style="vertical-align: inherit;">工具卡在coredump中</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我意识到了它的强大功能，但是我意识到我会以这种方式寻找原因很长时间。</font><font style="vertical-align: inherit;">因此，我将coredump加载到Goland IDE中并分析了进程内存的状态。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调试：阶段3</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+研究程序的结构并查看创建它们的代码非常有趣。</font><font style="vertical-align: inherit;">在大约10分钟内，很明显，许多go例程为TCP连接创建了某种结构，将其标记为</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">false，</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并且从不删除它们（还记得40k RPS吗？）。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/14e/b5c/cff/14eb5ccffcf7f257f04e88d8c5e4deae.jpg" alt="图片"><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/0ff/3f0/b21/0ff3f0b210d54df3b398b23dbc639349.jpg" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在屏幕快照中，您可以看到代码中有问题的部分以及关闭UDP会话时未清除的结构。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同样，从coredump中，这些结构中的IP地址也知道了这么多RPS的罪魁祸首（感谢您帮助我们在集群中找到瓶颈：）。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">决断</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在解决这个问题的过程中，我在Kubernetes社区的同事的帮助下发现，nodelocaldns 1.15.8的官方Docker镜像仍然存在（而且我实际上弯手，以某种方式做错了docker pull，或者WIFI顽皮拉动力矩）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在此版本中，他使用的库版本极大地“不高兴”：具体来说，</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“罪魁祸首”</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> “约稿”了大约20个版本！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此外，新版本已经支持通过pprof进行性能分析，并且已通过Configmap启用了该功能，您无需重新组装任何内容。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先在开发人员中下载了新版本，然后在产品中下载了新版本。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+三... </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">胜利</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">！</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+进程开始将其内存返回给系统，问题停止了。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在下图中，您可以看到图片：“吸烟者的DNS与 </font><font style="vertical-align: inherit;">健康人的DNS。”</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/fcd/70e/565/fcd70e56544fa4d0f482ee3413ecdf94.jpg" alt="图片"><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">发现</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+结论很简单：仔细检查几次您所做的事情，不要轻视社区的帮助。</font><font style="vertical-align: inherit;">结果，我们在问题上花了比我们更多的时间，但是我们在容器中收到了DNS故障安全操作。</font><font style="vertical-align: inherit;">感谢您阅读本文：) </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有用的链接：</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">www.freecodecamp.org/news/how-i-investigated-memory-leaks-in-go-using-pprof-on-a-large-codebase-4bec4325e192</font></font></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+2 。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">habr.com/en/company/roistat/blog/413175</font></font></a> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+3. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">rakyll.org</font></font></a></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN495436/index.html">我们开放使用DLP系统的实践课程</a></li>
+<li><a href="../zh-CN495438/index.html">适用于Excel用户的R语言（免费视频课程）</a></li>
+<li><a href="../zh-CN495440/index.html">荷兰的服务器快要用完了：可能无法履行新订单，VPS和Internet会结束吗？</a></li>
+<li><a href="../zh-CN495446/index.html">反重力不是你想的</a></li>
+<li><a href="../zh-CN495448/index.html">从4月3日开始，整个星期的背面，正面，QA，PM，DevOps以及一些机器人上的在线mitap</a></li>
+<li><a href="../zh-CN495452/index.html">如何为负载增长准备站点</a></li>
+<li><a href="../zh-CN495454/index.html">BPF和eBPF简介</a></li>
+<li><a href="../zh-CN495456/index.html">回顾14个适用于Figma的新插件，这些插件将有助于我们提高生产力</a></li>
+<li><a href="../zh-CN495458/index.html">当孩子们围着你问时，如何编写代码：“你会做什么？”</a></li>
+<li><a href="../zh-CN495460/index.html">在天王星上爆炸的气泡是地球大小的22,000倍</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,441 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😌 🤴🏼 ☝🏼 Single sign-on for SSH do-it-yourself 🈵 🙅 ✌🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="TL; DR In this article we will install single sign-on for SSH from Google. Behind the scenes, we use OpenID Connect (OICD), short-term certificates of...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Single sign-on for SSH do-it-yourself</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/itsumma/blog/500828/"><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TL; DR</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> In this article we will install single sign-on for SSH from Google. </font><font style="vertical-align: inherit;">Behind the scenes, we use OpenID Connect (OICD), short-term certificates of SSH, several SSH configuration tricks and opensorsnymi packages </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><code>step-ca</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><code>step</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">by Smallstep. </font><font style="vertical-align: inherit;">We will configure SSH Certificate Authority and use it to load a new user and a new host in our system. </font><font style="vertical-align: inherit;">This method brings many advantages besides single sign-on, since there is no need to collect, transfer and control files </font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, although it requires more preparatory work compared to setting up a typical public / private SSH key pair.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How to not use SSH</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Back in 2004, someone taught me how to copy the public key to a file </font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Since then, I continued innocently copying the same old public key to each server that I had to work with, and I constantly could not do it the first time, because I forgot to configure correctly </font></font><code>chmod</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Only once, when in 2015 OpenSSH declared my key type deprecated, I was reluctant to replace my key. </font><font style="vertical-align: inherit;">Now, years ago, one can only guess at which servers my public key still lies. </font><font style="vertical-align: inherit;">Maybe the old startups I used to work with? </font><font style="vertical-align: inherit;">Do freelance customers have? </font><font style="vertical-align: inherit;">At my niece's crypto farm? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+From an organizational point of view, files </font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">suck. </font><font style="vertical-align: inherit;">Perhaps at first someone wrote them manually, as I did, but with an increase in the number of hosts and users, such a task turns into a nightmare. </font><font style="vertical-align: inherit;">And one morning you wake up in the middle of a swamp of public keys that has dragged on the infrastructure. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Most organizations typically create a playbook to automate file management.</font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">However, their collection, unloading and maintenance remain a mess, regardless of the reasonableness of execution.</font></font><br>
+<br>
+<h2>Single Sign-On  OpenID Connect  SSH </h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Instead of using files, </font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">we configure SSH Certificate Authority and access via SSH through short-term certificates, and to support single sign-on we add </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OpenID Connect (OICD)</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . As soon as we succeed, the result will be excellent, so I ask your patience, since we will need a little more preparatory settings than with a typical SSH configuration out of the box. </font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What is an SSH certificate?</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> SSH certificate is an alternative that surpasses a pair of public / secret SSH keys. The user and the host exchange certificates during an SSH connection (handshake), a kind of truncated version of the TLX X.509 certificate, in the same manner as a pair of SSH keys. For a deeper analysis, we recommend that you read the next </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">article</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Below you can see the decrypted SSH certificate:</font></font><br>
+<br>
+<pre><code class="bash hljs">-:<font></font>
+        Type: ecdsa-sha2-nistp256-cert-v01@openssh.com user certificate<font></font>
+        Public key: ECDSA-CERT SHA256:N7ErGTPjhmruRS/4OiwyRi6Iyr59z0Ur1ifkHIHu4V8<font></font>
+        Signing CA: ECDSA SHA256:E0GH/kZ/CGUIe8mMzzpujIiEYGC2IHDHafYBnye1WSU<font></font>
+        Key ID: <span class="hljs-string">"carl@smallstep.com"</span><font></font>
+        Serial: 16253962425132258867<font></font>
+        Valid: from 2020-03-23T16:01:39 to 2020-03-24T08:01:39<font></font>
+        Principals:<font></font>
+                carl<font></font>
+                carl@smallstep.com<font></font>
+        Critical Options: (none)<font></font>
+        Extensions:<font></font>
+                permit-X11-forwarding<font></font>
+                permit-agent-forwarding<font></font>
+                permit-port-forwarding<font></font>
+                permit-pty<font></font>
+                permit-user-rc</code></pre><br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">User certificates</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , as in the example above, allow hosts to authenticate users, and </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">host certificates</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> help users identify hosts. </font><font style="vertical-align: inherit;">The key difference is the field </font></font></i><code>Principals</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+By default, during an SSH connection, SSHD will allow you to enter the host under the username from the </font></font></i><code>Principals</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">user certificate </font></font></i><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;">field </font></i><i><font style="vertical-align: inherit;">. </font></i><i><font style="vertical-align: inherit;">Similarly, SSH expects to see the hostname in the </font></i></font><code>Principals</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">host certificate </font></font><br>
+<br><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;">field </font></i><i><font style="vertical-align: inherit;">. </font></i><i><font style="vertical-align: inherit;">
+In addition, certificates can have extensions that allow privileged SSH functions (for example, agent forwarding and port forwarding) or force configuration directives. </font></i></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To make everything work for us, we will configure the SSH Certificate Authority (CA), namely -</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><code>step-ca</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">server from Smallstep. </font><font style="vertical-align: inherit;">If they have the appropriate authority, users and hosts will receive SSH certificates from our CA. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Below is a diagram of how Alice receives her user certificate and enters the host: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ya/w-/0g/yaw-0gjayzwcdbwtd3xmgbpq2_a.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We will configure CA through the </font><font style="vertical-align: inherit;">OpenSSH configuration unit that </font><font style="vertical-align: inherit;">works with our </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">command line tool</font></font></a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><code>step</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Benefits</font></font></h2><br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">No more public key management. </font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">You will no longer have a situation where your infrastructure has scattered countless (actually equal </font></font><code>users * hosts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) number of files </font></font><code>authorized_keys</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Users on your hosts will no longer need a partition </font></font><code>.ssh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+<li><b>       .</b>   SSH    ,     SSH     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="> </a>,     SSH     ,      OAuth.</li>
+<li><b>   .</b>  SSH   OAuth OICD        Google ( 2FA   ).       .</li>
+<li><b>  .</b>   EC2 <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=">Instance Identity Documents (IIDs)</a>,          AWS .</li>
+<li><b>    .</b>       —    .</li>
+<li><b>  Trust On First Use (TOFU).</b>   ,      :<br>
+<br>
+<pre><code class="bash hljs">The authenticity of host <span class="hljs-string">'ec2-3-15-28-130.us-east-2.compute.amazonaws.com (3.15.28.130)'</span> can`t be established.<font></font>
+<font></font>
+ECDSA key fingerprint is SHA256:HYDAjwFL/qEmTuKm903tIk0fbPNk1CSRqH/usavToLw.<font></font>
+Are you sure you want to <span class="hljs-built_in">continue</span> connecting (yes/no/[fingerprint])?
+	</code></pre></li>
+</ul><br>
+<h2>    </h2><br>
+<ul>
+<li>      (,    SCIM  LDAP).</li>
+<li>     <code>sudo</code>.</li>
+<li>    (access control lists, ACLs)        .</li>
+<li>    CA.</li>
+<li>   , <i>   .</i></li>
+</ul><br>
+<h2>   </h2><br>
+<ul>
+<li>    EC2.</li>
+<li>      GSuite.</li>
+<li>      <code>step</code><br>
+ <ul>
+<li> macOS    <code>brew install step</code>.</li>
+<li>  Linux    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="> Debian</a>.</li>
+</ul></li>
+</ul><br>
+<h2>     Certificate Authority!</h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Perhaps you think it is difficult and scary. This reputation earned Certificate Authorities for the mysterious details TLS X.509 certificates, only one number of acronyms in the world of PKI (Public Key Infrastructure, PKI), and the complexity of instruments such as </font></font><code>openssl.</code><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+addition, large CA, for example </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for Let's Encrypt</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , there is a huge number of responsibilities for ensuring Internet security. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We will not use Let's Encrypt. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+SSH certificates are simpler than TLS certificates. SSH CA simply allows us to delegate part of the responsibility for authenticating and authorizing multiple hosts to one centralized service. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this project, we will set up a CA with three </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">providers</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> — three methods for issuing certificates:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">For user certificates, we will use the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OAuth OIDC provider</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> corresponding to our Google OAuth application. </font><font style="vertical-align: inherit;">We trust Google to securely access people and to issue only valid, Google-signed OAuth authentication tokens to authenticated users. </font><font style="vertical-align: inherit;">CA will verify the token with Google’s public key.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">For new EC2 hosts, we need </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">an AWS provider</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> that matches our AWS account. </font><font style="vertical-align: inherit;">New hosts will request SSH host certificates through this provider. </font><font style="vertical-align: inherit;">We trust AWS to provide signed Amazon IIDs, and CA will verify them with Amazon's public key.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Finally, we use the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SSHPOP provider</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> for weekly host certificate updates </font><font style="vertical-align: inherit;">.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's get started?</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1. Create a Google OAuth Credential</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this project, you’ll need the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Google 2.0 OAuth credentials</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , it takes a couple of minutes to create them</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If you don’t have one yet, create the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Google Cloud Console Project</font></font></a><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Create it in the GSuite Organization where you will use single sign-on.</font></font></li>
+</ul></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Configure </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OAuth 2.0 consent screen</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> under the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Internal</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> project</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Create </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OAuth 2.0 Credentials</font></font></a><br>
+ <ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">When choosing the type of application (Application Type), select </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Other (Other)</font></font></b></li>
+</ul></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Write down the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Client ID</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Client Secret</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , you will need them in the next step! </font></font><br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Note:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Your CA will only issue user certificates to users who are authorized in the GSuite Organization corresponding to your Google Cloud project account.</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2. Launch your Certificate Authority</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We will install </font><b><font style="vertical-align: inherit;">LTS</font></b></font><code>step-ca</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> on </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ubuntu 18.04</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in an AWS instance. </font><font style="vertical-align: inherit;">We should have enough of the free AWS instance level (t2.micro / t3.micro). </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Take this CA startup script</font></font></b></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and paste the required values ​​on top:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Client OICD ID</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OICD client secret</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The domain name of your GSuite</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Your CA Name</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Root key password</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Your mail</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Download it as an </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">EC2 User Data script</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and then use it in step 3 (setting up the instances) when you start your EC2 instance. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">For interconnectivity, your VPC will need an attached Internet gateway, and your instance should be in a security group that is accessible to all your hosts and users on ports 22 (SSH) and 443 (HTTPS). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is useful to note that it </font></font></i><code>step-ca</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">accepts HTTPS connections only through mTLS - this way it is better protected from attacks compared to a typical web server.</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Use your PEM key to connect to your CA instance. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The result of the User Data script is in </font></font><code>/var/log/cloud-init-output.log</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Check it and make sure everything is initialized correctly and </font></font><code>step-ca</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">works. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+CA must create the following keys and certificates:</font></font><br>
+<br>
+<ul>
+<li><code>/etc/step-ca/certs/root_ca.crt</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - The root TLS certificate of your CA (self-signed).</font></font></li>
+<li><code>/etc/step-ca/certs/ssh_host_ca_key.pub</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - CA SSH host key allows users to verify host certificates.</font></font></li>
+<li><code>/etc/step-ca/certs/ssh_user_ca_key.pub</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - CA SSH user key allows hosts to verify user certificates.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">You will also have CA (s </font></font><code>/etc/step-ca/secrets</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) </font><font style="vertical-align: inherit;">private key signing keys </font><font style="vertical-align: inherit;">for the above certificates and keys. </font><font style="vertical-align: inherit;">To decrypt these keys, CA reads their passwords from the file at boot </font></font><code>/etc/step-ca/password.txt</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Under root, remove the User Data script with your root CA password:</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-comment"># rm /var/lib/cloud/instances/i-**/user-data.txt**</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You will need some information from your CA:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The public host name so that we can find it again.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fingerprint of the root certificate - to establish a common TLS connection with this host.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Run the following under root:</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-comment"># step certificate fingerprint $(step path)/certs/root_ca.crt</span>
+5bc2b4779ad1562f6ed0809857fbed7925d2432eb25083f41a468532495ca658</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Remember to write it down. </font><font style="vertical-align: inherit;">Your CA has earned!</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Download new host</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's load the Ubuntu instance, which will be our first </font></font><code>ssh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">target host. </font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Note:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Your CA will only issue host certificates to instances on its AWS account. </font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This time, to start a new instance, use the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">User Data host script</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and fill in the following values:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Your CA Address ( </font></font><code>https://[CA hostname]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The fingerprint of the root certificate of your CA.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Below you can see what the User Data script should do: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/2s/n_/4h/2sn_4hau6ibpp9ngtjvgas5bezg.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thus, we get the host certificate in exchange for the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Instance Identity Document (IID)</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and its signature. </font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Speaking of IID ...</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> If you have never worked with them before, this is how one of them looks:</font></font></i><br>
+<br>
+<pre><code class="bash hljs">$ TOKEN=`curl -X PUT <span class="hljs-string">"http://169.254.169.254/latest/api/token"</span> -H <span class="hljs-string">"X-aws-ec2-metadata-token-ttl-seconds: 21600"</span>` \<font></font>
+&amp;&amp; curl -H <span class="hljs-string">"X-aws-ec2-metadata-token: <span class="hljs-variable">$TOKEN</span>"</span> –v http://169.254.169.254/latest/dynamic/instance-identity/document<font></font>
+{<font></font>
+  <span class="hljs-string">"accountId"</span> : <span class="hljs-string">"8072125551212"</span>,
+  <span class="hljs-string">"architecture"</span> : <span class="hljs-string">"x86_64"</span>,
+  <span class="hljs-string">"availabilityZone"</span> : <span class="hljs-string">"us-east-2c"</span>,
+  <span class="hljs-string">"billingProducts"</span> : null,
+  <span class="hljs-string">"devpayProductCodes"</span> : null,
+  <span class="hljs-string">"marketplaceProductCodes"</span> : null,
+  <span class="hljs-string">"imageId"</span> : <span class="hljs-string">"ami-0fc20dd1da406780b"</span>,
+  <span class="hljs-string">"instanceId"</span> : <span class="hljs-string">"i-01bd292377d6d8fec"</span>,
+  <span class="hljs-string">"instanceType"</span> : <span class="hljs-string">"t2.micro"</span>,
+  <span class="hljs-string">"kernelId"</span> : null,
+  <span class="hljs-string">"pendingTime"</span> : <span class="hljs-string">"2020-03-11T23:18:12Z"</span>,
+  <span class="hljs-string">"privateIp"</span> : <span class="hljs-string">"172.31.46.150"</span>,
+  <span class="hljs-string">"ramdiskId"</span> : null,
+  <span class="hljs-string">"region"</span> : <span class="hljs-string">"us-east-2"</span>,
+  <span class="hljs-string">"version"</span> : <span class="hljs-string">"2017-09-30"</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This JSON segment is signed by Amazon, it looks like this:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ TOKEN=`curl -X PUT <span class="hljs-string">"http://169.254.169.254/latest/api/token"</span> -H <span class="hljs-string">"X-aws-ec2-metadata-token-ttl-seconds: 21600"</span>` \<font></font>
+    &amp;&amp; curl -H <span class="hljs-string">"X-aws-ec2-metadata-token: <span class="hljs-variable">$TOKEN</span>"</span> –v http://169.254.169.254/latest/dynamic/instance-identity/signature<font></font>
+c0p6ygyFNFxyjs/73QGCQN+7khkZBr6H5cP/gefBgAwe80GmSTNlQy68LBSQQYrQczv2aHTXj3xa<font></font>
+CFkaGE4GPYiAogCkywcnt5VAp3t176GQwVxqfmawTliPMs31dY7ZeZvixN/1uoe8x1pt0EXAMPLE</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Log in with your PEM key and verify that everything started correctly. </font><font style="vertical-align: inherit;">The result of your User Data script should be in </font></font><code>/var/log/cloud-init-output.log</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Create a user on the host</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The login of the new user that you create </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">must</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> be the same as the name of the mail through which you logged in to Google, for example:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ sudo adduser --quiet --disabled-password --gecos <span class="hljs-string">''</span> carl</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So we finished the configuration on the host side!</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4. On board a new account</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's set up your first user account. </font><font style="vertical-align: inherit;">Run the following on your local device:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ CA_URL=https://[YOUR CA].compute.amazonaws.com<font></font>
+$ CA_FINGERPRINT=[CA FINGERPRINT]<font></font>
+$ step ca bootstrap \<font></font>
+       --ca-url <span class="hljs-variable">$CA_URL</span> \<font></font>
+       --fingerprint <span class="hljs-variable">$CA_FINGERPRINT</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This command installs and configures the root CA certificate on your device. </font><font style="vertical-align: inherit;">You will have two new files: </font></font><code>~/.step/config/defaults.json</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(configuration file </font></font><code>step</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) and </font></font><code>~/.step/certs/root_ca.crt</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(TSL certificate of your root CA). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After that, we can issue ourselves a user certificate:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ step ssh login [your email address] --provisioner <span class="hljs-string">"Google"</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What does this team do?</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Launches your system browser and launches the Google OICD authorization process.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">After authorization, the token received from Google is sent to your CA.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Your CA confirms the token and issues an SSH certificate corresponding to your mail.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The certificate is added to your SSH agent. </font><font style="vertical-align: inherit;">To look at it, use it </font></font><code>step ssh list</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, and to parse and study it </font></font><code>step ssh list --raw | step ssh inspect</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Finally, let's configure SSH to use our CA:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ step ssh config</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This command does the following:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">First, she retrieves the CA host’s public key — it is used to verify host certificates — and installs this key in your SSH configuration with the following result (stored in </font></font><code>~/.step/known_hosts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">):</font></font><br>
+<br>
+<pre><code class="bash hljs">@cert-authority * ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBHyWTo9TLDwhyLlHq2ANkjtSGLyJ3xPtfL+7faiV+YA0k4kLUc8cJ5rWFHdUShbwtkOsLhkqeDDXoFnH/C5BG+4=</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Then it imports into your SSH configuration (c </font></font><code>.step/ssh/config</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) this unobtrusive block:</font></font><br>
+<br>
+<pre><code class="bash hljs">Match <span class="hljs-built_in">exec</span> <span class="hljs-string">"step ssh check-host %h"</span><font></font>
+		ForwardAgent yes<font></font>
+		User carl<font></font>
+		UserKnownHostsFile <span class="hljs-string">"/Users/carl/.step/ssh/known_hosts"</span>
+		ProxyCommand step ssh proxycommand %r %h %p --provisioner <span class="hljs-string">"Google"</span></code></pre></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A block </font></font><code>Match exec</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">is only considered when the command above returns true. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The command contacts your CA and asks if the host name you are trying to connect to through SSH has the appropriate certificate. If it is, the command returns true. We do not want CA-managed hosts to interfere with any other hosts in your sconfig. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The directive </font></font><code>ProxyCommand</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">implements all the magic of the Single Sign-On process. Before initiating the connection, it </font></font><code>step ssh proxycommand</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">will verify your SSH certificate, and if it is missing or expired, it will guide you through the OAuth OIDC process and request a new certificate from your CA. </font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Note:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> The configuration block of your CA is determined by the template, which is stored in &lt;</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> code&gt; / etc / step-ca / templates / ssh</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, and if you want to change something, for example, remove the directive </font></font></i><code>ForwardAgent</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, it is enough to refer to this template.</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Time to try it!</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We are ready to connect via SSH to the host you configured. </font><font style="vertical-align: inherit;">You can run SSH with a command </font></font><code>-v</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to observe handshake. </font><font style="vertical-align: inherit;">In particular, you should see something like this:</font></font><br>
+<br>
+<pre><code class="bash hljs">debug1: Server host certificate: ecdsa-sha2-nistp256-cert-v01@openssh.com SHA256:KUwZbRewusotBbO4Wbrj1EpPexMqKEj0ZUr1Fvf41+g, serial 782<font></font>
+1790606781444805 ID <span class="hljs-string">"i-0fa7218db55ac0536"</span> CA ecdsa-sha2-nistp256 SHA256:VIwnVtTJJwdUsjGaPyOS5yT1O/uxyxj0CQJd+Ce/w0M valid from 2020-03-2<font></font>
+3T16:23:32 to 2020-04-22T16:24:32<font></font>
+debug1: Host <span class="hljs-string">'ec2-3-135-235-172.us-east-2.compute.amazonaws.com'</span> is known and matches the ECDSA-CERT host certificate.<font></font>
+debug1: Found CA key <span class="hljs-keyword">in</span> /Users/carl/.step/ssh/known_hosts:1<font></font>
+...<font></font>
+debug1: Offering public key: carl@smallstep.com ECDSA-CERT SHA256:mBQXA0znZvd+21hhvViUVEybzrO4x190xZftFXAYCFY agent<font></font>
+debug1: Server accepts key: carl@smallstep.com ECDSA-CERT SHA256:mBQXA0znZvd+21hhvViUVEybzrO4x190xZftFXAYCFY agent</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Voila! </font><font style="vertical-align: inherit;">You did it. </font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tip:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> You can ask CA for a list of all the hosts to which certificates have been issued through the command </font></font></i><code>step ssh hosts</code><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q&amp;A</font></font></h2><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How do I register an existing host in CA?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For Ubuntu 18.04 LTS hosts, this process is similar to loading a new host, just run </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the host</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> start </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">script</font></a><font style="vertical-align: inherit;"> under root. For other platforms, you will need to port the script to your needs. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After you start and configure all your hosts, you may want to tweak </font></font><code>instanceAge</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">your AWS provider </font><font style="vertical-align: inherit;">settings </font><font style="vertical-align: inherit;">for CA. These settings are stored in </font></font><code>/etc/step-ca/config/ca.json</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. An instance of any age can run itself by default. Setting the settings, for example, to </font></font><code>5m</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, will create an additional precaution, effectively forcing the CA to accept IID tokens only from instances younger than five minutes. </font></font><br>
+<br>
+<i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The note:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The token created by the Instance Identity script is a one-time token. </font><font style="vertical-align: inherit;">You cannot re-register a host; you can only renew its certificate. </font><font style="vertical-align: inherit;">Why? </font><font style="vertical-align: inherit;">Because any user on the host can access the IID at any time, and we do not want users to be able to get the host certificate from the CA.</font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Can I use another OAuth OIDC provider?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Of course! </font><font style="vertical-align: inherit;">To do this, just change the network address of the OAuth configuration server and change the name of the OIDC provider in the User Data script for CA.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Can I use GCP or Azure instead of AWS?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yes! </font><font style="vertical-align: inherit;">There </font></font><code>step-ca</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">are providers for all three, you only need to make changes to the CA configuration and the host boot script. </font><font style="vertical-align: inherit;">You can read more about this in the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">supplier documentation</font></font></a> <code>step-ca</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Can I use the host bastion (installation server)?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can. </font><font style="vertical-align: inherit;">First, issue certificates to all your hosts, and then add the </font></font><code>known_hosts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">host key to your CA bastion:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ CA_URL=https://[YOUR CA].compute.amazonaws.com<font></font>
+$ CA_FINGERPRINT=[CA FINGERPRINT]<font></font>
+$ step ca bootstrap \<font></font>
+      --ca-url <span class="hljs-variable">$CA_URL</span> \<font></font>
+      --fingerprint <span class="hljs-variable">$CA_FINGERPRINT</span>
+$ mkdir -p ~/.ssh &amp;&amp; <span class="hljs-built_in">echo</span> <span class="hljs-string">"@cert-authority * <span class="hljs-subst">$(step ssh config --host --roots)</span>"</span> &gt; ~/.ssh/known_hosts</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After that, it will be enough </font></font><code>ssh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to the bastion, and then </font></font><code>ssh</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to the internal host.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Can I change the expiration date of an SSH certificate?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yes. </font><font style="vertical-align: inherit;">By default, they are valid for 16 hours, and in the CA ( </font></font><code>ca.json</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) </font><font style="vertical-align: inherit;">configuration file </font><font style="vertical-align: inherit;">under the object </font></font><code>claims</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, at your OIDC provider, you can make changes in the corresponding lines, for example:</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-string">"defaultUserSSHCertDuration"</span>: <span class="hljs-string">"720h"</span>,
+<span class="hljs-string">"maxUserSSHCertDuration"</span>: <span class="hljs-string">"720h"</span></code></pre><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Will I be cut off from all my hosts when I disconnect my CA?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You will, although SSH and SHHD do not interact with the CA directly. </font><font style="vertical-align: inherit;">CA issues certificates and maintains a host database. </font><font style="vertical-align: inherit;">Your users rely on this base to figure out if you should try to connect to the host through certificate authentication. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For system security, do not use SSH certificates to connect directly to CA: this is the only place you should continue to use key pairs.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Can I use hosts on multiple AWS accounts?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Of course. </font><font style="vertical-align: inherit;">To do this, just add the account ID to the CA ( </font></font><code>/etc/step-ca/config/ca.json</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) </font><font style="vertical-align: inherit;">configuration file </font><font style="vertical-align: inherit;">and restart the CA server.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How do I add support </font></font><code>sudo</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Use agent forwarding and the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">authentication plug-in</font></font></a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><code>pam_ussh</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What else can I do with my CA?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Much! </font><font style="vertical-align: inherit;">Now that you have your personal CA, you can configure TSL certificates to </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">encrypt all of your internal traffic through shared TLS</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">If you want to learn more about CA, vendors, configuration options, and more, read the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Step Certificates Documentation</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Summarizing</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+With our basic setup, any user of your Google organization will be able to get a certificate. </font><font style="vertical-align: inherit;">He will also gain access only to those hosts on which he has accounts.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en500806/index.html">Escort</a></li>
+<li><a href="../en500816/index.html">Mikrosha. Chapter one. SD card controller</a></li>
+<li><a href="../en500818/index.html">Neurocomputer interfaces for games: what is known today</a></li>
+<li><a href="../en500822/index.html">Who will bury the modern web?</a></li>
+<li><a href="../en500824/index.html">Do you need voice narration for videos about applications and web services?</a></li>
+<li><a href="../en500830/index.html">The new service takes pictures of employees every 5 minutes. They hate him for it.</a></li>
+<li><a href="../en500834/index.html">Web Storage</a></li>
+<li><a href="../en500836/index.html">What happens to transport on May 7 - different quarantines in different regions</a></li>
+<li><a href="../en500840/index.html">Mortal Kombat 11 frame analysis</a></li>
+<li><a href="../en500844/index.html">Go optimizations in VictoriaMetrics. Alexander Valyalkin</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
