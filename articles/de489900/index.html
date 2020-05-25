@@ -1,0 +1,181 @@
+<!doctype html>
+<html class="no-js" lang="de">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⚰️ 🐄 ⚓️ PostgreSQL Antipatterns: Ändern von Daten unter Umgehung eines Triggers 👨🏿‍🎤 ⚓️ 🤛🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Früher oder später stehen viele vor der Notwendigkeit, etwas in den Tabelleneinträgen massiv zu reparieren. Ich habe bereits gesagt, wie man es besser...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: Ändern von Daten unter Umgehung eines Triggers</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/489900/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Früher oder später stehen viele vor der Notwendigkeit, etwas in den Tabelleneinträgen massiv zu reparieren. </font><font style="vertical-align: inherit;">Ich habe bereits </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">gesagt, wie man es besser macht</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> und wie - es ist besser, es nicht zu machen. </font><font style="vertical-align: inherit;">Heute werde ich über den zweiten Aspekt des Massenupdates sprechen - das </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Auslösen von Triggern</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In einer Tabelle, in der Sie etwas reparieren müssen, hängt beispielsweise ein böser Auslöser </font></font><code>ON UPDATE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, der alle Änderungen auf einige Aggregate überträgt. </font><font style="vertical-align: inherit;">Und Sie müssen alles so sorgfältig aktualisieren (z. B. ein neues Feld initialisieren), dass diese Einheiten nicht betroffen sind.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lassen Sie uns einfach die Auslöser ausschalten!</font></font></h2><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">BEGIN</span>;
+  <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> ... <span class="hljs-keyword">DISABLE</span> <span class="hljs-keyword">TRIGGER</span> ...;
+  <span class="hljs-keyword">UPDATE</span> ...; <span class="hljs-comment">--  -</span>
+  <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> ... <span class="hljs-keyword">ENABLE</span> <span class="hljs-keyword">TRIGGER</span> ...;
+<span class="hljs-keyword">COMMIT</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Eigentlich ist das alles - </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">alles hängt schon</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Weil es </font></font><code>ALTER TABLE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">eine </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AccessExclusive-Sperre</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> auferlegt </font><font style="vertical-align: inherit;">, unter der niemand, der parallel läuft, auch nur eine einfache </font></font><code>SELECT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, etwas aus der Tabelle lesen kann. </font><font style="vertical-align: inherit;">Das heißt, bis diese Transaktion abgeschlossen ist, wartet jeder, der „nur lesen“ möchte. </font><font style="vertical-align: inherit;">Und wir erinnern uns, dass </font></font><code>UPDATE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wir do-o-olgi ...</font></font><br>
+<a name="habracut"></a><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lassen Sie es uns schnell ausschalten und dann schnell einschalten!</font></font></h4><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">BEGIN</span>;
+  <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> ... <span class="hljs-keyword">DISABLE</span> <span class="hljs-keyword">TRIGGER</span> ...;
+<span class="hljs-keyword">COMMIT</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">UPDATE</span> ...;<font></font>
+<font></font>
+<span class="hljs-keyword">BEGIN</span>;
+  <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> ... <span class="hljs-keyword">ENABLE</span> <span class="hljs-keyword">TRIGGER</span> ...;
+<span class="hljs-keyword">COMMIT</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hier ist die Situation besser, die Wartezeit ist viel kürzer. </font><font style="vertical-align: inherit;">Aber nur zwei Probleme verderben die ganze Schönheit:</font></font><br>
+<br>
+<ul>
+<li><code>ALTER TABLE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Er wartet auf alle anderen Operationen auf dem Tisch, auch lange </font></font><code>SELECT</code></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Während der Auslöser ausgeschaltet ist, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fliegt jede Änderung</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in der Tabelle vorbei, nicht einmal unsere. </font><font style="vertical-align: inherit;">Und nun, es wird nicht in die Einheiten gelangen, obwohl es sollte. </font><font style="vertical-align: inherit;">Ärger!</font></font></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Verwaltung von Sitzungsvariablen</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In der vorherigen Version sind wir also auf einen entscheidenden Punkt gestoßen - wir müssen den Auslöser irgendwie lehren, um „unsere“ Änderungen in der Tabelle von „nicht unsere“ zu unterscheiden. </font><font style="vertical-align: inherit;">Überspringen Sie "unsere" wie sie ist, aber "nicht unsere" - Auslöser. </font><font style="vertical-align: inherit;">Hierfür können Sie </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sitzungsvariablen verwenden</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">session_replication_role</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lesen Sie das </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Handbuch</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Die </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Triggervariable</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> wird auch von der Konfigurationsvariablen </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><font style="vertical-align: inherit;">session_replication_role beeinflusst</font></a><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Trigger, die ohne zusätzliche Anweisungen aktiviert sind (Standard), werden ausgelöst, wenn die Replikationsrolle "Ursprung" (Standard) oder "Lokal" ist. </font><font style="vertical-align: inherit;">Durch eine Anzeige aktivierte Trigger </font></font><code>ENABLE REPLICA</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">werden nur ausgelöst, wenn der </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">aktuelle Sitzungsmodus</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> "Replikat" ist, und durch eine Anzeige aktivierte Trigger </font></font><code>ENABLE ALWAYS</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">werden unabhängig vom aktuellen Replikationsmodus ausgelöst.</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ich betone, dass die Konfiguration nicht für alle auf einmal gilt </font></font><code>ALTER TABLE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, sondern nur für unsere separate spezielle Verbindung. </font><font style="vertical-align: inherit;">Insgesamt, damit keine Anwendung einen Brand auslöst:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SET</span> session_replication_role = replica; <span class="hljs-comment">--  </span>
+<span class="hljs-keyword">UPDATE</span> ...;
+<span class="hljs-keyword">SET</span> session_replication_role = <span class="hljs-keyword">DEFAULT</span>; <span class="hljs-comment">--    </span></code></pre><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Zustand im Abzug</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Die obige Option funktioniert jedoch für alle Trigger gleichzeitig (oder Sie müssen Trigger im Voraus "auslösen", die Sie nicht deaktivieren möchten). </font><font style="vertical-align: inherit;">Und wenn wir </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">einen bestimmten Auslöser "ausschalten" müssen</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Die </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=de&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sitzungsvariable "Benutzer"</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> hilft uns dabei </font><font style="vertical-align: inherit;">:</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Die Namen der Erweiterungsparameter werden wie folgt geschrieben: Erweiterungsname, Punkt und dann der Parametername selbst, wie die vollständigen Namen der Objekte in SQL. </font><font style="vertical-align: inherit;">Zum Beispiel: plpgsql.variable_conflict. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Da Nicht-Systemparameter in Prozessen festgelegt werden können, in denen das entsprechende Erweiterungsmodul nicht geladen wird, akzeptiert PostgreSQL </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Werte für beliebige Namen mit zwei Komponenten</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ändern Sie zunächst den Auslöser wie folgt:</font></font><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">BEGIN</span>
+    <span class="hljs-comment">--     </span>
+    <span class="hljs-keyword">IF</span> current_setting(<span class="hljs-string">'mycfg.my_table_convert_process'</span>) = <span class="hljs-string">'TRUE'</span> <span class="hljs-keyword">THEN</span>
+        <span class="hljs-keyword">IF</span> TG_OP <span class="hljs-keyword">IN</span> (<span class="hljs-string">'INSERT'</span>, <span class="hljs-string">'UPDATE'</span>) <span class="hljs-keyword">THEN</span>
+            <span class="hljs-keyword">RETURN</span> <span class="hljs-keyword">NEW</span>;<font></font>
+        ELSE<font></font>
+            RETURN OLD;<font></font>
+        <span class="hljs-keyword">END</span> <span class="hljs-keyword">IF</span>;
+    <span class="hljs-keyword">END</span> <span class="hljs-keyword">IF</span>;<font></font>
+...</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Übrigens kann dies </font></font><code>CREATE OR REPLACE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">für eine Triggerfunktion </font><font style="vertical-align: inherit;">"profitabel" ohne Sperren durchgeführt </font><font style="vertical-align: inherit;">werden. </font><font style="vertical-align: inherit;">Und dann spannen wir in der speziellen Verbindung "unsere" Variable:</font></font><br>
+<pre><code class="sql hljs">
+<span class="hljs-keyword">SET</span> mycfg.my_table_convert_process = <span class="hljs-string">'TRUE'</span>;
+<span class="hljs-keyword">UPDATE</span> ...;
+<span class="hljs-keyword">SET</span> mycfg.my_table_convert_process = <span class="hljs-string">''</span>; <span class="hljs-comment">--    </span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kennst du andere Wege? </font><font style="vertical-align: inherit;">Teilen Sie in den Kommentaren.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../de489884/index.html">Plattformübergreifende OpenCV-Optimierungen</a></li>
+<li><a href="../de489886/index.html">Wir analysieren den Lebenslauf von Anwälten auf hh.ru ohne API</a></li>
+<li><a href="../de489888/index.html">Generieren Sie URLs mit Parametern auf dem Knie und Best Practice</a></li>
+<li><a href="../de489892/index.html">Wie wir bei Luxoft interne IT-Communities aufgebaut haben</a></li>
+<li><a href="../de489898/index.html">Ein weiterer Artikel über WC</a></li>
+<li><a href="../de489902/index.html">So messen Sie die Effektivität eines Anlageportfolios: 3 praktische Ansätze</a></li>
+<li><a href="../de489904/index.html">Warum und wie testen wir das Update?</a></li>
+<li><a href="../de489906/index.html">Virtuelle Umkleidekabine in OpenCV</a></li>
+<li><a href="../de489912/index.html">Die Schmerzen und Leiden beim Debuggen von Microservices in der Webentwicklung</a></li>
+<li><a href="../de489914/index.html">Clustering in Proxmox VE</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

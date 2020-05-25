@@ -1,0 +1,181 @@
+<!doctype html>
+<html class="no-js" lang="fr">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔏 ㊙️ ✋🏾 PostgreSQL Antipatterns: modification des données en contournant un déclencheur 🤘 👨🏽‍🔧 😕</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Tôt ou tard, beaucoup sont confrontés à la nécessité de corriger massivement quelque chose dans les entrées du tableau. J'ai déjà dit comment le faire...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: modification des données en contournant un déclencheur</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/489900/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tôt ou tard, beaucoup sont confrontés à la nécessité de corriger massivement quelque chose dans les entrées du tableau. </font><font style="vertical-align: inherit;">J'ai déjà </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dit comment le faire mieux</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> et comment - il vaut mieux ne pas le faire. </font><font style="vertical-align: inherit;">Aujourd'hui, je vais parler du deuxième aspect de la mise à jour en masse - le </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">déclenchement des déclencheurs</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Par exemple, sur une table dans laquelle vous devez corriger quelque chose, un mauvais déclencheur se bloque </font></font><code>ON UPDATE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, transférant toutes les modifications à certains agrégats. </font><font style="vertical-align: inherit;">Et vous devez tout mettre à jour (initialiser un nouveau champ, par exemple) si soigneusement que ces unités ne sont pas affectées.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Disons simplement désactiver les déclencheurs!</font></font></h2><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">BEGIN</span>;
+  <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> ... <span class="hljs-keyword">DISABLE</span> <span class="hljs-keyword">TRIGGER</span> ...;
+  <span class="hljs-keyword">UPDATE</span> ...; <span class="hljs-comment">--  -</span>
+  <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> ... <span class="hljs-keyword">ENABLE</span> <span class="hljs-keyword">TRIGGER</span> ...;
+<span class="hljs-keyword">COMMIT</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En fait, c'est tout - </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tout est déjà suspendu</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Parce qu'il </font></font><code>ALTER TABLE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">impose un </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">verrou AccessExclusive</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , sous lequel personne ne s'exécutant en parallèle, même un simple </font></font><code>SELECT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, ne peut rien lire de la table. </font><font style="vertical-align: inherit;">Autrement dit, jusqu'à ce que cette transaction soit terminée, tous ceux qui veulent «simplement lire» attendront. </font><font style="vertical-align: inherit;">Et nous nous souvenons que </font></font><code>UPDATE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">nous do-o-olgi ...</font></font><br>
+<a name="habracut"></a><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Arrêtons-le rapidement, puis rallumons-le rapidement!</font></font></h4><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">BEGIN</span>;
+  <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> ... <span class="hljs-keyword">DISABLE</span> <span class="hljs-keyword">TRIGGER</span> ...;
+<span class="hljs-keyword">COMMIT</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">UPDATE</span> ...;<font></font>
+<font></font>
+<span class="hljs-keyword">BEGIN</span>;
+  <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> ... <span class="hljs-keyword">ENABLE</span> <span class="hljs-keyword">TRIGGER</span> ...;
+<span class="hljs-keyword">COMMIT</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ici, la situation est meilleure, le temps d'attente est beaucoup plus court. </font><font style="vertical-align: inherit;">Mais seulement deux problèmes gâchent toute la beauté:</font></font><br>
+<br>
+<ul>
+<li><code>ALTER TABLE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> il attend toutes les autres opérations sur la table, y compris les longues </font></font><code>SELECT</code></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tant que la gâchette est désactivée, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tout changement</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dans la table </font><b><font style="vertical-align: inherit;">passera</font></b><font style="vertical-align: inherit;"> , pas même le nôtre. </font><font style="vertical-align: inherit;">Et bien, il n'entrera pas dans les unités, bien qu'il le devrait. </font><font style="vertical-align: inherit;">Difficulté!</font></font></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Gestion des variables de session</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ainsi, dans la version précédente, nous sommes tombés sur un point crucial - nous devons en quelque sorte enseigner le déclencheur pour distinguer «nos» changements dans le tableau de «pas les nôtres». </font><font style="vertical-align: inherit;">Ignorez «le nôtre» tel quel, mais «pas le nôtre» - déclencheur. </font><font style="vertical-align: inherit;">Vous pouvez utiliser </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">des variables de session</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> pour cela </font><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">session_replication_role</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lisez le </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">manuel</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">La variable de déclenchement est également affectée par la variable de configuration </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">session_replication_role</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Les déclencheurs activés sans instructions supplémentaires (par défaut) se déclenchent lorsque le rôle de réplication est «origine» (par défaut) ou «local». </font><font style="vertical-align: inherit;">Les déclencheurs activés par une indication </font></font><code>ENABLE REPLICA</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ne se déclencheront que si le </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mode de session actuel</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> est "réplique", et les déclencheurs activés par une indication </font></font><code>ENABLE ALWAYS</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">se déclencheront quel que soit le mode de réplication actuel.</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">J'insiste sur le fait que la configuration ne s'applique pas à tout à la fois, car </font></font><code>ALTER TABLE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, mais seulement à notre connexion spéciale séparée. </font><font style="vertical-align: inherit;">Total pour qu'aucune application ne déclenche le feu:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SET</span> session_replication_role = replica; <span class="hljs-comment">--  </span>
+<span class="hljs-keyword">UPDATE</span> ...;
+<span class="hljs-keyword">SET</span> session_replication_role = <span class="hljs-keyword">DEFAULT</span>; <span class="hljs-comment">--    </span></code></pre><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Condition à l'intérieur de la gâchette</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mais l'option ci-dessus fonctionne pour tous les déclencheurs à la fois (ou vous devez «déclencher» à l'avance des déclencheurs que vous ne voulez pas désactiver). </font><font style="vertical-align: inherit;">Et si nous devons </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"désactiver" un déclencheur spécifique</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=fr&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">variable de session «utilisateur»</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> nous aidera avec ceci </font><font style="vertical-align: inherit;">:</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Les noms des paramètres d'extension sont écrits comme suit: nom de l'extension, point, puis le nom du paramètre lui-même, comme les noms complets des objets dans SQL. </font><font style="vertical-align: inherit;">Par exemple: plpgsql.variable_conflict. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Étant donné que les paramètres non système peuvent être définis dans des processus qui ne chargent pas le module d'extension correspondant, PostgreSQL accepte les </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">valeurs de tous les noms à deux composants</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tout d'abord, modifiez le déclencheur, quelque chose comme ceci:</font></font><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">BEGIN</span>
+    <span class="hljs-comment">--     </span>
+    <span class="hljs-keyword">IF</span> current_setting(<span class="hljs-string">'mycfg.my_table_convert_process'</span>) = <span class="hljs-string">'TRUE'</span> <span class="hljs-keyword">THEN</span>
+        <span class="hljs-keyword">IF</span> TG_OP <span class="hljs-keyword">IN</span> (<span class="hljs-string">'INSERT'</span>, <span class="hljs-string">'UPDATE'</span>) <span class="hljs-keyword">THEN</span>
+            <span class="hljs-keyword">RETURN</span> <span class="hljs-keyword">NEW</span>;<font></font>
+        ELSE<font></font>
+            RETURN OLD;<font></font>
+        <span class="hljs-keyword">END</span> <span class="hljs-keyword">IF</span>;
+    <span class="hljs-keyword">END</span> <span class="hljs-keyword">IF</span>;<font></font>
+...</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Soit dit en passant, cela peut être fait "de manière rentable", sans verrouillage, grâce </font></font><code>CREATE OR REPLACE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">à une fonction de déclenchement. </font><font style="vertical-align: inherit;">Et puis dans la connexion spéciale, nous armons "notre" variable:</font></font><br>
+<pre><code class="sql hljs">
+<span class="hljs-keyword">SET</span> mycfg.my_table_convert_process = <span class="hljs-string">'TRUE'</span>;
+<span class="hljs-keyword">UPDATE</span> ...;
+<span class="hljs-keyword">SET</span> mycfg.my_table_convert_process = <span class="hljs-string">''</span>; <span class="hljs-comment">--    </span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Connaissez-vous d'autres moyens? </font><font style="vertical-align: inherit;">Partagez dans les commentaires.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../fr489884/index.html">Optimisations OpenCV multiplateforme</a></li>
+<li><a href="../fr489886/index.html">Nous analysons le CV des avocats sur hh.ru sans API</a></li>
+<li><a href="../fr489888/index.html">Générer des URL avec des paramètres sur le genou et les meilleures pratiques</a></li>
+<li><a href="../fr489892/index.html">Comment Luxoft a construit des communautés informatiques internes</a></li>
+<li><a href="../fr489898/index.html">Un autre article sur wc</a></li>
+<li><a href="../fr489902/index.html">Comment mesurer l'efficacité d'un portefeuille d'investissement: 3 approches pratiques</a></li>
+<li><a href="../fr489904/index.html">Pourquoi et comment testons-nous la mise à jour</a></li>
+<li><a href="../fr489906/index.html">Cabine d'essayage virtuelle en OpenCV</a></li>
+<li><a href="../fr489912/index.html">La douleur et la souffrance lors du débogage des microservices dans le développement Web</a></li>
+<li><a href="../fr489914/index.html">Clustering dans Proxmox VE</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

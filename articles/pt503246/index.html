@@ -1,0 +1,352 @@
+<!doctype html>
+<html class="no-js" lang="pt">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🦑 ☢️ 🦖 Descoberta simples de serviços em Prometheus via Consul 💃🏾 🏂🏾 ♑️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Lei de Pareto (princípio de Pareto, princípio 80/20) - "20% dos esforços produzem 80% do resultado, e os 80% restantes dão apenas 20% do resultado". 
+...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Descoberta simples de serviços em Prometheus via Consul</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/citymobil/blog/503246/"><blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lei de Pareto (princípio de Pareto, princípio 80/20) - "20% dos esforços produzem 80% do resultado, e os 80% restantes dão apenas 20% do resultado". </font></font><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Wikipedia</font></font></a></blockquote><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Saudações, caro leitor!</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Meu primeiro artigo sobre Habr é dedicado a uma solução simples e, espero, útil que tornou conveniente a coleta de métricas no Prometheus de servidores heterogêneos. </font><font style="vertical-align: inherit;">Vou abordar alguns detalhes nos quais muitos podem não ter mergulhado enquanto explorava o Prometheus, e compartilharei minha abordagem para organizar uma descoberta de serviço leve.</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Para isso, você precisará de: Prometheus, HashiCorp Consul, systemd, algum código Bash e conhecimento do que está acontecendo.</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Se você estiver interessado em saber como tudo isso está conectado e como funciona, bem-vindo ao gato.</font></font></p><br>
+<p><img src="https://habrastorage.org/webt/ne/9h/pe/ne9hpett0pzkfg0cdv33q5o5rg0.png" alt="Prometeu + Festança + Consul"></p><a name="habracut"></a><br>
+<h2 id="vstrechayte-prometheus"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conheça: Prometheus</font></font></h2><br>
+<p>   Prometheus ,        <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Kubernetes</a>.       ,    Prometheus   pull-,  ,      ,     .   Prometheus  Kubernetes    <code>prometheus.yml</code>   <code>kubernetes_sd_configs</code>.      kube-apiserver    IP-    pod'       .</p><br>
+<pre><code class="plaintext hljs">scrape_configs:<font></font>
+- job_name: kubernetes-pods<font></font>
+  kubernetes_sd_configs:<font></font>
+  - role: pod<font></font>
+  bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token<font></font>
+  tls_config:<font></font>
+    insecure_skip_verify: true<font></font>
+  relabel_configs:<font></font>
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]<font></font>
+    action: keep<font></font>
+    regex: true<font></font>
+  - source_labels: [__meta_kubernetes_pod_ip, __meta_kubernetes_pod_annotation_prometheus_io_port]<font></font>
+    action: replace<font></font>
+    regex: (.+);(.+)<font></font>
+    replacement: $1:$2<font></font>
+    target_label: __address__<font></font>
+  - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]<font></font>
+    action: replace<font></font>
+    regex: (.+)<font></font>
+    target_label: __metrics_path__<font></font>
+  - action: labelmap<font></font>
+    regex: __meta_(kubernetes_namespace|kubernetes_pod_name|kubernetes_pod_label_manifest_sha1|kubernetes_pod_node_name)</code></pre><br>
+<p><em>      ,         .  <code>role=pod</code>      <code>kubernetes_sd_configs</code>.</em></p><br>
+<p>,   Prometheus     Kubernetes, ,  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">DaemonSet</a> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">prometheus/node_exporter</a>,                Kubernetes: node_exporter, Zookeeper, Kafka, ClickHouse, CEPH, Elasticsearch, Tarantool ...</p><br>
+<p>   <code>targets</code>  <code>static_configs</code>        Kafka  OSD  CEPH       .       . ,   ,   Ansible,   ,       CEPH OSD  .            <code>prometheus.yml</code>.       ,      . </p><br>
+<p> ,         .        <code>prometheus.yml</code>,       ,       <code>job_name</code>     .       <code>prometheus.yml</code>     Kafka  6 .    3.      3  ClickHouse,    4 .    CEPH    .         ,      —  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">prometheus/node_exporter</a>   .            <code>prometheus.yml</code>    <code>static_configs</code>.</p><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">Don’t specify default values unnecessarily: simple, minimal configuration will make errors less likely.</b>
+                        <div class="spoiler_text"><p><u>Kubernetes Documentation, Configuration Best Practices, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">General Configuration Tips</a>.</u></p><br>
+<p>* -       -   ,      .    !</p><br>
+<p>       ,    . ,     ,   ,    <code>.default</code>  <code>.original</code>.           ,  ,  2-3          -   : , GitHub  .              ,  .*</p></div>
+                    </div><br>
+<h2 id="vspomnim-pro-hashicorp-consul">  HashiCorp Consul</h2><br>
+<p>          <code>prometheus.yml</code>.          Prometheus — <code>consul_sd_configs</code>.  , Prometheus,  HashiCorp Consul,              . :</p><br>
+<pre><code class="plaintext hljs">scrape_configs:<font></font>
+- job_name: SERVICE_NAME<font></font>
+  consul_sd_configs:<font></font>
+  - server: consul.example.com<font></font>
+    scheme: https<font></font>
+    tags: [test] # dev|test|stage|prod|...<font></font>
+    services: [prometheus-SERVICE_NAME-exporter]</code></pre><br>
+<p>    Consul,  ,           ,     agent.   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="> HTTP API</a>     Consul,     .  ,      : ,   .        Consul.   ,   Consul     : KV-, HashiCorp Vault,  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Traefik</a>. , ,      DNS.         ,          Consul agent.     Consul,      HTTP API      Prometheus   ,       . ,      HTTPS,     .</p><br>
+<p>    ,     Kubernetes <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">StatefulSet</a> Consul,    Traefik,    service discovery  Prometheus.   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Ingress</a>       ,       <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Consul’s web UI</a>.  Traefik   HTTPS-    Let`s Encrypt  DNS Challenge.</p><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">consul.yml</b>
+                        <div class="spoiler_text"><pre><code class="plaintext hljs"># https://consul.io/docs/agent/options.html<font></font>
+<font></font>
+---<font></font>
+apiVersion: v1<font></font>
+kind: Service<font></font>
+metadata:<font></font>
+  name: consul<font></font>
+  labels:<font></font>
+    app: consul<font></font>
+spec:<font></font>
+  selector:<font></font>
+    app: consul<font></font>
+  ports:<font></font>
+  - name: http<font></font>
+    port: 8500<font></font>
+<font></font>
+---<font></font>
+apiVersion: apps/v1<font></font>
+kind: StatefulSet<font></font>
+metadata:<font></font>
+  name: consul<font></font>
+  labels:<font></font>
+    app: consul<font></font>
+spec:<font></font>
+  serviceName: consul<font></font>
+  selector:<font></font>
+    matchLabels:<font></font>
+      app: consul<font></font>
+  volumeClaimTemplates:<font></font>
+  - metadata:<font></font>
+      name: data<font></font>
+    spec:<font></font>
+      storageClassName: cephfs<font></font>
+      accessModes:<font></font>
+      - ReadWriteOnce<font></font>
+      resources:<font></font>
+        requests:<font></font>
+          storage: 1Gi<font></font>
+  template:<font></font>
+    metadata:<font></font>
+      labels:<font></font>
+        app: consul<font></font>
+    spec:<font></font>
+      automountServiceAccountToken: false<font></font>
+      terminationGracePeriodSeconds: 60<font></font>
+      containers:<font></font>
+      - name: consul<font></font>
+        image: consul:1.6<font></font>
+        volumeMounts:<font></font>
+        - name: data<font></font>
+          mountPath: /consul/data<font></font>
+        args:<font></font>
+        - agent<font></font>
+        - -server<font></font>
+        - -client=0.0.0.0<font></font>
+        - -bind=127.0.0.1<font></font>
+        - -bootstrap<font></font>
+        - -bootstrap-expect=1<font></font>
+        - -disable-host-node-id<font></font>
+        - -dns-port=0<font></font>
+        - -ui<font></font>
+        ports:<font></font>
+        - name: http<font></font>
+          containerPort: 8500<font></font>
+        readinessProbe:<font></font>
+          initialDelaySeconds: 10<font></font>
+          httpGet:<font></font>
+            port: http<font></font>
+            path: /v1/agent/members<font></font>
+        livenessProbe:<font></font>
+          initialDelaySeconds: 30<font></font>
+          httpGet:<font></font>
+            port: http<font></font>
+            path: /v1/agent/members<font></font>
+        resources:<font></font>
+          requests:<font></font>
+            cpu: 0.2<font></font>
+            memory: 256Mi<font></font>
+<font></font>
+---<font></font>
+apiVersion: extensions/v1beta1<font></font>
+kind: Ingress<font></font>
+metadata:<font></font>
+  name: consul<font></font>
+  labels:<font></font>
+    app: consul<font></font>
+  annotations:<font></font>
+    traefik.ingress.kubernetes.io/frontend-entry-points: http,https<font></font>
+    traefik.ingress.kubernetes.io/redirect-entry-point: https<font></font>
+spec:<font></font>
+  rules:<font></font>
+  - host: consul.example.com<font></font>
+    http:<font></font>
+      paths:<font></font>
+      - backend:<font></font>
+          serviceName: consul<font></font>
+          servicePort: http</code></pre></div>
+                    </div><br>
+<p>      Prometheus,     Consul        ,   Consul,     .             .      Bash.</p><br>
+<h2 id="vremya-dlya-bash-i-systemdservice">  Bash  systemd.service</h2><br>
+<p>       CoreOS Container Linux.    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">     DevOpsConf Russia 2018</a>.                Docker ,   systemd.service.     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Flatcar Linux</a>,      <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">   </a>,     CoreOS Container Linux.    CoreOS  Flatcar    !</p><br>
+<p>     —  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">systemd.service</a>.  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">systemd</a> —    ,          Linux.    systemd.service,   <code>[Service]</code>,    <code>ExecStartPost</code>, <code>ExecStop</code>. -          Consul.</p><br>
+<p>     <code>prometheus-node-exporter.service</code>.    ,           <code>static_configs</code>      100 .</p><br>
+<pre><code class="plaintext hljs">[Unit]<font></font>
+After=docker.service<font></font>
+[Service]<font></font>
+Environment=CONSUL_URL=https://consul.example.com<font></font>
+ExecStartPre=-/usr/bin/docker rm --force %N<font></font>
+ExecStart=/usr/bin/docker run \<font></font>
+    --name=%N \<font></font>
+    --rm=true \<font></font>
+    --network=host \<font></font>
+    --pid=host \<font></font>
+    --volume=/:/rootfs:ro \<font></font>
+    --label=logger=json \<font></font>
+    --stop-timeout=30 \<font></font>
+    prom/node-exporter:v0.18.1 \<font></font>
+    --log.format=logger:stdout?json=true \<font></font>
+    --log.level=error<font></font>
+ExecStartPost=/opt/bin/consul-service register -e prod -n %N -p 9100 -t prometheus,node-exporter<font></font>
+ExecStop=/opt/bin/consul-service deregister -e prod -n %N<font></font>
+ExecStop=-/usr/bin/docker stop %N<font></font>
+Restart=always<font></font>
+StartLimitInterval=0<font></font>
+RestartSec=10<font></font>
+KillMode=process<font></font>
+[Install]<font></font>
+WantedBy=multi-user.target</code></pre><br>
+<p>      <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">/opt/bin/consul-service</a>.           ,    .</p><br>
+<p> :</p><br>
+<ul>
+<li><strong>CONSUL_URL</strong> —  Consul        .</li>
+<li><strong>CONSUL_TOKEN</strong> —   HTTP- «X-Consul-Token»,     HTTP API Consul.     Consul web UI,         ACLs.</li>
+</ul><br>
+<p> :</p><br>
+<ul>
+<li><strong>register/deregister</strong> —   .       .</li>
+<li><strong>-e</strong> —      — [dev|test|prod|…].</li>
+<li><strong>-n</strong> —  ,  prometheus-node-exporter.     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="> %N</a>,   systemd.unit      .</li>
+<li><strong>-p</strong> —        Prometheus . <em>       Consul.</em></li>
+<li><strong>-t</strong> —    .          Consul. <em>       Consul.</em></li>
+</ul><br>
+<p> consul-service  systemd.service         . systemd.service   ,   <code>ExecStartPost</code>  <code>consul-service register</code>,    Consul,  Prometheus       ,     .   ,        .      <code>ExecStop</code>,    <code>consul-service deregister</code>,   . Consul   Prometheus   ,           .   ,        ,         Service Availability        .    ,         ,     ,        .</p><br>
+<p><u>     consul-service    <code>hostname</code>   <code>search</code> ( )  <code>resolv.conf</code>.        DNS-,    best practice       .</u></p><br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title">    ,  ,    !</b>
+                        <div class="spoiler_text"><p><em>             IP,       -          .        .        .</em></p></div>
+                    </div><br>
+<p><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">consul-service</a>    Bash  ~60 .         <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">cURL</a>  Bash. ,            .   - <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">MIT</a>,         ,  .</p><br>
+<p>  <code>scrape_configs</code>  <code>prometheus.yml</code>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">prometheus/node_exporter</a>,    ,        .</p><br>
+<pre><code class="plaintext hljs">scrape_configs:<font></font>
+- job_name: node-exporter<font></font>
+  consul_sd_configs:<font></font>
+  - server: consul.example.com<font></font>
+    scheme: https<font></font>
+    tags: [prod]<font></font>
+    services: [prometheus-node-exporter]</code></pre><br>
+<p><em><code>tags: [prod]</code>       production .       <code>-e</code>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">consul-service</a>,             Consul.</em></p><br>
+<p>    Flatcar Linux    <code>/opt/bin</code>   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Ansible</a>. Playbook    <code>tasks</code>.       ,    <code>crontab</code>.</p><br>
+<pre><code class="plaintext hljs">tasks:<font></font>
+- name: Create directory "/opt/bin"<font></font>
+  with_items: [/opt/bin]<font></font>
+  file:<font></font>
+    state: directory<font></font>
+    path: "{{ item }}"<font></font>
+    owner: root<font></font>
+    group: root<font></font>
+    mode: 0755<font></font>
+- name: Download "consul-service.sh" to "/opt/bin/consul-service"<font></font>
+  get_url:<font></font>
+    url: https://raw.githubusercontent.com/devinotelecom/consul-service/master/consul-service.sh<font></font>
+    dest: /opt/bin/consul-service<font></font>
+    owner: root<font></font>
+    group: root<font></font>
+    mode: 0755<font></font>
+    force: yes</code></pre><br>
+<p><em>   Ansible,   Python,      Flatcar Linux ,     .          <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">Flatcar Linux</a>.</em></p><br>
+<h2 id="v-zaklyuchenie"> </h2><br>
+<p>,       .             ,     «+++»,     .      .<br>
+        — “ !  !”.</p></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt503236/index.html">O último dia da semana de trabalho estava terminando ...</a></li>
+<li><a href="../pt503238/index.html">Métodos arquitetônicos: o que é e por que são necessários</a></li>
+<li><a href="../pt503240/index.html">Árvore - um único AST para governar todos</a></li>
+<li><a href="../pt503242/index.html">Um programador precisa de ética?</a></li>
+<li><a href="../pt503244/index.html">Consciência e tese de Max Fry</a></li>
+<li><a href="../pt503248/index.html">Revisão de código Terminator. Revisão pela qual você será agradecido</a></li>
+<li><a href="../pt503250/index.html">Que linguagem de programação aprender em 2020?</a></li>
+<li><a href="../pt503254/index.html">Streaming e transmissão de youtube e muito mais ... via raspberry pi com Gotubecast e KODI TubeCast</a></li>
+<li><a href="../pt503260/index.html">Sobre startups e startups</a></li>
+<li><a href="../pt503262/index.html">Por que "angina" não é "dor de garganta", mas "resina" não é "borracha", ou amigos tradutores falsos</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

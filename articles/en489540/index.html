@@ -1,0 +1,461 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🛃 🐰 ✋🏿 Debugging ARM Cortex-M Microcontrollers by UART Part 2 🛌 💋 💅</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the last article, I talked about the DebugMon interrupt and the registers associated with it. 
+ 
+ In this article we will write the implementation ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Debugging ARM Cortex-M Microcontrollers by UART Part 2</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/489540/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In the last </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">article,</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> I talked about the DebugMon interrupt and the registers associated with it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this article we will write the implementation of the debugger for UART.</font></font><br>
+<a name="habracut"></a><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Low level part</font></font></h4><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> there is a description of the structure of requests and responses of the GDB server. </font><font style="vertical-align: inherit;">Although it seems simple, we will not implement it in the microcontroller for the following reasons:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Big data redundancy. </font><font style="vertical-align: inherit;">Addresses, values ​​of registers, variables are encoded as a hex-string, which increases the message volume by 2 times</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Parsing and collecting messages will take additional resources</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tracking the end of the packet is required either by timeout (the timer will be busy), or by a complex automatic machine, which will increase the time spent in the UART interrupt </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To get the easiest and fastest debugging module, we will use a binary protocol with control sequences:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0xFF - Start of frame </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0x00 - End of frame </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0xA5 - Interrupt </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0xAA - Replaced by 0xAA </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To process these sequences during reception, an automaton with 4 states is required:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Waiting for ESC character</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Waiting for the second character of the Start of frame sequence</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Data reception</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> The last time an Esc character was accepted</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But to send states, you need already 7:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Sending the first byte Start of frame</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Sending a second byte Start of frame</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Sending data</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Submitting End of frame</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Sending Esc character replacement</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Sending the first Interrupt byte</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Sending Second Interrupt Byte</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let us write the definition of the structure inside which all the module variables will be located:</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> 
+{</span>    
+  <span class="hljs-comment">// disable receive data</span>
+  <span class="hljs-keyword">unsigned</span> tx:<span class="hljs-number">1</span>;
+  <span class="hljs-comment">// program stopped</span>
+  <span class="hljs-keyword">unsigned</span> StopProgramm:<span class="hljs-number">1</span>;
+  <span class="hljs-keyword">union</span> {
+    <span class="hljs-keyword">enum</span> rx_state_e <font></font>
+    {<font></font>
+      rxWaitS = <span class="hljs-number">0</span>, <span class="hljs-comment">// wait Esc symbol</span>
+      rxWaitC = <span class="hljs-number">1</span>, <span class="hljs-comment">// wait Start of frame</span>
+      rxReceive = <span class="hljs-number">2</span>, <span class="hljs-comment">// receiving</span>
+      rxEsc = <span class="hljs-number">3</span>, <span class="hljs-comment">// Esc received</span><font></font>
+    } rx_state;<font></font>
+    <span class="hljs-keyword">enum</span> tx_state_e <font></font>
+    {<font></font>
+      txSendS = <span class="hljs-number">0</span>, <span class="hljs-comment">// send first byte of Start of frame</span>
+      txSendC = <span class="hljs-number">1</span>, <span class="hljs-comment">// send second byte</span>
+      txSendN = <span class="hljs-number">2</span>, <span class="hljs-comment">// send byte of data</span>
+      txEsc = <span class="hljs-number">3</span>,   <span class="hljs-comment">// send escaped byte of data</span>
+      txEnd = <span class="hljs-number">4</span>,   <span class="hljs-comment">// send End of frame</span>
+      txSendS2 = <span class="hljs-number">5</span>,<span class="hljs-comment">// send first byte of Interrupt</span>
+      txBrk = <span class="hljs-number">6</span>,   <span class="hljs-comment">// send second byte</span><font></font>
+    } tx_state;<font></font>
+  };<font></font>
+  <span class="hljs-keyword">uint8_t</span> pos; <span class="hljs-comment">// receive/send position</span>
+  <span class="hljs-keyword">uint8_t</span> buf[<span class="hljs-number">128</span>]; <span class="hljs-comment">// offset = 3</span>
+  <span class="hljs-keyword">uint8_t</span> txCnt; <span class="hljs-comment">// size of send data</span>
+} <span class="hljs-keyword">dbg_t</span>;
+<span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> dbgG ((dbg_t*)DBG_ADDR) <span class="hljs-comment">//   ,         </span></span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The states of the receiving and transmitting machines are combined into one variable since the work will be carried out in half duplex mode. </font><font style="vertical-align: inherit;">Now you can write automata themselves with an interrupt handler.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">UART handler</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">USART6_IRQHandler</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{
+  <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_RXNE) != <span class="hljs-number">0U</span>)<font></font>
+      &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_RXNEIE) != <span class="hljs-number">0U</span>))<font></font>
+  {<font></font>
+    rxCb(USART6-&gt;RDR);<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+  }<font></font>
+<font></font>
+  <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_TXE) != <span class="hljs-number">0U</span>)<font></font>
+      &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_TXEIE) != <span class="hljs-number">0U</span>))<font></font>
+  {<font></font>
+    txCb();<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+  }<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">rxCb</span><span class="hljs-params">(<span class="hljs-keyword">uint8_t</span> byte)</span>
+</span>{
+  <span class="hljs-keyword">dbg_t</span>* dbg = dbgG; <span class="hljs-comment">// debug vars pointer</span><font></font>
+  <font></font>
+  <span class="hljs-keyword">if</span> (dbg-&gt;tx) <span class="hljs-comment">// use half duplex mode</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+  <font></font>
+  <span class="hljs-keyword">switch</span>(dbg-&gt;rx_state)<font></font>
+  {<font></font>
+  <span class="hljs-keyword">default</span>:
+  <span class="hljs-keyword">case</span> rxWaitS:
+    <span class="hljs-keyword">if</span> (byte==<span class="hljs-number">0xAA</span>)<font></font>
+      dbg-&gt;rx_state = rxWaitC;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> rxWaitC:
+    <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0xFF</span>)<font></font>
+      dbg-&gt;rx_state = rxReceive;<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+      dbg-&gt;rx_state = rxWaitS;<font></font>
+    dbg-&gt;pos = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> rxReceive:
+    <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0xAA</span>)<font></font>
+      dbg-&gt;rx_state = rxEsc;<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+      dbg-&gt;buf[dbg-&gt;pos++] = byte;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> rxEsc:
+    <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0xAA</span>)<font></font>
+    {<font></font>
+      dbg-&gt;buf[dbg-&gt;pos++] = byte;<font></font>
+      dbg-&gt;rx_state  = rxReceive;<font></font>
+    }<font></font>
+    <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0x00</span>)<font></font>
+    {<font></font>
+      parseAnswer();<font></font>
+    }<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+      dbg-&gt;rx_state = rxWaitS;<font></font>
+  }<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">txCb</span><span class="hljs-params">()</span>
+</span>{
+  <span class="hljs-keyword">dbg_t</span>* dbg = dbgG;
+  <span class="hljs-keyword">switch</span> (dbg-&gt;tx_state)<font></font>
+  {<font></font>
+  <span class="hljs-keyword">case</span> txSendS:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+    dbg-&gt;tx_state = txSendC;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txSendC:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xFF</span>;<font></font>
+    dbg-&gt;tx_state = txSendN;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txSendN:
+    <span class="hljs-keyword">if</span> (dbg-&gt;txCnt&gt;=dbg-&gt;pos)<font></font>
+    {<font></font>
+      USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+      dbg-&gt;tx_state = txEnd;<font></font>
+      <span class="hljs-keyword">break</span>;<font></font>
+    }<font></font>
+    <span class="hljs-keyword">if</span> (dbg-&gt;buf[dbg-&gt;txCnt]==<span class="hljs-number">0xAA</span>)<font></font>
+    {<font></font>
+      USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+      dbg-&gt;tx_state = txEsc;<font></font>
+      <span class="hljs-keyword">break</span>;<font></font>
+    }<font></font>
+    USART6-&gt;TDR = dbg-&gt;buf[dbg-&gt;txCnt++];<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txEsc:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+    dbg-&gt;txCnt++;<font></font>
+    dbg-&gt;tx_state = txSendN;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txEnd:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0x00</span>;<font></font>
+    dbg-&gt;rx_state = rxWaitS;<font></font>
+    dbg-&gt;tx = <span class="hljs-number">0</span>;<font></font>
+    CLEAR_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txSendS2:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+    dbg-&gt;tx_state = txBrk;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txBrk:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xA5</span>;<font></font>
+    dbg-&gt;rx_state = rxWaitS;<font></font>
+    dbg-&gt;tx = <span class="hljs-number">0</span>;<font></font>
+    CLEAR_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+    <span class="hljs-keyword">break</span>;<font></font>
+  }<font></font>
+}</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Everything is pretty simple here. </font><font style="vertical-align: inherit;">Depending on the event that occurred, the interrupt handler calls either a receiving machine or a transmission machine. </font><font style="vertical-align: inherit;">To verify that everything works, we write a packet handler that responds with one byte:</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">parseAnswer</span><span class="hljs-params">()</span>
+</span>{
+  <span class="hljs-keyword">dbg_t</span>* dbg = dbgG;<font></font>
+  dbg-&gt;pos = <span class="hljs-number">1</span>;<font></font>
+  dbg-&gt;buf[<span class="hljs-number">0</span>] = <span class="hljs-number">0x33</span>;<font></font>
+  dbg-&gt;txCnt = <span class="hljs-number">0</span>;<font></font>
+  dbg-&gt;tx = <span class="hljs-number">1</span>;<font></font>
+  dbg-&gt;tx_state = txSendS;<font></font>
+  SET_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Compile, sew, run. </font><font style="vertical-align: inherit;">The result is visible on the screen, it worked.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Test exchange</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/yt/nh/ax/ytnhaxq7durfoqkvawblnjldrns.png"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Next, you need to implement command analogs from the GDB server protocol:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> memory reading</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> memory record</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> program stop</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> continued execution</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> kernel register read</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> kernel register entry</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> setting a breakpoint</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> delete breakpoint</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The command will be encoded with the first byte of data. </font><font style="vertical-align: inherit;">Codes of teams have numbers in the order of their implementation:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2 - read memory</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 3 - memory record</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 4 - stop</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 5 - continued</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 6 - read case</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 7 - install breakpoint</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 8 - clearing breakpoint</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 9 - step (failed to implement)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 10 - register entry (not implemented)</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Parameters will be transmitted in the following bytes of data. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The answer will not contain the command number, as </font><font style="vertical-align: inherit;">we already know which team sent. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To prevent the module from raising BusFault exceptions during read / write operations, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">you must mask it when used on M3 or higher, or write a HardFault handler for M0.</font></font></a><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Safe memcpy</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">memcpySafe</span><span class="hljs-params">(<span class="hljs-keyword">uint8_t</span>* to,<span class="hljs-keyword">uint8_t</span>* from, <span class="hljs-keyword">int</span> len)</span>
+</span>{
+    <span class="hljs-comment">/* Cortex-M3, Cortex-M4, Cortex-M4F, Cortex-M7 are supported */</span>
+    <span class="hljs-keyword">static</span> <span class="hljs-keyword">const</span> <span class="hljs-keyword">uint32_t</span> BFARVALID_MASK = (<span class="hljs-number">0x80</span> &lt;&lt; SCB_CFSR_BUSFAULTSR_Pos);
+    <span class="hljs-keyword">int</span> cnt = <span class="hljs-number">0</span>;<font></font>
+<font></font>
+    <span class="hljs-comment">/* Clear BFARVALID flag by writing 1 to it */</span><font></font>
+    SCB-&gt;CFSR |= BFARVALID_MASK;<font></font>
+<font></font>
+    <span class="hljs-comment">/* Ignore BusFault by enabling BFHFNMIGN and disabling interrupts */</span>
+    <span class="hljs-keyword">uint32_t</span> mask = __get_FAULTMASK();<font></font>
+    __disable_fault_irq();<font></font>
+    SCB-&gt;CCR |= SCB_CCR_BFHFNMIGN_Msk;<font></font>
+<font></font>
+    <span class="hljs-keyword">while</span> ((cnt&lt;len))<font></font>
+    {<font></font>
+      *(to++) = *(from++);<font></font>
+      cnt++;<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">/* Reenable BusFault by clearing  BFHFNMIGN */</span><font></font>
+    SCB-&gt;CCR &amp;= ~SCB_CCR_BFHFNMIGN_Msk;<font></font>
+    __set_FAULTMASK(mask);<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span> cnt;<font></font>
+}</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The breakpoint setting is implemented by searching for the first inactive register FP_COMP.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Code Installing Breakpoints</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs">	
+  dbg-&gt;pos = <span class="hljs-number">0</span>; <span class="hljs-comment">//  -    0</span>
+    addr = ((*(<span class="hljs-keyword">uint32_t</span>*)(&amp;dbg-&gt;buf[<span class="hljs-number">1</span>])))|<span class="hljs-number">1</span>; <span class="hljs-comment">//    FP_COMP</span>
+    <span class="hljs-keyword">for</span> (tmp = <span class="hljs-number">0</span>;tmp&lt;<span class="hljs-number">8</span>;tmp++) <span class="hljs-comment">//      breakpoint </span>
+      <span class="hljs-keyword">if</span> (FP-&gt;FP_COMP[tmp] == addr)
+        <span class="hljs-keyword">break</span>;<font></font>
+    <font></font>
+    <span class="hljs-keyword">if</span> (tmp!=<span class="hljs-number">8</span>) <span class="hljs-comment">//  , </span>
+      <span class="hljs-keyword">break</span>;<font></font>
+    <font></font>
+    <span class="hljs-keyword">for</span> (tmp=<span class="hljs-number">0</span>;tmp&lt;NUMOFBKPTS;tmp++) <span class="hljs-comment">//   </span>
+      <span class="hljs-keyword">if</span> (FP-&gt;FP_COMP[tmp]==<span class="hljs-number">0</span>) <span class="hljs-comment">// ?</span><font></font>
+      {<font></font>
+        FP-&gt;FP_COMP[tmp] = addr; <span class="hljs-comment">// </span>
+        <span class="hljs-keyword">break</span>; <span class="hljs-comment">//  </span><font></font>
+      }<font></font>
+    <span class="hljs-keyword">break</span>;</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Cleaning is done by searching for the set breakpoint. </font><font style="vertical-align: inherit;">Stopping execution sets breakpoint on the current PC. </font><font style="vertical-align: inherit;">When exiting the UART interrupt, the kernel immediately enters DebugMon_Handler. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The DebugMon handler itself is very simple:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1. The flag to stop execution is set.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2. All set breakpoints are cleared.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3. Waiting for completion of sending a response to the command in uart (if it did not have time to go)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4. The sending of the Interrupt sequence begins</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5. In the loop, the handlers of the transmit and receive machines are called until the stop flag is lowered.</font></font></li>
+</ul><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">DebugMon Handler Code</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DebugMon_Handler</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{<font></font>
+  dbgG-&gt;StopProgramm = <span class="hljs-number">1</span>; <span class="hljs-comment">//   </span><font></font>
+  <font></font>
+  <span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i=<span class="hljs-number">0</span>;i&lt;NUMOFBKPTS;i++) <span class="hljs-comment">//  breakpoint</span>
+    FP-&gt;FP_COMP[i] = <span class="hljs-number">0</span>;<font></font>
+  <font></font>
+  <span class="hljs-keyword">while</span> (USART6-&gt;CR1 &amp; USART_CR1_TXEIE) <span class="hljs-comment">//    </span>
+    <span class="hljs-keyword">if</span> ((USART6-&gt;ISR &amp; USART_ISR_TXE) != <span class="hljs-number">0U</span>)<font></font>
+      txCb();<font></font>
+<font></font>
+  <font></font>
+  dbgG-&gt;tx_state = txSendS2; <span class="hljs-comment">//   Interrupt </span>
+  dbgG-&gt;tx = <span class="hljs-number">1</span>;<font></font>
+  SET_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+<font></font>
+  <span class="hljs-keyword">while</span> (dbgG-&gt;StopProgramm) <span class="hljs-comment">//       </span><font></font>
+  {<font></font>
+  	<span class="hljs-comment">//   UART  </span>
+    <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_RXNE) != <span class="hljs-number">0U</span>)<font></font>
+        &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_RXNEIE) != <span class="hljs-number">0U</span>))<font></font>
+      rxCb(USART6-&gt;RDR);<font></font>
+<font></font>
+    <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_TXE) != <span class="hljs-number">0U</span>)<font></font>
+        &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_TXEIE) != <span class="hljs-number">0U</span>))<font></font>
+      txCb(); <font></font>
+  }<font></font>
+}</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Read kernel registers from C-Syshny when the task is problematic, so I rewrote some of the code on ASM. </font><font style="vertical-align: inherit;">The result is that neither DebugMon_Handler, nor the UART interrupt handler, nor the machines use the stack. </font><font style="vertical-align: inherit;">This simplified the definition of kernel register values.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Gdb server</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The microcontroller part of the debugger works, now let's write the link between the IDE and our module. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+From scratch, writing a debug server does not make sense, so let's take a ready-made one as a basis. </font><font style="vertical-align: inherit;">Since I have the most experience in developing programs on .net, I took </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">this</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> project </font><font style="vertical-align: inherit;">as a basis </font><font style="vertical-align: inherit;">and rewrote it to other requirements. </font><font style="vertical-align: inherit;">It would be more correct to add support for the new interface in OpenOCD, but it would take more time. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At startup, the program asks which COM port to work with, then starts listening on TCP port 3333 and waits for the GDB client to connect. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All GDB protocol commands are translated into a binary protocol. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result, a workable UART debugging implementation was released.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Final result</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/xh/fr/gx/xhfrgxceq7wpwoxewsbawr4nq8k.png"><br>
+</div></div><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusion</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It turned out that debugging the controller itself is not something super complicated. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Theoretically, by placing this module in a separate memory section, it can also be used to flash the controller. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The source files were posted on GitHub for the general study of the </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">microcontroller part of the </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GDB server</font></font></a></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en489530/index.html">What makes a reactive system good?</a></li>
+<li><a href="../en489532/index.html">What's new in Android 11 for users and developers</a></li>
+<li><a href="../en489534/index.html">Once again about the analysis of expressions using the recursive descent method</a></li>
+<li><a href="../en489536/index.html">Features of power supply systems using DDIBP</a></li>
+<li><a href="../en489538/index.html">Why don't developers like Agile?</a></li>
+<li><a href="../en489542/index.html">Nano or minimalistic IDE</a></li>
+<li><a href="../en489544/index.html">Resize images on the fly using Nginx and LuaJIT (OpenResty)</a></li>
+<li><a href="../en489546/index.html">Obturator manufacture for a respirator</a></li>
+<li><a href="../en489548/index.html">About 20 lines, about the same results: wc on Elixir</a></li>
+<li><a href="../en489550/index.html">7 tricks with Rest and Spread operators when working with JS objects</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

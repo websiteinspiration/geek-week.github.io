@@ -1,0 +1,233 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨‍🍳 👲 🚹 We write in PostgreSQL on a sublight: 1 host, 1 day, 1TB ⏺️ 🧕🏻 🤚🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="I recently talked about how to use the standard recipes to increase the performance of SQL “read” queries from a PostgreSQL database. Today we will ta...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>We write in PostgreSQL on a sublight: 1 host, 1 day, 1TB</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/497008/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I recently talked about how to use the standard recipes to </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">increase the performance of SQL “read” queries</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> from a PostgreSQL database. </font><font style="vertical-align: inherit;">Today we will talk about how </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">you can make recording</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in the database </font><b><font style="vertical-align: inherit;">more efficient</font></b><font style="vertical-align: inherit;"> without using any “twists” in the config — simply by correctly organizing the data flows.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/lv/ir/or/lvirorsnhddruod1aggj8x4fgei.png"></div><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">#1. </font><font style="vertical-align: inherit;">Partitioning</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+An article about how and why it is worth organizing </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">applied partitioning “in theory”</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> has already been, here we will focus on the practice of applying some approaches within the framework of our </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">monitoring service for hundreds of PostgreSQL servers</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<a name="habracut"></a><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"Cases of bygone days ..."</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Initially, like any MVP, our project started under a fairly small load - monitoring was carried out only for the ten most critical servers, all tables were relatively compact ... But time passed, there were more and more monitored hosts, and once again tried to do something with one of the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tables with a size of 1.5TB</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , we realized that although it’s possible to live on like this, it’s very inconvenient. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Times were almost epic, different PostgreSQL 9.x versions were relevant, so all the partitions had to be done “manually” - through </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">table inheritance and</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dynamic routing </font><b><font style="vertical-align: inherit;">triggers</font></b></font><code>EXECUTE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/tt/-k/sv/tt-ksvme0jrmkz2qzkh8va95pjs.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The resulting solution turned out to be universal enough to be able to translate it to all tables:</font></font><br>
+<br>
+<ul>
+<li>   «»  ,     <b>   </b>.</li>
+<li>       «» ,     <b> </b> <code>BEFORE INSERT</code>  «»    .      —     ...</li>
+<li>…   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><code>CREATE TABLE ... (LIKE ... INCLUDING ...)</code></a>      <b>     </b>,         .</li>
+</ul><br>
+<h4>PG10:  </h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But partitioning through inheritance has not historically been well suited to work with an active write stream or a large number of child sections. </font><font style="vertical-align: inherit;">For example, you may recall that the algorithm for selecting the desired section was of </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">quadratic complexity</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , that it works with 100+ sections, you yourself understand how ... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In PG10, this situation was greatly optimized by implementing support for </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">native partitioning</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Therefore, we immediately tried to apply it immediately after the migration of the storage, but ... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As it turned out after digging up the manual, the natively partitioned table in this version:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">does not support description of indexes</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">does not support triggers on it</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">cannot be itself any "descendant"</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">do not support </font></font><code>INSERT ... ON CONFLICT</code></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">can't spawn section automatically</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Painfully getting a rake on our forehead, we realized that we could not do without modifying the application, and postponed further research for six months.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PG10: Second Chance</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, we began to solve the problems in turn:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Since the triggers </font></font><code>ON CONFLICT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">turned out to be necessary in some places, we made an intermediate </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">proxy table</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to work them out </font><font style="vertical-align: inherit;">.</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We got rid of “routing”</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in triggers - that is, from </font></font><code>EXECUTE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">They took out a separate </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">template table with all indices</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> so that they were not even present on the proxy table.</font></font></li>
+</ol><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/sn/3h/ra/sn3hrac9yg0-hrifkjszy7fhih0.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Finally, after all this, the main table has already been natively partitioned. </font><font style="vertical-align: inherit;">Creating a new section has remained on the conscience of the application.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“Sawing” dictionaries</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As in any analytical system, we also had </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“facts” and “cuts”</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (dictionaries). In our case, in this capacity were, for example, the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">body of the “template” of the</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> same type of slow queries or the text of the query itself. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Our "facts" were partitioned by days for a long time, so we calmly deleted the obsolete sections, and they did not bother us (logs!). But with the dictionaries the trouble </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+turned out </font><font style="vertical-align: inherit;">... </font><font style="vertical-align: inherit;">Not to say that there were a lot of them, but about </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">100TB of “facts” turned out to be a dictionary for 2.5TB</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . You can’t conveniently delete anything from such a table, you won’t squeeze it in adequate time, and writing to it gradually became slower.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It seems like a dictionary ... in it each entry should be presented exactly once ... and that's right, but! .. Nobody bothers us to have </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">a separate dictionary for every day</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ! </font><font style="vertical-align: inherit;">Yes, this brings a certain redundancy, but it allows you to:</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">write / read faster</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> due to smaller section size</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">consume less memory</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> by working with more compact indexes</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">store less data</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> due to the ability to quickly remove obsolete</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result of the whole complex of measures </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, the CPU load decreased by ~ 30%, and by disk - by ~ 50%</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/re/uf/x0/reufx0_4pxhj6cci456x4eb6j8q.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the same time, we continued to write exactly the same thing to the database, just with less load.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 2 </font><font style="vertical-align: inherit;">Database evolution and refactoring</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, we settled on the fact that </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for each day we have our own section</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> with data. Actually, this </font></font><code>CHECK (dt = '2018-10-12'::date)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">is the partitioning key and the condition for the record to fall into a particular section. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since all the reports in our service are built according to a specific date, then the indices from the “non-partitioned times” were all types of them </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(Server, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Date</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , Plan Template)</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(Server, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Date</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , Plan Node)</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">( </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Date</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , Error Class, Server)</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , ... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But now each section has </font></font><u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">its own instances of</font></font></u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> each such index ... And within each section the </font></font><u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">date is constant</font></font></u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ... It turns out that now we are in each such index</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">we trivially enter a constant</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> as one of the fields, which makes both its volume and the search time on it more, but does not bring any result. </font><font style="vertical-align: inherit;">Themselves left a rake, oops ...</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/rv/to/de/rvtodengrwqlkufq8ovxlp71xn4.jpeg"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The direction of optimization is obvious - just </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">remove the date field from all indexes</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> on partitioned tables. </font><font style="vertical-align: inherit;">With our volumes, the gain is about </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1TB / week</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And now let's notice that this terabyte still had to be written down somehow. </font><font style="vertical-align: inherit;">That is, we also </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">have to load less disk now</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ! </font><font style="vertical-align: inherit;">In this picture you can clearly see the effect obtained from the cleaning, which we devoted a week to:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/x0/4d/dv/x04ddvnrw9ga5m5gt4fukn44vza.png"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 3 </font><font style="vertical-align: inherit;">“Smear” the peak load</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+One of the big troubles of loaded systems is the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">excessive synchronization of</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> some operations that do not require it. Sometimes “because they didn’t notice”, sometimes “it was easier”, but sooner or later you have to get rid of it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We bring the previous picture closer - and we see that the disk </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"shakes" with a load with a double amplitude</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> between adjacent samples, which obviously should not be "statistically" with so many operations: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/p4/9v/bw/p49vbwkzasfbjhcnudcmsqaxgaq.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To achieve this is quite simple. </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Almost 1000 servers</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> have already been started for monitoring </font><font style="vertical-align: inherit;">, each is processed by a separate logical stream, and each stream dumps the accumulated information for sending to the database with a certain frequency, something like this:</font></font><br>
+<br>
+<pre><code class="javascript hljs">setInterval(sendToDB, interval)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The problem here lies precisely in the fact that </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">all threads start at about the same time</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , so the sending times for them almost always coincide “to the point”. </font><font style="vertical-align: inherit;">Oops No. 2 ... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Fortunately, this is corrected quite easily by </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">adding a "random"</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> time </font><b><font style="vertical-align: inherit;">span</font></b><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<pre><code class="javascript hljs">setInterval(sendToDB, interval * (<span class="hljs-number">1</span> + <span class="hljs-number">0.1</span> * (<span class="hljs-built_in">Math</span>.random() - <span class="hljs-number">0.5</span>)))</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">#4. </font><font style="vertical-align: inherit;">Caching, that </font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">need</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> can be</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The third traditional highload problem is the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">lack of cache</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> where it </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">could</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> be. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For example, we made it possible to analyze the breakdown of the nodes of the plan (all of these </font></font><code>Seq Scan on users</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">), but immediately forgot that they, in the main, are the same, have forgotten. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No, of course, nothing is written to the database repeatedly, this cuts off the trigger with </font></font><code>INSERT ... ON CONFLICT DO NOTHING</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">But the data doesn’t reach the base anyway, and you have </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> do </font><font style="vertical-align: inherit;">extra </font><b><font style="vertical-align: inherit;">reading to check the conflict</font></b><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Oops No. 3 ... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The difference in the number of records sent to the database before / after enabling caching is obvious: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/nu/ed/jm/nuedjmsij1za8mx-dhkcvg36baw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And this is a concomitant drop in the storage load:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/oc/bx/hz/ocbxhzmmplggqzowyekkkl2lsk0.png"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Total</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Terabyte-per-day only sounds scary. </font><font style="vertical-align: inherit;">If you do everything right, then this is only </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2 ^ 40 bytes / 86400 seconds = ~ 12.5MB / s</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which even desktop IDE screws held. </font><font style="vertical-align: inherit;">:) </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But seriously, even with a tenfold “skew” of the load during the day, you can easily meet the possibilities of modern SSDs.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/in/7l/e5/in7le5modvgype2possbfitaqxy.jpeg"></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en496996/index.html">Features of data-driven in petrochemicals</a></li>
+<li><a href="../en496998/index.html">How untrained brains destroy the world in the era of coronavirus</a></li>
+<li><a href="../en497000/index.html">Power Automate VS Logic Apps. Features Logic Apps</a></li>
+<li><a href="../en497004/index.html">Discard activation (TRIM) on Linux for SSD</a></li>
+<li><a href="../en497006/index.html">MITM attacks from Dom.ru</a></li>
+<li><a href="../en497010/index.html">Investing in periods of market downturn: 3 strategies for behavior on the stock exchange</a></li>
+<li><a href="../en497014/index.html">Who are you, QA engineer or tester?</a></li>
+<li><a href="../en497016/index.html">April 13th Java Digest</a></li>
+<li><a href="../en497020/index.html">DocuSign, a popular digital signature service, now supports the GlobalSign infrastructure</a></li>
+<li><a href="../en497022/index.html">Updating corporate network access. New ExtremeSwitching X435 Gigabit Switches</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

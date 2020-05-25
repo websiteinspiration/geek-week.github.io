@@ -1,0 +1,295 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨‍👨‍👧 💧 👯 Go中的规划：第二部分-Go Scheduler 🧑🏾‍🤝‍🧑🏼 ⬇️ 👩‍🚒</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="哈Ha！这是由三部分组成的系列文章中的第二篇，它将给出Go语言中调度程序工作的机制和语义的概念。这篇文章是关于围棋计划者的。
+ 
+ 在本系列的第一部分中，我解释了操作系统调度程序的各个方面，我认为这些方面对于理解和评估Go调度程序的语义很重要。在这篇文章中，我将在语义级别上解释Go调度程序的工作方式...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Go中的规划：第二部分-Go Scheduler</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/489862/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">哈Ha！</font><font style="vertical-align: inherit;">这是由三部分组成的系列文章中的第二篇，它将给出Go语言中调度程序工作的机制和语义的概念。</font><font style="vertical-align: inherit;">这篇文章是关于围棋计划者的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在</font><font style="vertical-align: inherit;">本系列</font><font style="vertical-align: inherit;">的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第一部分中</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，我解释了操作系统调度程序的各个方面，我认为这些方面对于理解和评估Go调度程序的语义很重要。</font><font style="vertical-align: inherit;">在这篇文章中，我将在语义级别上解释Go调度程序的工作方式。</font><font style="vertical-align: inherit;">Go Scheduler是一个复杂的系统，小的机械细节并不重要。</font><font style="vertical-align: inherit;">重要的是要有一个良好的模型，说明一切如何工作和表现。</font><font style="vertical-align: inherit;">这将使您做出最佳的工程决策。</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您的程序正在启动</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当Go程序启动时，将为主机上定义的每个虚拟内核分配一个逻辑处理器（P）。如果您的处理器每个物理核心具有多个硬件线程（超线程），则每个硬件线程将作为虚拟核心呈现给您的程序。为了更好地理解这一点，请查看我的MacBook Pro的系统报告。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/b6e/2de/4a8/b6e2de4a805c6a87c95aa0afcef436ac.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以看到我有一个带有4个物理核心的处理器。该报告未披露每个物理核心的硬件线程数。英特尔酷睿i7处理器具有超线程技术，这意味着物理内核具有2个硬件线程。这表明Go可以使用8个虚拟内核来并行运行OS线程。要验证这一点，请考虑以下程序：</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">package</span> main<font></font>
+<font></font>
+<span class="hljs-keyword">import</span> (
+	<span class="hljs-string">"fmt"</span>
+	<span class="hljs-string">"runtime"</span><font></font>
+)<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">main</span><span class="hljs-params">()</span></span> {<font></font>
+<font></font>
+    <span class="hljs-comment">// NumCPU returns the number of logical</span>
+    <span class="hljs-comment">// CPUs usable by the current process.</span><font></font>
+    fmt.Println(runtime.NumCPU())<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当我在计算机上运行该程序时，调用NumCPU（）函数的结果将为8。我在计算机上运行的任何Go程序将获得8（P）。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+每个</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">P</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">被分配一个OS流（</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">M</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。该线程仍由操作系统管理，并且操作系统仍负责将线程放置在内核中以执行。这意味着，当我在计算机上运行Go时，我有8个线程可以用来完成工作，每个线程都单独链接到P。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+每个Go程序也都获得了一个初始Goroutine（</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">G</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">） Goroutine本质上是协程，但它是Go，因此我们将字母C替换为G并得到单词Goroutine。您可以将Goroutines视为应用程序级线程，它们很像OS线程。就像OS线程由内核打开和关闭一样，上下文程序也由上下文打开和关闭。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最后一个难题是执行队列。</font><font style="vertical-align: inherit;">Go调度程序中有两个不同的执行队列：全局执行队列（GRQ）和本地执行队列（LRQ）。</font><font style="vertical-align: inherit;">每个P都分配有一个LRQ，用于控制在P上下文中执行的goroutins。这些goroutine从分配给该P的上下文M中打开和关闭。GRQ用于尚未分配给P的goroutine。有一个移动goroutine的过程。从GRQ到LRQ，我们将在后面讨论。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该图将所有这些组件一起显示。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/114/13e/494/11413e494428c2540e349637f34bbec3.png" alt="图片"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">合作策划人</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+正如我们在第一篇文章中所说的，OS调度程序是抢占式调度程序。本质上，这意味着您无法在任何给定时间预测计划者将要做什么。内核做出决定，一切都是不确定的。运行在操作系统之上的应用程序无法通过调度来控制内核内部发生的事情，除非它们使用同步原语，例如原子指令和互斥体调用。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Go Scheduler是Go Runtime的一部分，并且Go Runtime内置在您的应用程序中。这意味着Go调度程序在内核的用户空间中工作。当前的Go调度程序实现不是抢先式的，而是交互式调度程序。成为合作计划员意味着计划员需要在用户空间中明确定义的事件，这些事件发生在代码中的安全点处，以做出计划决策。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Go的协作计划器的优点是外观和感觉都很主动。</font><font style="vertical-align: inherit;">您无法预测Go调度程序将要执行的操作。</font><font style="vertical-align: inherit;">这是由于以下事实：此调度程序的决策不取决于开发人员，而是取决于Go的执行时间。</font><font style="vertical-align: inherit;">将Go调度程序视为主动式调度程序很重要，并且由于该调度程序是不确定的，因此不太困难。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">戈鲁丁州</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+就像流一样，goroutine具有相同的三个高级状态。他们确定Go计划者在任何goroutine中所扮演的角色。 Goroutin可以处于以下三种状态之一：等待，就绪或完成。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">等待中</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：这意味着goroutine已停止并且正在等待继续。发生这种情况的原因可能是诸如等待操作系统（系统调用）或调用同步（原子和互斥操作）之类的原因。这些类型的延迟是性能不佳的主要原因。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">准备就绪</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：这意味着goroutine需要时间来遵循分配的指令。</font><font style="vertical-align: inherit;">如果您有很多需要时间的goroutine，则goroutine必须等待更长的时间才能获得时间。</font><font style="vertical-align: inherit;">另外，随着更多的goroutine争夺时间，减少了goroutine收到的时间。</font><font style="vertical-align: inherit;">这种类型的调度延迟也会导致性能下降。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实现</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：这意味着goroutine已被放置在M中并正在遵循其指令。</font><font style="vertical-align: inherit;">与应用程序关联的工作已经完成。</font><font style="vertical-align: inherit;">这就是每个人都想要的。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">上下文切换</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Go Scheduler需要定义明确的用户空间事件，这些事件发生在代码中的安全点以切换上下文。</font><font style="vertical-align: inherit;">这些事件和安全点出现在函数调用中。</font><font style="vertical-align: inherit;">函数调用对于Go Scheduler的性能至关重要。</font><font style="vertical-align: inherit;">如果执行任何不进行函数调用的窄循环，则将导致调度程序和垃圾回收中的延迟。</font><font style="vertical-align: inherit;">必须在合理的时间内发生函数调用。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Go程序中发生了四类事件，这些事件使计划者可以制定计划决策。</font><font style="vertical-align: inherit;">这并不意味着这将总是在这些事件之一中发生。</font><font style="vertical-align: inherit;">这意味着调度程序有机会。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用go关键字</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">垃圾收集器</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">系统调用</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同步化</font></font></li>
+</ul><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用go</font></font></i><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+关键字</font><i><font style="vertical-align: inherit;">go</font></i><font style="vertical-align: inherit;">关键字是创建goroutine的方式。</font><font style="vertical-align: inherit;">一旦创建了新的goroutine，它就会为计划者提供做出计划决策的机会。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">垃圾收集器（GC）</font></font></i><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+由于GC使用其自己的goroutine集合，因此这些gorutin需要M上的时间才能运行。</font><font style="vertical-align: inherit;">这迫使GC在规划中造成很多混乱。</font><font style="vertical-align: inherit;">但是，计划者对goroutine的工作非常聪明，他将使用它来制定决策。</font><font style="vertical-align: inherit;">一种合理的解决方案是将上下文切换到goroutine，该例程要访问系统资源，而在垃圾回收期间只能访问该资源。</font><font style="vertical-align: inherit;">GC运行时，会做出许多计划决策。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">系统调用</font></font></i><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果够程进行系统调用，这将使它块M，调度器可以在上下文切换到另一个的goroutine，到相同的M. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同步</font></font></i><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+如果到一个原子操作的呼叫，互斥或信道的原因的goroutine被阻塞，调度器可以切换上下文启动一个新的goroutine。</font><font style="vertical-align: inherit;">一旦goroutine可以再次工作，就可以将其排队，并最终切换回M。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">异步系统调用</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当您正在使用的操作系统能够异步处理系统调用时，可以使用所谓的网络轮询器来更有效地处理系统调用。</font><font style="vertical-align: inherit;">这是通过在这些各自的OS中使用kqueue（MacOS），epoll（Linux）或iocp（Windows）来实现的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们今天使用的许多操作系统都可以异步处理网络系统调用。这是网络轮询器显示的地方，因为它的主要目的是处理网络操作。通过使用网络轮询器进行网络系统调用，调度程序可以防止goroutine在这些系统调用期间阻塞M。这有助于保持M可用于执行LRQ P中的其他goroutine，而无需创建新的M。这有助于减轻OS中的计划负担。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+了解其工作方式的最佳方法是看一个例子。该图显示了我们的基本计划方案。 Gorutin-1在M上执行，另外3个Gorutin在LRQ中等待获取其在M上的时间。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/d76/7cd/b0f/d767cdb0fd640db3a84e3c87d14f38e3.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在下图中，Gorutin-1（G1）要进行网络系统调用，因此G1移至网络轮询器，并被视为异步网络系统调用。</font><font style="vertical-align: inherit;">将G1移至Network poller之后，M现在可用于从LRQ执行另一个goroutine。</font><font style="vertical-align: inherit;">在这种情况下，Gorutin-2切换到M。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/764/93f/af0/76493faf0f599eefae69938878e4ceb1.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在下图中，系统网络调用以异步网络调用结束，G1移回P的LRQ。在G1可以切换回M之后，即与Go关联的代码，为此他的答案可以再次执行。</font><font style="vertical-align: inherit;">最大的好处是不需要额外的女士来拨打网络系统电话。</font><font style="vertical-align: inherit;">网络轮询器具有OS线程，并且它通过事件循环进行处理。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同步系统调用</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当goroutine想要进行无法异步执行的系统调用时会发生什么？</font><font style="vertical-align: inherit;">在这种情况下，将无法使用网络轮询器，并且进行系统调用的goroutine将阻止M。这很不好，但是无法防止这种情况。</font><font style="vertical-align: inherit;">不能异步进行的系统调用的一个示例是基于文件的系统调用。</font><font style="vertical-align: inherit;">如果使用CGO，则在其他情况下，调用C函数也会阻塞M。</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Windows操作系统可以进行基于文件的异步系统调用。</font><font style="vertical-align: inherit;">从技术上讲，在Windows上工作时，可以使用网络轮询器。</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">让我们看看将阻塞M的同步系统调用（例如，文件I / O）会发生什么。该图显示了我们的基本计划图，但是这次G1将进行将阻塞M1的同步系统调用。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/747/549/a28/747549a28a7a627a3cbd98fffe728fad.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在下图中，调度程序可以确定G1引起了M锁定，此时，调度程序将M1与P断开连接，同时仍附加有阻塞G1。然后，调度程序引入一个新的M2服务于P。这时，可以从LRQ中选择G2，并将其包含在M2上下文中。如果由于先前的交换已存在M，则此过渡比创建新M的需要快。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/966/30c/3dd/96630c3dd34a06fbc5ed5f8b4c8bdfbc.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下一步完成由G1进行的锁定系统调用。</font><font style="vertical-align: inherit;">此时，G1可以返回LRQ并由P再次提供服务。如果应该重复这种情况，则M1可以留作将来使用。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/553/0ed/f8c/5530edf8c481aee13a40ff0b55e8e1ed.png" alt="图片"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">偷工作</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+调度程序的另一个方面是它是goroutine防盗计划程序。这有助于在几个方面支持有效的计划。首先，您需要做的最后一件事是让M进入待机状态，因为一旦发生这种情况，操作系统就会使用上下文从内核切换M。这意味着，即使有一个Goroutine处于正常状态，P也无法执行任何工作，直到M切换回内核。 Gorutin盗窃案还有助于平衡所有P之间的时间间隔，以便更好地分配工作并更有效地执行工作。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在图中，我们有一个多线程Go程序，其中有两个P分别为四个G提供服务，在GRQ中提供一个G。如果P中的一个快速服务其所有G，会发生什么？</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/e1a/745/eaa/e1a745eaaeab4e91bf35e80d8f16ae34.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此外，P1不再具有要执行的goroutine。但是在P2的LRQ和GRQ中都有工作状态的goroutine。这是P1需要窃取goroutine的时刻。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/6f6/190/ccc/6f6190cccec8213c27cadfbb03b67767.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+窃取goroutine的规则如下。可以在运行时源中查看所有代码。</font></font><br>
+<br>
+<pre><code class="go hljs">runtime.schedule() {
+    <span class="hljs-comment">// only 1/61 of the time, check the global runnable queue for a G.</span>
+    <span class="hljs-comment">// if not found, check the local queue.</span>
+    <span class="hljs-comment">// if not found,</span>
+    <span class="hljs-comment">//     try to steal from other Ps.</span>
+    <span class="hljs-comment">//     if not, check the global runnable queue.</span>
+    <span class="hljs-comment">//     if not found, poll network.</span><font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，基于这些规则，P1应该在其LRQ中检查P2中是否存在goroutine，并取其发现结果的一半。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/af2/b9b/ec2/af2b9bec21571656e051799fb3213020.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果P2完成其所有程序的服务并且P1在LRQ中没有剩余，该怎么办？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+P2已经完成了所有工作，现在必须窃取goroutine。</font><font style="vertical-align: inherit;">首先，他将研究LRQ P1，但不会找到任何Goroutine。</font><font style="vertical-align: inherit;">接下来，他将看GRQ。</font><font style="vertical-align: inherit;">在那里他会找到G9。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/4f8/2db/b86/4f82dbb86b9005e458097587792dd462.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+P2从GRQ窃取G9并开始执行该工作。</font><font style="vertical-align: inherit;">所有这些盗窃的好处是，它使M可以保持忙碌而不会处于非活动状态。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/e12/221/a4a/e12221a4ad60695c5c5c97837e30cfbb.png" alt="图片"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实际例子</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通过机制和语义，我想向您展示所有这些如何结合在一起，以便Go调度程序可以随时间做更多的工作。想象一下用C编写的多线程应用程序，其中的程序管理着两个相互发送消息的OS线程。图片中有2个线程来回发送消息。线程1接收上下文切换的内核1，并且现在正在运行，它允许线程1将其消息发送到线程2。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/bb3/6fb/00d/bb36fb00db345441ca295dd01d153b2b.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此外，线程1完成发送消息后，现在需要等待响应。这将导致线程1与内核1的上下文断开连接，并进入等待状态。线程2收到消息通知后，便进入正常状态。现在，OS可以执行上下文切换，并在内核上运行线程2，该线程最终是内核2。然后，线程2处理消息并将新消息发送回线程1。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/4af/66e/0fe/4af66e0fe8440f757063603b6bc161a2.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接下来，当流1接收到来自流2的消息时，流切换回上下文。现在，流2从运行状态切换到待机状态，流1从待机状态切换到就绪状态，最后返回到运行状态，从而允许它进行处理并发回一条新消息。所有这些上下文切换和状态更改都需要时间才能完成，这限制了工作速度。由于每个上下文切换都需要约1000纳秒的延迟，并且我们希望硬件每纳秒执行12条指令，因此您可以查看12,000条在这些上下文切换期间或多或少没有执行的指令。由于这些流动也相交于不同的原子核之间，额外的高速缓存行未命中延迟的可能性也很高。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/a45/b47/127/a45b47127d054f2b56b6c2534c9150bf.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在该图中，有两个猩猩彼此和谐相处，来回传递信息。 G1获取上下文切换M1，该上下文切换M1运行在Core 1上，从而使G1能够完成其工作。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/977/b59/78c/977b5978ca8daa9bfc186c77c901565a.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此外，当G1完成发送消息后，现在他需要等待响应。这将导致G1与M1上下文断开连接并进入空闲状态。通知G2消息后，它便进入健康状态。现在，Go调度程序可以执行上下文切换，并在仍在核心1上运行的M1上运行G2。然后G2处理该消息并将新消息发送回G1。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/3e8/86c/003/3e886c003a64536731234abde2746ca2.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下一步，当G1收到G2发送的消息时，一切都会再次切换。现在，上下文G2从执行状态切换到等待状态，上下文G1从等待状态切换到执行状态，最后回到执行状态，这使其可以处理并发送新消息。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/4db/97b/a31/4db97ba314fa8b14bf6497dcaf15135a.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+表面上的东西似乎没有什么不同。无论使用Streams还是Goroutines，都会发生所有相同的上下文更改和状态更改。但是，使用Streams和Gorutin之间存在很大差异，乍一看可能并不明显。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果使用goroutine，则将相同的OS线程和内核用于所有处理。这意味着从OS的角度来看，OS Flow永远不会进入等待状态。决不。结果，在使用流时切换上下文时丢失的所有那些指令在使用goroutin时不会丢失。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从本质上讲，Go在OS级别将IO /阻塞工作变成了处理器绑定的工作。由于所有上下文切换都发生在应用程序级别，因此与使用流时丢失的上下文切换相比，我们不会平均丢失大约一万二千条指令。在Go中，相同的上下文切换花费约200纳秒或约2.4千个命令。调度程序还有助于提高缓存字符串和</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">NUMA</font></a><font style="vertical-align: inherit;">的性能</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">这就是为什么我们不需要的线程多于虚拟内核。</font><font style="vertical-align: inherit;">随着时间的推移，Go可以做更多的工作，因为Go调度程序尝试使用更少的线程，并在每个线程上执行更多操作，这有助于减少OS和硬件上的负载。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结论</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Go Scheduler在考虑到操作系统和硬件的复杂性方面确实令人惊奇。在操作系统级别将I / O /锁定操作转换为处理器绑定操作的能力使我们在使用更多的处理器功能方面获得了长足的收获。这就是为什么您不需要虚拟内核的操作系统线程。您可以合理地预期所有工作（通过CPU绑定和I / O /锁）将通过每个虚拟内核一个OS线程来完成。对于网络应用程序和其他不需要阻塞OS线程的系统调用的应用程序，这是可能的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+作为开发人员，您仍然应该了解应用程序在工作类型方面的作用。</font><font style="vertical-align: inherit;">您不能创建无限数量的goroutine，并期望获得惊人的性能。</font><font style="vertical-align: inherit;">更少总是更多，但是了解了Go调度程序的这种语义后，您可以做出更好的工程决策。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN489852/index.html">Linux上的ASP.Net Core中的透明身份验证</a></li>
+<li><a href="../zh-CN489854/index.html">Redux vs MobX毫不困惑</a></li>
+<li><a href="../zh-CN489856/index.html">Banach-Tarski反向悖论或如何将存储的数据量减少五倍</a></li>
+<li><a href="../zh-CN489858/index.html">国际化：使所有人都可以访问Web</a></li>
+<li><a href="../zh-CN489860/index.html">德律风根的历史：从威廉二世和戈培尔到甲壳虫到今天的德国电子凤凰</a></li>
+<li><a href="../zh-CN489868/index.html">冻结Mozilla WebThings</a></li>
+<li><a href="../zh-CN489870/index.html">下诺夫哥罗德的Node.js强化的免费离线</a></li>
+<li><a href="../zh-CN489872/index.html">DLP系统和OCR模块如何防止员工伪造护照扫描</a></li>
+<li><a href="../zh-CN489874/index.html">从Linux交叉编译Rust for Windows可执行文件</a></li>
+<li><a href="../zh-CN489876/index.html">我们如何解决三个整体问题</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

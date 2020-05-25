@@ -1,0 +1,212 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👼🏽 🤴🏿 🛫 使用ElasticSearch对高负载项目进行负载优化 🧢 🧑🏾‍🤝‍🧑🏼 🚵</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="哈Ha！我叫Maxim Vasiliev，我是FINCH的分析师和项目经理。今天，我想告诉您，在ElasticSearch的帮助下，我们如何能够在6分钟内处理1,500万个查询，并优化其中一位客户的站点的每日负载。不幸的是，由于我们拥有NDA，因此我们必须没有名称，我们希望本文的内容不会受到影响。走...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>使用ElasticSearch对高负载项目进行负载优化</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/503214/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">哈Ha！</font><font style="vertical-align: inherit;">我叫Maxim Vasiliev，我是FINCH的分析师和项目经理。</font><font style="vertical-align: inherit;">今天，我想告诉您，在ElasticSearch的帮助下，我们如何能够在6分钟内处理1,500万个查询，并优化其中一位客户的站点的每日负载。</font><font style="vertical-align: inherit;">不幸的是，由于我们拥有NDA，因此我们必须没有名称，我们希望本文的内容不会受到影响。</font><font style="vertical-align: inherit;">走吧</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">项目安排方式</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在我们的后端，我们创建可确保客户站点和移动应用程序性能的服务。</font><font style="vertical-align: inherit;">在图中可以看到一般结构：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sv/yw/mx/svywmxdiqxb59mwxobsses8vrc8.png" alt="图片"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在此过程中，我们处理大量交易：购买，付款，具有用户余额的操作，我们在其中存储大量日志，并将此数据导入和导出到外部系统。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当我们从客户端接收数据并将其传输给用户时，也存在反向过程。</font><font style="vertical-align: inherit;">此外，还有一些用于支付和奖金计划的流程。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">背景短</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初，我们使用PostgreSQL作为唯一的数据仓库。它对DBMS的标准优势：交易的可用性，开发的数据采样语言，广泛的集成工具；再加上良好的性能，满意的人们早已满足了我们的需求。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们绝对将所有数据存储在Postgres中：从交易到新闻。但是用户数量增加了，请求数量也随之增加了。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为理解起见，2017年仅台式机站点的年度会话数为1.31亿.2018年为1.25亿，2019年又为1.3亿。从移动版本的站点和移动应用程序再增加100-200百万，您将收到大量的请求。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+随着项目的增长，Postgres不再应付负载，我们没有时间-出现了大量的各种查询，在这些查询之下我们无法创建足够数量的索引。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们意识到，需要其他数据仓库来满足我们的需求并减轻PostgreSQL的负担。</font><font style="vertical-align: inherit;">Elasticsearch和MongoDB被认为是可能的选择。</font><font style="vertical-align: inherit;">后者失去了以下几点：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">随着索引中数据量的增加，索引速度变慢。</font><font style="vertical-align: inherit;">在Elastic上，速度与数据量无关。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">没有全文搜索</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，我们为自己选择了Elastic并为过渡做好了准备。 </font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">切换到弹性</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1.我们从销售点搜索服务开始了过渡。</font><font style="vertical-align: inherit;">我们的客户总共有大约70,000个销售点，并且需要在网站和应用程序中进行几种搜索：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通过城市名称进行文字搜索</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从某个点开始以给定半径进行地理搜索。</font><font style="vertical-align: inherit;">例如，如果用户想查看哪些销售点最接近他的家。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">按给定的正方形进行搜索-用户在地图上绘制一个正方形，并向他显示该半径内的所有点。 </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">搜索其他过滤器。</font><font style="vertical-align: inherit;">销售点在分类上互不相同</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+说到组织，那么在Postgres中，我们在地图和新闻上都有数据源，而在Elastic Snapshot中，快照是由原始数据制成的。事实是，一开始Postgres无法满足所有条件的搜索。不仅有很多索引，而且它们也可以相交，所以Postgres调度程序迷路了，不知道要使用哪个索引。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2.接下来是新闻部分。每天，出版物都会出现在网站上，以使用户不会迷失在信息流中，必须在发布之前对数据进行排序。为此，您需要搜索：在站点上，您可以按文本匹配进行搜索，同时连接其他过滤器，因为它们也是通过Elastic制作的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3.然后，我们进行了交易处理。</font><font style="vertical-align: inherit;">用户可以在网站上购买特定产品并参加抽奖。</font><font style="vertical-align: inherit;">购买此类产品后，我们会处理大量数据，尤其是在周末和节假日。</font><font style="vertical-align: inherit;">相比之下，如果在平常的日子里购买次数在1.5到200万之间，那么在假日这一数字可以达到5300万。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同时，数据需要在最短的时间内处理-用户不希望等待几天的结果。</font><font style="vertical-align: inherit;">您无法通过Postgres达到这样的截止日期-我们经常会锁，并且在处理所有请求时，用户无法检查他们是否收到奖品。</font><font style="vertical-align: inherit;">这对于业务而言不是很令人满意，因此我们将处理移至Elasticsearch。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">周期性</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，在以下情况下，按事件配置更新：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">销售点。</font><font style="vertical-align: inherit;">一旦有来自外部来源的数据提供给我们，我们将立即开始更新。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">新闻。</font><font style="vertical-align: inherit;">在网站上编辑任何新闻后，该新闻将自动发送到Elastic。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+再次在这里，值得一提的是Elastic的优势。</font><font style="vertical-align: inherit;">在Postgres中，发送请求时，您需要等待，直到它诚实地处理了所有记录。</font><font style="vertical-align: inherit;">您可以将1万条记录发送到Elastic，并立即开始工作，而无需等到记录分散到所有Shard中。</font><font style="vertical-align: inherit;">当然，某些分片或副本可能不会立即显示数据，但很快所有内容都将可用。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">整合方法</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有两种与Elastic集成的方式：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通过本机客户端通过TCP。</font><font style="vertical-align: inherit;">本机驱动程序正在逐渐消失：不再受支持，它的语法非常不方便。</font><font style="vertical-align: inherit;">因此，我们实际上不使用它，而是尝试完全放弃它。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通过HTTP接口，您可以在其中同时使用JSON请求和Lucene语法。</font><font style="vertical-align: inherit;">后者是使用Elastic的文本引擎。</font><font style="vertical-align: inherit;">在此选项中，我们可以通过HTTP批处理JSON请求。</font><font style="vertical-align: inherit;">这是我们正在尝试使用的选项。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于有了HTTP接口，我们可以使用提供HTTP客户端异步实现的库。</font><font style="vertical-align: inherit;">我们可以利用Batch和异步API的优势，它们最终提供了高性能，这在执行大型操作的过程中</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+起到</font><font style="vertical-align: inherit;">了很大的帮助作用（请参见下文）</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">节省在20个流中没有分组的情况下在Postgres中获得奖品的用户：42秒内获得460,713个条目</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">弹性+响应式客户端10个线程+批处理1000个元素：596749条记录在11秒内</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">弹性+响应式客户端10个线程+批处理1000个元素：</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4分钟内记录23801684</font></font></b></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，我们已经编写了一个HTTP请求管理器，它以批处理/而不是批处理的形式构建JSON，并通过任何HTTP客户端将其发送，而与库无关。</font><font style="vertical-align: inherit;">您也可以选择同步或异步发送请求。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在某些集成中，我们仍然使用官方的传输客户端，但这只是重构的问题。</font><font style="vertical-align: inherit;">同时，使用基于Spring WebClient构建的自定义客户端进行处理。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/x2/sx/qg/x2sxqgijaic0-ldqbrjlwse_tp0.jpeg" alt="图片"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大促销</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+每年一次，针对该项目的用户都会进行一次大型活动-这就是相同的Highload，因为此时我们同时与数千万用户一起工作。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常，高峰时段会在假期期间出现，但是这种提升是完全不同的水平。在促销的前一天，我们卖出了27,580,890单位商品。数据处理时间超过半小时，给用户带来不便。用户因参与而获得奖励，但是很明显，这一过程需要加快。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在2019年初，我们决定需要ElasticSearch。整整一年，我们在Elastic中组织了对接收到的数据的处理，并在移动应用程序和站点的api中对其输出进行了组织。结果，在竞选活动的第二年，我们</font><b><font style="vertical-align: inherit;">在6分钟内</font></b><font style="vertical-align: inherit;">处理了</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">15 131 783条记录。</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于我们有很多人想要购买商品并参加促销中的抽奖活动，因此这是一种临时措施。</font><font style="vertical-align: inherit;">现在我们将相关信息发送到Elastic，但是将来我们计划将过去几个月的存档信息作为永久存储库转移到Postgres。</font><font style="vertical-align: inherit;">为了不阻塞弹性索引，这也有其局限性。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结论/结论</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+目前，我们已将所需的所有服务转移到了Elastic并暂时停止了。</font><font style="vertical-align: inherit;">现在，我们在Postgres的主要持久性存储之上的Elastic中建立索引，该索引会承担用户负载。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+将来，如果我们了解到数据请求变得过于多样化并且受到无数列的搜索，我们计划转移服务。</font><font style="vertical-align: inherit;">对于Postgres来说，这不再是一项任务。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果我们需要在功能中进行全文搜索，或者我们有很多不同的搜索条件，那么我们已经知道需要将其转换为Elastic。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">⌘⌘⌘</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+谢谢阅读。</font><font style="vertical-align: inherit;">如果您的公司也使用ElasticSearch并有自己的实现案例，请告诉我们。</font><font style="vertical-align: inherit;">知道其他人的状况会很有趣:-)</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN503200/index.html">YOLOv4-Microsoft COCO数据集上最准确的实时神经网络</a></li>
+<li><a href="../zh-CN503204/index.html">如何在Android 10上闪烁小米Redmi 4 Prime / Pro / Premium</a></li>
+<li><a href="../zh-CN503208/index.html">什么时候是最佳投资时间？</a></li>
+<li><a href="../zh-CN503210/index.html">网络钓鱼站点可以根除吗？</a></li>
+<li><a href="../zh-CN503212/index.html">30个生活技巧，可完成在线课程</a></li>
+<li><a href="../zh-CN503218/index.html">GlobalSign推出Atlas-下一代PKI平台</a></li>
+<li><a href="../zh-CN503226/index.html">是什么在阻止企业迈向“数字”，它与声誉有何关系？</a></li>
+<li><a href="../zh-CN503228/index.html">在通过音乐反馈慢跑时控制心率-或“喜欢跑步的测试者正在寻找”</a></li>
+<li><a href="../zh-CN503230/index.html">事件响应平台类系统：应用程序和主要功能</a></li>
+<li><a href="../zh-CN503232/index.html">如何在六个月甚至更快的时间内成为一名DevOps工程师。第6部分。启动应用程序</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

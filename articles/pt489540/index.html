@@ -1,0 +1,461 @@
+<!doctype html>
+<html class="no-js" lang="pt">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👣 🆙 🧐 Depurando Microcontroladores ARM Cortex-M pela UART Parte 2 ❌ ↔️ 👨🏾‍🍳</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="No último artigo, falei sobre a interrupção do DebugMon e os registros associados a ela. 
+ 
+ Neste artigo, escreveremos a implementação do depurador p...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Depurando Microcontroladores ARM Cortex-M pela UART Parte 2</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/489540/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">No último </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">artigo,</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> falei sobre a interrupção do DebugMon e os registros associados a ela. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Neste artigo, escreveremos a implementação do depurador para UART.</font></font><br>
+<a name="habracut"></a><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Peça de baixo nível</font></font></h4><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Aqui</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">aqui,</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> há uma descrição da estrutura de solicitações e respostas do servidor GDB. </font><font style="vertical-align: inherit;">Embora pareça simples, não o implementaremos no microcontrolador pelos seguintes motivos:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Redundância de big data. </font><font style="vertical-align: inherit;">Endereços, valores de registradores, variáveis ​​são codificadas como uma sequência hexadecimal, o que aumenta o volume da mensagem em 2 vezes</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> A análise e a coleta de mensagens exigirão recursos adicionais</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O rastreamento do final do pacote é necessário por tempo limite (o cronômetro estará ocupado) ou por uma máquina automática complexa, que aumentará o tempo gasto na interrupção do UART </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para obter o módulo de depuração mais fácil e rápido, usaremos um protocolo binário com sequências de controle:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0xFF - Início do quadro </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0x00 - Fim do quadro </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0xA5 - Interrupção </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0xAA - Substituído por 0xAA </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para processar essas seqüências durante a recepção, é necessário um autômato com 4 estados:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Aguardando o caractere ESC</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Aguardando o segundo caractere do início da sequência de quadros</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Recepção de dados</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> A última vez que um caractere Esc foi aceito</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mas para enviar estados, você já precisa do 7:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Enviando o primeiro byte Início do quadro</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Enviando um segundo byte Início do quadro</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Enviando dados</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Enviando Fim do quadro</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Enviando substituição de caracteres Esc</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Enviando o primeiro byte de interrupção</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Enviando segundo byte de interrupção</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Vamos escrever a definição da estrutura dentro da qual todas as variáveis ​​do módulo estarão localizadas:</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> 
+{</span>    
+  <span class="hljs-comment">// disable receive data</span>
+  <span class="hljs-keyword">unsigned</span> tx:<span class="hljs-number">1</span>;
+  <span class="hljs-comment">// program stopped</span>
+  <span class="hljs-keyword">unsigned</span> StopProgramm:<span class="hljs-number">1</span>;
+  <span class="hljs-keyword">union</span> {
+    <span class="hljs-keyword">enum</span> rx_state_e <font></font>
+    {<font></font>
+      rxWaitS = <span class="hljs-number">0</span>, <span class="hljs-comment">// wait Esc symbol</span>
+      rxWaitC = <span class="hljs-number">1</span>, <span class="hljs-comment">// wait Start of frame</span>
+      rxReceive = <span class="hljs-number">2</span>, <span class="hljs-comment">// receiving</span>
+      rxEsc = <span class="hljs-number">3</span>, <span class="hljs-comment">// Esc received</span><font></font>
+    } rx_state;<font></font>
+    <span class="hljs-keyword">enum</span> tx_state_e <font></font>
+    {<font></font>
+      txSendS = <span class="hljs-number">0</span>, <span class="hljs-comment">// send first byte of Start of frame</span>
+      txSendC = <span class="hljs-number">1</span>, <span class="hljs-comment">// send second byte</span>
+      txSendN = <span class="hljs-number">2</span>, <span class="hljs-comment">// send byte of data</span>
+      txEsc = <span class="hljs-number">3</span>,   <span class="hljs-comment">// send escaped byte of data</span>
+      txEnd = <span class="hljs-number">4</span>,   <span class="hljs-comment">// send End of frame</span>
+      txSendS2 = <span class="hljs-number">5</span>,<span class="hljs-comment">// send first byte of Interrupt</span>
+      txBrk = <span class="hljs-number">6</span>,   <span class="hljs-comment">// send second byte</span><font></font>
+    } tx_state;<font></font>
+  };<font></font>
+  <span class="hljs-keyword">uint8_t</span> pos; <span class="hljs-comment">// receive/send position</span>
+  <span class="hljs-keyword">uint8_t</span> buf[<span class="hljs-number">128</span>]; <span class="hljs-comment">// offset = 3</span>
+  <span class="hljs-keyword">uint8_t</span> txCnt; <span class="hljs-comment">// size of send data</span>
+} <span class="hljs-keyword">dbg_t</span>;
+<span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> dbgG ((dbg_t*)DBG_ADDR) <span class="hljs-comment">//   ,         </span></span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Os estados das máquinas de recebimento e transmissão são combinados em uma variável, pois o trabalho será realizado no modo half duplex. </font><font style="vertical-align: inherit;">Agora você pode escrever autômatos com um manipulador de interrupções.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Manipulador UART</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">USART6_IRQHandler</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{
+  <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_RXNE) != <span class="hljs-number">0U</span>)<font></font>
+      &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_RXNEIE) != <span class="hljs-number">0U</span>))<font></font>
+  {<font></font>
+    rxCb(USART6-&gt;RDR);<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+  }<font></font>
+<font></font>
+  <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_TXE) != <span class="hljs-number">0U</span>)<font></font>
+      &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_TXEIE) != <span class="hljs-number">0U</span>))<font></font>
+  {<font></font>
+    txCb();<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+  }<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">rxCb</span><span class="hljs-params">(<span class="hljs-keyword">uint8_t</span> byte)</span>
+</span>{
+  <span class="hljs-keyword">dbg_t</span>* dbg = dbgG; <span class="hljs-comment">// debug vars pointer</span><font></font>
+  <font></font>
+  <span class="hljs-keyword">if</span> (dbg-&gt;tx) <span class="hljs-comment">// use half duplex mode</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+  <font></font>
+  <span class="hljs-keyword">switch</span>(dbg-&gt;rx_state)<font></font>
+  {<font></font>
+  <span class="hljs-keyword">default</span>:
+  <span class="hljs-keyword">case</span> rxWaitS:
+    <span class="hljs-keyword">if</span> (byte==<span class="hljs-number">0xAA</span>)<font></font>
+      dbg-&gt;rx_state = rxWaitC;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> rxWaitC:
+    <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0xFF</span>)<font></font>
+      dbg-&gt;rx_state = rxReceive;<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+      dbg-&gt;rx_state = rxWaitS;<font></font>
+    dbg-&gt;pos = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> rxReceive:
+    <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0xAA</span>)<font></font>
+      dbg-&gt;rx_state = rxEsc;<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+      dbg-&gt;buf[dbg-&gt;pos++] = byte;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> rxEsc:
+    <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0xAA</span>)<font></font>
+    {<font></font>
+      dbg-&gt;buf[dbg-&gt;pos++] = byte;<font></font>
+      dbg-&gt;rx_state  = rxReceive;<font></font>
+    }<font></font>
+    <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0x00</span>)<font></font>
+    {<font></font>
+      parseAnswer();<font></font>
+    }<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+      dbg-&gt;rx_state = rxWaitS;<font></font>
+  }<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">txCb</span><span class="hljs-params">()</span>
+</span>{
+  <span class="hljs-keyword">dbg_t</span>* dbg = dbgG;
+  <span class="hljs-keyword">switch</span> (dbg-&gt;tx_state)<font></font>
+  {<font></font>
+  <span class="hljs-keyword">case</span> txSendS:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+    dbg-&gt;tx_state = txSendC;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txSendC:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xFF</span>;<font></font>
+    dbg-&gt;tx_state = txSendN;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txSendN:
+    <span class="hljs-keyword">if</span> (dbg-&gt;txCnt&gt;=dbg-&gt;pos)<font></font>
+    {<font></font>
+      USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+      dbg-&gt;tx_state = txEnd;<font></font>
+      <span class="hljs-keyword">break</span>;<font></font>
+    }<font></font>
+    <span class="hljs-keyword">if</span> (dbg-&gt;buf[dbg-&gt;txCnt]==<span class="hljs-number">0xAA</span>)<font></font>
+    {<font></font>
+      USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+      dbg-&gt;tx_state = txEsc;<font></font>
+      <span class="hljs-keyword">break</span>;<font></font>
+    }<font></font>
+    USART6-&gt;TDR = dbg-&gt;buf[dbg-&gt;txCnt++];<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txEsc:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+    dbg-&gt;txCnt++;<font></font>
+    dbg-&gt;tx_state = txSendN;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txEnd:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0x00</span>;<font></font>
+    dbg-&gt;rx_state = rxWaitS;<font></font>
+    dbg-&gt;tx = <span class="hljs-number">0</span>;<font></font>
+    CLEAR_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txSendS2:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+    dbg-&gt;tx_state = txBrk;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txBrk:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xA5</span>;<font></font>
+    dbg-&gt;rx_state = rxWaitS;<font></font>
+    dbg-&gt;tx = <span class="hljs-number">0</span>;<font></font>
+    CLEAR_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+    <span class="hljs-keyword">break</span>;<font></font>
+  }<font></font>
+}</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tudo é bem simples aqui. </font><font style="vertical-align: inherit;">Dependendo do evento que ocorreu, o manipulador de interrupção chama uma máquina receptora ou uma máquina de transmissão. </font><font style="vertical-align: inherit;">Para verificar se tudo funciona, escrevemos um manipulador de pacotes que responde com um byte:</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">parseAnswer</span><span class="hljs-params">()</span>
+</span>{
+  <span class="hljs-keyword">dbg_t</span>* dbg = dbgG;<font></font>
+  dbg-&gt;pos = <span class="hljs-number">1</span>;<font></font>
+  dbg-&gt;buf[<span class="hljs-number">0</span>] = <span class="hljs-number">0x33</span>;<font></font>
+  dbg-&gt;txCnt = <span class="hljs-number">0</span>;<font></font>
+  dbg-&gt;tx = <span class="hljs-number">1</span>;<font></font>
+  dbg-&gt;tx_state = txSendS;<font></font>
+  SET_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Compilar, costurar, correr. </font><font style="vertical-align: inherit;">O resultado é visível na tela, funcionou.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Troca de teste</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/yt/nh/ax/ytnhaxq7durfoqkvawblnjldrns.png"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em seguida, você precisa implementar os análogos de comando do protocolo do servidor GDB:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> leitura de memória</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> registro de memória</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> parada do programa</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> execução continuada</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> leitura do registro do kernel</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> entrada de registro do kernel</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> definindo um ponto de interrupção</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> excluir ponto de interrupção</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O comando será codificado com o primeiro byte de dados. </font><font style="vertical-align: inherit;">Os códigos das equipes têm números na ordem de sua implementação:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2 - ler memória</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 3 - registro de memória</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 4 - parar</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 5 - continuação</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 6 - ler caso</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 7 - instalar ponto de interrupção</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 8 - ponto de interrupção de limpeza</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 9 - etapa (falha ao implementar)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 10 - entrada de registro (não implementada)</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Os parâmetros serão transmitidos nos seguintes bytes de dados. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A resposta não conterá o número do comando, como </font><font style="vertical-align: inherit;">já sabemos qual equipe enviou. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para impedir que o módulo cause exceções do BusFault durante operações de leitura / gravação, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">você deve mascará-lo quando usado no M3 ou superior, ou gravar um manipulador do HardFault para o M0.</font></font></a><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Memcpy seguro</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">memcpySafe</span><span class="hljs-params">(<span class="hljs-keyword">uint8_t</span>* to,<span class="hljs-keyword">uint8_t</span>* from, <span class="hljs-keyword">int</span> len)</span>
+</span>{
+    <span class="hljs-comment">/* Cortex-M3, Cortex-M4, Cortex-M4F, Cortex-M7 are supported */</span>
+    <span class="hljs-keyword">static</span> <span class="hljs-keyword">const</span> <span class="hljs-keyword">uint32_t</span> BFARVALID_MASK = (<span class="hljs-number">0x80</span> &lt;&lt; SCB_CFSR_BUSFAULTSR_Pos);
+    <span class="hljs-keyword">int</span> cnt = <span class="hljs-number">0</span>;<font></font>
+<font></font>
+    <span class="hljs-comment">/* Clear BFARVALID flag by writing 1 to it */</span><font></font>
+    SCB-&gt;CFSR |= BFARVALID_MASK;<font></font>
+<font></font>
+    <span class="hljs-comment">/* Ignore BusFault by enabling BFHFNMIGN and disabling interrupts */</span>
+    <span class="hljs-keyword">uint32_t</span> mask = __get_FAULTMASK();<font></font>
+    __disable_fault_irq();<font></font>
+    SCB-&gt;CCR |= SCB_CCR_BFHFNMIGN_Msk;<font></font>
+<font></font>
+    <span class="hljs-keyword">while</span> ((cnt&lt;len))<font></font>
+    {<font></font>
+      *(to++) = *(from++);<font></font>
+      cnt++;<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">/* Reenable BusFault by clearing  BFHFNMIGN */</span><font></font>
+    SCB-&gt;CCR &amp;= ~SCB_CCR_BFHFNMIGN_Msk;<font></font>
+    __set_FAULTMASK(mask);<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span> cnt;<font></font>
+}</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A configuração do ponto de interrupção é implementada procurando o primeiro registro inativo FP_COMP.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Código de instalação de pontos de interrupção</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs">	
+  dbg-&gt;pos = <span class="hljs-number">0</span>; <span class="hljs-comment">//  -    0</span>
+    addr = ((*(<span class="hljs-keyword">uint32_t</span>*)(&amp;dbg-&gt;buf[<span class="hljs-number">1</span>])))|<span class="hljs-number">1</span>; <span class="hljs-comment">//    FP_COMP</span>
+    <span class="hljs-keyword">for</span> (tmp = <span class="hljs-number">0</span>;tmp&lt;<span class="hljs-number">8</span>;tmp++) <span class="hljs-comment">//      breakpoint </span>
+      <span class="hljs-keyword">if</span> (FP-&gt;FP_COMP[tmp] == addr)
+        <span class="hljs-keyword">break</span>;<font></font>
+    <font></font>
+    <span class="hljs-keyword">if</span> (tmp!=<span class="hljs-number">8</span>) <span class="hljs-comment">//  , </span>
+      <span class="hljs-keyword">break</span>;<font></font>
+    <font></font>
+    <span class="hljs-keyword">for</span> (tmp=<span class="hljs-number">0</span>;tmp&lt;NUMOFBKPTS;tmp++) <span class="hljs-comment">//   </span>
+      <span class="hljs-keyword">if</span> (FP-&gt;FP_COMP[tmp]==<span class="hljs-number">0</span>) <span class="hljs-comment">// ?</span><font></font>
+      {<font></font>
+        FP-&gt;FP_COMP[tmp] = addr; <span class="hljs-comment">// </span>
+        <span class="hljs-keyword">break</span>; <span class="hljs-comment">//  </span><font></font>
+      }<font></font>
+    <span class="hljs-keyword">break</span>;</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A limpeza é feita procurando o ponto de interrupção definido. </font><font style="vertical-align: inherit;">Parar a execução define o ponto de interrupção no PC atual. </font><font style="vertical-align: inherit;">Ao sair da interrupção do UART, o kernel entra imediatamente no DebugMon_Handler. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O próprio manipulador DebugMon é muito simples:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1. O sinalizador para parar a execução está definido.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2. Todos os pontos de interrupção definidos são limpos.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3. Aguardando a conclusão do envio de uma resposta ao comando em uart (se não tiver tempo para ir)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4. O envio da sequência de interrupção começa</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5. No loop, os manipuladores das máquinas de transmissão e recepção são chamados até que o sinalizador de parada seja abaixado.</font></font></li>
+</ul><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Código do manipulador DebugMon</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DebugMon_Handler</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{<font></font>
+  dbgG-&gt;StopProgramm = <span class="hljs-number">1</span>; <span class="hljs-comment">//   </span><font></font>
+  <font></font>
+  <span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i=<span class="hljs-number">0</span>;i&lt;NUMOFBKPTS;i++) <span class="hljs-comment">//  breakpoint</span>
+    FP-&gt;FP_COMP[i] = <span class="hljs-number">0</span>;<font></font>
+  <font></font>
+  <span class="hljs-keyword">while</span> (USART6-&gt;CR1 &amp; USART_CR1_TXEIE) <span class="hljs-comment">//    </span>
+    <span class="hljs-keyword">if</span> ((USART6-&gt;ISR &amp; USART_ISR_TXE) != <span class="hljs-number">0U</span>)<font></font>
+      txCb();<font></font>
+<font></font>
+  <font></font>
+  dbgG-&gt;tx_state = txSendS2; <span class="hljs-comment">//   Interrupt </span>
+  dbgG-&gt;tx = <span class="hljs-number">1</span>;<font></font>
+  SET_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+<font></font>
+  <span class="hljs-keyword">while</span> (dbgG-&gt;StopProgramm) <span class="hljs-comment">//       </span><font></font>
+  {<font></font>
+  	<span class="hljs-comment">//   UART  </span>
+    <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_RXNE) != <span class="hljs-number">0U</span>)<font></font>
+        &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_RXNEIE) != <span class="hljs-number">0U</span>))<font></font>
+      rxCb(USART6-&gt;RDR);<font></font>
+<font></font>
+    <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_TXE) != <span class="hljs-number">0U</span>)<font></font>
+        &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_TXEIE) != <span class="hljs-number">0U</span>))<font></font>
+      txCb(); <font></font>
+  }<font></font>
+}</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Leia os registros do kernel do C-Syshny quando a tarefa for problemática, então reescrevi parte do código no ASM. </font><font style="vertical-align: inherit;">O resultado é que nem DebugMon_Handler, nem o manipulador de interrupções UART, nem as máquinas usam a pilha. </font><font style="vertical-align: inherit;">Isso simplificou a definição de valores de registro do kernel.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Servidor Gdb</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A parte do microcontrolador do depurador funciona, agora vamos escrever o link entre o IDE e nosso módulo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Do zero, escrever um servidor de depuração não faz sentido; portanto, tomemos um já pronto como base. </font><font style="vertical-align: inherit;">Como tenho mais experiência no desenvolvimento de programas em .net, tomei </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">esse</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> projeto </font><font style="vertical-align: inherit;">como base </font><font style="vertical-align: inherit;">e o reescrevi para outros requisitos. </font><font style="vertical-align: inherit;">Seria mais correto adicionar suporte para a nova interface no OpenOCD, mas levaria mais tempo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Na inicialização, o programa pergunta com qual porta COM trabalhar, depois começa a escutar na porta TCP 3333 e aguarda a conexão do cliente GDB. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Todos os comandos do protocolo GDB são convertidos em um protocolo binário. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como resultado, uma implementação de depuração UART viável foi lançada.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Resultado final</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/xh/fr/gx/xhfrgxceq7wpwoxewsbawr4nq8k.png"><br>
+</div></div><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusão</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Descobriu-se que a depuração do próprio controlador não é algo super complicado. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Teoricamente, colocando este módulo em uma seção de memória separada, ele também pode ser usado para piscar o controlador. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Os arquivos de origem foram postados no GitHub para o estudo geral da </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">parte do microcontrolador do </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">servidor GDB</font></font></a></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt489530/index.html">O que torna um sistema reativo bom?</a></li>
+<li><a href="../pt489532/index.html">Novidades do Android 11 para usuários e desenvolvedores</a></li>
+<li><a href="../pt489534/index.html">Mais uma vez sobre a análise de expressões usando o método descendente recursivo</a></li>
+<li><a href="../pt489536/index.html">Recursos de sistemas de fonte de alimentação usando DDIBP</a></li>
+<li><a href="../pt489538/index.html">Por que os desenvolvedores não gostam do Agile?</a></li>
+<li><a href="../pt489542/index.html">IDE nano ou minimalista</a></li>
+<li><a href="../pt489544/index.html">Redimensione imagens dinamicamente usando Nginx e LuaJIT (OpenResty)</a></li>
+<li><a href="../pt489546/index.html">Fabricação de obturador para um respirador</a></li>
+<li><a href="../pt489548/index.html">Cerca de 20 linhas, aproximadamente os mesmos resultados: wc no Elixir</a></li>
+<li><a href="../pt489550/index.html">7 truques com operadores Rest e Spread ao trabalhar com objetos JS</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

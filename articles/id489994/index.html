@@ -1,0 +1,282 @@
+<!doctype html>
+<html class="no-js" lang="id">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏻‍🤝‍👨🏽 👩🏽‍⚕️ 👨🏻‍🚒 Kiat & trik Kubernetes: fitur runtime shutdown yang anggun di NGINX dan PHP-FPM 🐍 👍🏿 💙</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Kondisi umum untuk menerapkan CI / CD di Kubernetes: aplikasi harus dapat berhenti menerima permintaan klien baru sebelum berhenti, dan yang paling pe...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Kiat & trik Kubernetes: fitur runtime shutdown yang anggun di NGINX dan PHP-FPM</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/489994/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kondisi umum untuk menerapkan CI / CD di Kubernetes: aplikasi harus dapat berhenti menerima permintaan klien baru sebelum berhenti, dan yang paling penting, berhasil menyelesaikan yang sudah ada. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ka/ry/ef/karyefzfd99wtpxne9r_o73wies.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kepatuhan dengan kondisi ini memungkinkan Anda untuk mencapai nol downtime selama pemasangan. </font><font style="vertical-align: inherit;">Namun, bahkan ketika menggunakan bundel yang sangat populer (seperti NGINX dan PHP-FPM), Anda dapat menemukan kesulitan yang akan mengarah pada gelombang kesalahan dengan setiap penyebaran ...</font></font><a name="habracut"></a><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Teori. </font><font style="vertical-align: inherit;">Bagaimana pod hidup</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kami telah menerbitkan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">artikel ini secara</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> terperinci tentang siklus hidup pod </font><font style="vertical-align: inherit;">. Dalam konteks topik ini, kami tertarik pada hal-hal berikut: pada saat ketika pod memasuki status </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pengakhiran</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , permintaan baru berhenti dikirim ke sana (pod </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dihapus</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dari daftar titik akhir untuk layanan). Jadi, untuk menghindari downtime selama penyebaran, untuk bagian kami, cukup untuk menyelesaikan masalah aplikasi berhenti dengan benar. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Harus diingat juga bahwa masa tenggang adalah </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">30 detik</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> secara default </font><font style="vertical-align: inherit;">: setelah ini, pod akan dihentikan dan aplikasi harus mengatur untuk memproses semua permintaan sebelum periode ini. </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Catatan</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">: meskipun setiap permintaan yang berjalan lebih dari 5-10 detik sudah bermasalah, dan shutdown yang anggun tidak akan membantunya lagi ...</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Untuk lebih memahami apa yang terjadi ketika pod menyelesaikan tugasnya, cukup mempelajari skema berikut: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zx/pt/ou/zxptou-qe7zxqgab6pszsdo5vlk.png"><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A1, B1 - Mendapatkan perubahan tentang status </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A2: Mengirim SIGTERM </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+B2 - Menghapus pod dari titik akhir </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+B3 - Mendapatkan perubahan (daftar titik akhir telah berubah) </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+B4 - Memperbarui aturan iptables</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Catatan: menghapus pod titik akhir dan mengirim SIGTERM tidak dilakukan secara berurutan, tetapi secara paralel. Dan karena fakta bahwa Ingress tidak menerima daftar terbaru Endpoints segera, permintaan baru dari klien akan dikirim ke pod, yang akan menyebabkan 500 kesalahan selama penghentian pod</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(kami </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">menerjemahkan</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> materi yang lebih rinci tentang masalah ini </font><font style="vertical-align: inherit;">)</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Anda perlu mengatasi masalah ini dengan cara berikut:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Kirim di header Koneksi: respons dekat (jika menyangkut aplikasi HTTP).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Jika tidak ada cara untuk membuat perubahan pada kode, maka artikel tersebut menjelaskan solusi yang akan memungkinkan Anda untuk memproses permintaan hingga akhir periode anggun.</font></font></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Teori. </font><font style="vertical-align: inherit;">Bagaimana NGINX dan PHP-FPM Mengakhiri Prosesnya</font></font></h2><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nginx</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mari kita mulai dengan NGINX, karena semuanya kurang lebih jelas dengannya. </font><font style="vertical-align: inherit;">Tenggelam dalam teori, kita belajar bahwa NGINX memiliki satu proses utama dan beberapa "pekerja" - ini adalah proses anak yang memproses permintaan klien. </font><font style="vertical-align: inherit;">Fitur yang mudah disediakan: menggunakan perintah untuk </font></font><code>nginx -s &lt;SIGNAL&gt;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">menghentikan proses baik dalam mode shutdown cepat atau dalam shutdown anggun. </font><font style="vertical-align: inherit;">Jelas, kami benar-benar tertarik pada opsi yang terakhir. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Maka semuanya sederhana: Anda perlu menambahkan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">perintah</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ke </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;">kait preStop</font></a><font style="vertical-align: inherit;"> yang akan mengirim sinyal tentang shutdown yang anggun. </font><font style="vertical-align: inherit;">Ini bisa dilakukan di Penempatan, di blok penampung:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">       lifecycle:<font></font>
+          preStop:<font></font>
+            exec:<font></font>
+              command:<font></font>
+              - /usr/sbin/nginx<font></font>
+              - -s<font></font>
+              - quit</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sekarang, saat pod menyelesaikan pekerjaannya di log kontainer NGINX, kita akan melihat yang berikut:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">2018/01/25 13:58:31 [notice] 1#1: signal 3 (SIGQUIT) received, shutting down<font></font>
+2018/01/25 13:58:31 [notice] 11#11: gracefully shutting down</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dan itu akan berarti apa yang kita butuhkan: NGINX menunggu penyelesaian kueri, dan kemudian membunuh prosesnya. </font><font style="vertical-align: inherit;">Namun, masalah umum akan dibahas di bawah ini, karena itu, bahkan jika ada perintah, </font></font><code>nginx -s quit</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">proses tidak selesai dengan benar. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dan pada tahap ini kami telah selesai dengan NGINX: setidaknya Anda dapat memahami dari log bahwa semuanya berfungsi sebagaimana mestinya. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Bagaimana dengan PHP-FPM? </font><font style="vertical-align: inherit;">Bagaimana cara menangani shutdown yang anggun? </font><font style="vertical-align: inherit;">Mari kita perbaiki.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PHP-FPM</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dalam hal PHP-FPM, informasinya sedikit kurang. </font><font style="vertical-align: inherit;">Jika Anda fokus pada </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">manual resmi</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> pada PHP-FPM, maka ia akan memberi tahu Anda bahwa sinyal POSIX berikut diterima:</font></font><br>
+<br>
+<ol>
+<li> <code>SIGINT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>SIGTERM</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- shutdown cepat;</font></font></li>
+<li> <code>SIGQUIT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - Shutdown anggun (apa yang kita butuhkan).</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sisa dari sinyal dalam masalah ini tidak diperlukan, oleh karena itu, analisisnya dihilangkan. </font><font style="vertical-align: inherit;">Untuk menyelesaikan proses dengan benar, Anda harus menulis kait preStop berikut:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">        lifecycle:<font></font>
+          preStop:<font></font>
+            exec:<font></font>
+              command:<font></font>
+              - /bin/kill<font></font>
+              - -SIGQUIT<font></font>
+              - "1"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pada pandangan pertama, ini adalah semua yang diperlukan untuk melakukan shutdown yang anggun di kedua wadah. </font><font style="vertical-align: inherit;">Namun, tugasnya lebih rumit dari yang terlihat. </font><font style="vertical-align: inherit;">Selanjutnya, kami memeriksa dua kasus di mana shutdown yang anggun tidak bekerja dan menyebabkan tidak dapat diaksesnya jangka pendek proyek selama penyebaran.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Praktek. </font><font style="vertical-align: inherit;">Kemungkinan masalah dengan shutdown yang anggun</font></font></h2><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nginx</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pertama-tama, penting untuk diingat: selain mengeksekusi perintah, </font></font><code>nginx -s quit</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ada langkah lain yang harus Anda perhatikan. Kami mengalami masalah ketika NGINX alih-alih sinyal SIGQUIT mengirim SIGTERM, karena itu permintaan tidak selesai dengan benar. Kasus serupa dapat ditemukan, misalnya di </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sini</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Sayangnya, kami tidak dapat menetapkan alasan spesifik untuk perilaku ini: ada kecurigaan terhadap versi NGINX, tetapi itu tidak dikonfirmasi. Gejalanya adalah bahwa dalam log wadah NGINX pesan </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"open socket # 10 tersisa di koneksi 5"</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> diamati </font><font style="vertical-align: inherit;">, setelah itu pod berhenti. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kita dapat mengamati masalah seperti itu, misalnya, dengan jawaban atas Ingress yang kita butuhkan: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/um/sz/ip/umszip1dlpudotn2dstg17qfnzs.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Indikator kode status pada saat penyebaran</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dalam hal ini, kami hanya mendapatkan kode kesalahan 503 dari Ingress sendiri: ia tidak dapat mengakses wadah NGINX, karena tidak lagi tersedia. </font><font style="vertical-align: inherit;">Jika Anda melihat log kontainer dengan NGINX, mereka berisi yang berikut ini:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">[alert] 13939#0: *154 open socket #3 left in connection 16<font></font>
+[alert] 13939#0: *168 open socket #6 left in connection 13</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Setelah mengubah sinyal berhenti, wadah mulai berhenti dengan benar: ini dikonfirmasi oleh fakta bahwa kesalahan 503 tidak lagi diamati. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Jika Anda mengalami masalah yang sama, masuk akal untuk mencari tahu sinyal berhenti mana yang digunakan dalam wadah dan bagaimana kait preStop terlihat persis. </font><font style="vertical-align: inherit;">Ada kemungkinan bahwa alasannya justru terletak pada hal ini.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PHP-FPM ... dan banyak lagi</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Masalah dengan PHP-FPM dijelaskan secara sepele: ia tidak menunggu penyelesaian proses anak, menghentikannya, karena yang ada 502 kesalahan selama penyebaran dan operasi lainnya. Sejak 2005 ada beberapa pesan kesalahan pada bugs.php.net (misalnya, di </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sini</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dan di </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sini</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) yang menjelaskan masalah ini. Tapi Anda mungkin tidak akan melihat apa pun di log: PHP-FPM akan mengumumkan penyelesaian prosesnya tanpa kesalahan atau pemberitahuan pihak ketiga. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Perlu diperjelas bahwa masalah itu sendiri mungkin, pada tingkat lebih rendah atau lebih besar, tergantung pada aplikasi itu sendiri dan mungkin tidak muncul, misalnya, dalam pemantauan. Jika Anda masih menemukannya, maka solusi sederhana muncul di benak Anda: tambahkan kait preStop dengan</font></font><code>sleep(30)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Ini akan memungkinkan Anda untuk menyelesaikan semua permintaan sebelumnya (kami tidak menerima yang baru, karena pod </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sudah</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dalam status </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pengakhiran</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ), dan setelah 30 detik pod itu sendiri akan berakhir dengan sinyal </font></font><code>SIGTERM</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ternyata </font></font><code>lifecycle</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">untuk wadah akan terlihat seperti ini:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">    lifecycle:<font></font>
+      preStop:<font></font>
+        exec:<font></font>
+          command:<font></font>
+          - /bin/sleep<font></font>
+          - "30"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Namun, karena indikasi 30 detik, </font></font><code>sleep</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kami akan </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">secara signifikan</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> meningkatkan waktu penyebaran, karena setiap pod akan diakhiri selama </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">setidaknya</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 30 detik, yang mana adalah buruk. Apa yang bisa dilakukan dengan ini? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mari kita beralih ke pihak yang bertanggung jawab untuk eksekusi langsung aplikasi. Dalam kasus kami, ini adalah </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PHP-FPM</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , yang </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">secara default tidak memantau pelaksanaan proses turunannya</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : proses master dihentikan segera. Perilaku ini dapat diubah menggunakan arahan </font></font><code>process_control_timeout</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">yang menentukan batas waktu untuk menunggu sinyal dari master oleh proses anak. Jika Anda menetapkan nilai ke 20 detik, ini akan mencakup sebagian besar permintaan yang berjalan di wadah, dan setelah selesai, proses master akan dihentikan.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dengan pengetahuan ini, kami akan kembali ke masalah terakhir kami. Seperti yang telah disebutkan, Kubernetes bukan platform monolitik: butuh beberapa waktu untuk interaksi antara berbagai komponennya. Ini terutama benar ketika kami mempertimbangkan pekerjaan Ingresss dan komponen terkait lainnya, karena karena keterlambatan pada saat penempatan, mudah untuk mendapatkan lonjakan 500 kesalahan. Misalnya, kesalahan dapat terjadi pada tahap mengirim permintaan ke hulu, tetapi "jeda waktu" interaksi antara komponen agak pendek - kurang dari satu detik. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Oleh karena itu, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dalam hubungannya</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dengan arahan yang telah disebutkan </font></font><code>process_control_timeout</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, konstruksi berikut dapat digunakan untuk </font></font><code>lifecycle</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">lifecycle:<font></font>
+  preStop:<font></font>
+    exec:<font></font>
+      command: ["/bin/bash","-c","/bin/sleep 1; kill -QUIT 1"]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dalam hal ini, kami mengkompensasi keterlambatan oleh tim </font></font><code>sleep</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan tidak secara signifikan meningkatkan waktu penyebaran: apakah ada perbedaan yang nyata antara 30 detik dan satu? ... Pada dasarnya </font></font><code>process_control_timeout</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font><font style="vertical-align: inherit;">ini mengambil "pekerjaan utama" </font><font style="vertical-align: inherit;">, tetapi </font></font><code>lifecycle</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hanya digunakan sebagai "jaring pengaman" jika terjadi kelambatan. </font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Secara umum, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">perilaku yang dijelaskan dan solusi terkait tidak hanya PHP-FPM</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Situasi serupa mungkin muncul dengan satu atau lain cara ketika menggunakan bahasa / kerangka kerja lain. </font><font style="vertical-align: inherit;">Jika Anda tidak dapat memperbaiki shutdown anggun dengan cara lain - misalnya, menulis ulang kode sehingga aplikasi memproses sinyal terminasi dengan benar - Anda dapat menggunakan metode yang dijelaskan. </font><font style="vertical-align: inherit;">Ini mungkin bukan yang paling indah, tetapi berhasil.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Praktek. </font><font style="vertical-align: inherit;">Muat pengujian untuk memverifikasi kinerja pod</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pengujian beban adalah salah satu cara untuk memeriksa cara kerja wadah, karena prosedur ini membawa Anda lebih dekat ke kondisi pertempuran nyata ketika pengguna mengunjungi situs. Anda dapat menggunakan </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Yandex.Tank</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> untuk menguji rekomendasi di atas </font><font style="vertical-align: inherit;">: sempurna mencakup semua kebutuhan kita. Berikut ini adalah tips dan trik untuk pengujian dengan jelas - terima kasih kepada grafik Grafana dan Yandex.Tank sendiri - contoh dari pengalaman kami. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yang paling penting di sini adalah </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memeriksa perubahan secara bertahap.</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Setelah menambahkan perbaikan baru, jalankan pengujian dan lihat apakah hasilnya telah berubah dibandingkan dengan peluncuran sebelumnya. Kalau tidak, akan sulit untuk mengidentifikasi solusi yang tidak efektif, dan di masa depan Anda hanya dapat membahayakan (misalnya, menambah waktu penempatan). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Peringatan lain - lihat log wadah selama penghentiannya. Apakah informasi shutdown yang baik dicatat di sana? Apakah ada kesalahan dalam log ketika mengakses sumber daya lain (misalnya, wadah PHP-FPM tetangga)? Kesalahan aplikasi itu sendiri (seperti dalam kasus NGINX yang dijelaskan di atas)? Saya berharap bahwa informasi pengantar dari artikel ini akan membantu untuk lebih memahami apa yang terjadi pada wadah selama penghentiannya. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Jadi, uji coba pertama berlangsung tanpa </font></font><code>lifecycle</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan tanpa arahan tambahan untuk server aplikasi (</font></font><code>process_control_timeout</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dalam PHP-FPM). Tujuan dari tes ini adalah untuk mengidentifikasi perkiraan jumlah kesalahan (dan apakah mereka ada sama sekali). Juga, dari informasi tambahan, harus diketahui bahwa waktu penyebaran rata-rata setiap perapian adalah sekitar 5-10 detik untuk keadaan kesiapan penuh. Hasilnya adalah sebagai berikut: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ce/yw/ap/ceywapg8q2kpztr-zdslhjy8brm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Percikan 502 kesalahan terlihat pada panel informasi Yandex.Tank, yang terjadi pada saat penyebaran dan rata-rata berlangsung hingga 5 detik. Agaknya ini menghentikan permintaan yang ada ke pod lama ketika dihentikan. Setelah itu, 503 kesalahan muncul, yang merupakan hasil dari wadah NGINX yang terhenti, yang juga terputus karena backend (karena itu Ingress tidak dapat terhubung ke sana). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mari kita lihat caranya</font></font><code>process_control_timeout</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dalam PHP-FPM akan membantu kita menunggu selesainya proses anak, yaitu </font><font style="vertical-align: inherit;">perbaiki kesalahan tersebut. </font><font style="vertical-align: inherit;">Penempatan berulang menggunakan arahan ini: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/t5/8g/0c/t58g0cs5b6umhjkmvlhjktbkio0.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tidak ada lagi kesalahan selama penyebaran 500-an! </font><font style="vertical-align: inherit;">Penyebaran berhasil, shutdown yang anggun bekerja. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Namun, ada baiknya mengingat momen dengan wadah Ingress, sebagian kecil kesalahan di mana kita bisa mendapatkan karena jeda waktu. </font><font style="vertical-align: inherit;">Untuk menghindarinya, tetap tambahkan konstruksi dengan </font></font><code>sleep</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dan ulangi penyebaran. </font><font style="vertical-align: inherit;">Namun, dalam kasus khusus kami, tidak ada perubahan yang terlihat (tidak ada kesalahan lagi).</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kesimpulan</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Untuk penyelesaian proses yang benar, kami mengharapkan perilaku berikut dari aplikasi:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Tunggu beberapa detik, lalu berhenti menerima koneksi baru.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Tunggu semua permintaan untuk menyelesaikan dan menutup semua koneksi keepalive yang tidak menjalankan permintaan.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Selesaikan proses Anda.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Namun, tidak semua aplikasi dapat bekerja dengan cara ini. </font><font style="vertical-align: inherit;">Salah satu solusi untuk masalah dalam realitas Kubernetes adalah:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Menambahkan kait pre-stop yang akan menunggu beberapa detik</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> mempelajari file konfigurasi backend kami untuk parameter yang relevan.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Contoh NGINX memungkinkan kita untuk memahami bahwa bahkan suatu aplikasi yang pada awalnya harus memproses dengan benar sinyal untuk penyelesaian mungkin tidak melakukan ini, sehingga sangat penting untuk memeriksa 500 kesalahan selama penyebaran aplikasi. Ini juga memungkinkan Anda untuk melihat masalah secara lebih luas dan tidak berkonsentrasi pada pod atau wadah yang terpisah, tetapi melihat keseluruhan infrastruktur secara keseluruhan. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yandex.Tank dapat digunakan sebagai alat pengujian bersama dengan sistem pemantauan (dalam kasus kami, data dari Grafana dengan backend dalam bentuk Prometheus diambil untuk pengujian). Masalah dengan shutdown anggun terlihat jelas di bawah beban berat yang dapat dihasilkan patokan, dan pemantauan membantu menganalisis situasi secara lebih rinci selama atau setelah pengujian.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Menanggapi umpan balik pada artikel: perlu disebutkan bahwa masalah dan solusi dijelaskan di sini sehubungan dengan NGINX Ingress. </font><font style="vertical-align: inherit;">Untuk kasus lain, ada solusi lain yang, mungkin, akan kita bahas dalam materi siklus berikut.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PS</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lainnya dari siklus tips &amp; trik K8:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Halaman kesalahan yang dipersonalisasi di NGINX Ingress</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tentang alokasi node dan beban pada aplikasi web</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Akses ke situs dev</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=id&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mempercepat bootstrap dari database besar.</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> "</font></font></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../id489984/index.html">AMA tentang udalenka: tanyakan - kami jawab</a></li>
+<li><a href="../id489986/index.html">Utilitas Desainer Panggung Power - Alat Pengembang Power Electronics</a></li>
+<li><a href="../id489988/index.html">“Angkat tangan!”: Tinjauan mono dari dashme Playme TIO S</a></li>
+<li><a href="../id489990/index.html">Bagaimana Service Desk menyelamatkan perusahaan jasa, atau Bagaimana jika bisnis Anda tumbuh?</a></li>
+<li><a href="../id489992/index.html">Pematian pod yang benar di kluster Kubernetes</a></li>
+<li><a href="../id489998/index.html">11. Fortinet Memulai v6.0. Perizinan</a></li>
+<li><a href="../id490002/index.html">Cara GraphQL di Kotlin dan Micronaut dan membuat satu titik akses ke API beberapa layanan Microsoft</a></li>
+<li><a href="../id490006/index.html">Program pendidikan untuk spesifikasi teknis</a></li>
+<li><a href="../id490010/index.html">Pemeriksaan sistem tipe untuk memeriksa kebenaran musik</a></li>
+<li><a href="../id490012/index.html">Peringatan dan Kesalahan penyimpanan, bagaimana menghadapinya?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

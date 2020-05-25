@@ -1,0 +1,293 @@
+<!doctype html>
+<html class="no-js" lang="pt">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👎🏾 🚶🏾 ☦️ Planejando no Go: Parte II - O Agendador Go 🦔 💲 ⏭️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Olá Habr! Este é o segundo post de uma série de três partes que fornecerá uma idéia da mecânica e da semântica do trabalho do planejador no Go. Esta p...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Planejando no Go: Parte II - O Agendador Go</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/489862/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Olá Habr! </font><font style="vertical-align: inherit;">Este é o segundo post de uma série de três partes que fornecerá uma idéia da mecânica e da semântica do trabalho do planejador no Go. </font><font style="vertical-align: inherit;">Esta postagem é sobre o planejador Go. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Na </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">primeira parte</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> desta série, expliquei aspectos do agendador do sistema operacional que, na minha opinião, são importantes para entender e avaliar a semântica do agendador Go. </font><font style="vertical-align: inherit;">Neste post, explicarei em um nível semântico como o agendador Go funciona. </font><font style="vertical-align: inherit;">O Go Scheduler é um sistema complexo e pequenos detalhes mecânicos não são importantes. </font><font style="vertical-align: inherit;">É importante ter um bom modelo de como tudo funciona e se comporta. </font><font style="vertical-align: inherit;">Isso permitirá que você tome as melhores decisões de engenharia.</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Seu programa está iniciando</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quando o seu programa Go é iniciado, é atribuído um processador lógico (P) para cada núcleo virtual definido na máquina host. Se você tiver um processador com vários threads de hardware por núcleo físico (Hyper-Threading), cada thread de hardware será apresentado ao seu programa como um núcleo virtual. Para entender melhor isso, dê uma olhada no relatório do sistema para o meu MacBook Pro. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/b6e/2de/4a8/b6e2de4a805c6a87c95aa0afcef436ac.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Você pode ver que eu tenho um processador com 4 núcleos físicos. Este relatório não divulga o número de threads de hardware por núcleo físico. O processador Intel Core i7 possui a tecnologia Hyper-Threading, o que significa que o núcleo físico possui 2 threads de hardware. Isso indica ao Go que 8 núcleos virtuais estão disponíveis para executar threads do SO em paralelo. Para verificar isso, considere o seguinte programa:</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-keyword">package</span> main<font></font>
+<font></font>
+<span class="hljs-keyword">import</span> (
+	<span class="hljs-string">"fmt"</span>
+	<span class="hljs-string">"runtime"</span><font></font>
+)<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">main</span><span class="hljs-params">()</span></span> {<font></font>
+<font></font>
+    <span class="hljs-comment">// NumCPU returns the number of logical</span>
+    <span class="hljs-comment">// CPUs usable by the current process.</span><font></font>
+    fmt.Println(runtime.NumCPU())<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quando executo este programa no meu computador, o resultado da chamada da função NumCPU () será 8. Qualquer programa Go executado no meu computador terá 8 (P). </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Cada </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">P</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> recebe um fluxo do SO ( </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">M</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). Esse encadeamento ainda é gerenciado pelo sistema operacional, e o SO ainda é responsável por colocar o encadeamento no kernel para execução. Isso significa que, quando executo o Go no meu computador, tenho 8 threads disponíveis para realizar meu trabalho, cada um vinculado individualmente ao P. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Cada programa Go também recebe uma Goroutine inicial ( </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">G</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) A Goroutine é essencialmente a Coroutine, mas é Go, por isso substituímos a letra C por G e obtemos a palavra Goroutine. Você pode pensar nas Goroutines como threads no nível do aplicativo e são muito parecidos com os threads do SO. Assim como os threads do sistema operacional são ativados e desativados pelo kernel, os programas de contexto são ativados e desativados pelo contexto.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O último quebra-cabeça são as filas de execução. </font><font style="vertical-align: inherit;">Existem duas filas de execução diferentes no planejador Go: a fila de execução global (GRQ) e a fila de execução local (LRQ). </font><font style="vertical-align: inherit;">A cada P é atribuído um LRQ que controla as goroutinas atribuídas para execução no contexto de P. Essas goroutines são ativadas e desativadas no contexto M atribuído a esse P. GRQ é para goroutines que não foram atribuídas a P. Existe um processo para mover as goroutinas do GRQ para o LRQ, que discutiremos mais adiante. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A imagem mostra todos esses componentes juntos.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/114/13e/494/11413e494428c2540e349637f34bbec3.png" alt="imagem"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Planejador cooperativo</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como dissemos no primeiro post, o agendador do SO é um agendador de preferência. Essencialmente, isso significa que você não pode prever o que o planejador fará a qualquer momento. O kernel toma decisões e tudo é não determinístico. Os aplicativos executados no topo do sistema operacional não controlam o que acontece dentro do kernel com agendamento, a menos que usem primitivas de sincronização, como instruções atômicas e chamadas mutex.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O Go Scheduler faz parte do Go Runtime e o Go Runtime é incorporado ao seu aplicativo. Isso significa que o planejador Go funciona no espaço do usuário no kernel. A implementação atual do planejador Go não é preemptiva, mas um planejador interativo. Ser um planejador cooperativo significa que o planejador precisa de eventos claramente definidos no espaço do usuário que ocorrem em pontos seguros do código para tomar decisões de planejamento.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O que é bom no planejador colaborativo da Go é que ele parece e parece proativo. </font><font style="vertical-align: inherit;">Você não pode prever o que o agendador Go fará. </font><font style="vertical-align: inherit;">Isso se deve ao fato de que a tomada de decisão para esse planejador não depende dos desenvolvedores, mas do tempo de execução do Go. </font><font style="vertical-align: inherit;">É importante pensar no agendador Go como um agendador proativo e, como o agendador é não determinístico, não é muito difícil.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Estados de Gorutin</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Assim como os fluxos, as goroutines têm os mesmos três estados de alto nível. Eles determinam o papel que o planejador Go desempenha com qualquer goroutine. Goroutin pode estar em um dos três estados: Aguardando, Pronto ou Cumprindo. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Aguardando</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : Isso significa que a goroutine está parada e aguardando que algo continue. Isso pode ocorrer por motivos como espera pelo sistema operacional (chamadas do sistema) ou sincronização de chamadas (operações atômicas e mutex). Esses tipos de atrasos são a principal causa de baixo desempenho. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Prontidão</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">: isso significa que a goroutine deseja tempo para seguir as instruções atribuídas. </font><font style="vertical-align: inherit;">Se você tiver muitas goroutines que precisam de tempo, elas precisarão esperar mais para obter tempo. </font><font style="vertical-align: inherit;">Além disso, a quantidade de tempo individual que qualquer goroutine recebe é reduzida à medida que mais goroutines competem pelo tempo. </font><font style="vertical-align: inherit;">Esse tipo de atraso de agendamento também pode causar desempenho ruim. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cumprimento</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : significa que a goroutina foi colocada em M e está seguindo suas instruções. </font><font style="vertical-align: inherit;">O trabalho associado ao aplicativo foi concluído. </font><font style="vertical-align: inherit;">É isso que todo mundo quer.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mudança de contexto</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O Go Scheduler requer eventos de espaço do usuário bem definidos que ocorrem em pontos seguros no código para alternar o contexto. </font><font style="vertical-align: inherit;">Esses eventos e pontos seguros aparecem nas chamadas de função. </font><font style="vertical-align: inherit;">As chamadas de função são críticas para o desempenho do Go Scheduler. </font><font style="vertical-align: inherit;">Se você executar qualquer loop estreito que não faça chamadas de função, causará atrasos no planejador e na coleta de lixo. </font><font style="vertical-align: inherit;">É imperativo que as chamadas de função ocorram dentro de um período de tempo razoável. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Existem quatro classes de eventos que ocorrem nos seus programas Go que permitem ao planejador tomar decisões de planejamento. </font><font style="vertical-align: inherit;">Isso não significa que isso sempre aconteça em um desses eventos. </font><font style="vertical-align: inherit;">Isso significa que o planejador obtém a oportunidade.</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Usando a palavra-chave go</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Coletor de lixo</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Chamadas do sistema</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sincronização</font></font></li>
+</ul><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Usando a</font></font></i><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+palavra-chave </font><i><font style="vertical-align: inherit;">go</font></i><font style="vertical-align: inherit;"> A palavra-chave </font><i><font style="vertical-align: inherit;">go</font></i><font style="vertical-align: inherit;"> é como você cria goroutine. </font><font style="vertical-align: inherit;">Assim que uma nova goroutine é criada, ela oferece ao planejador a oportunidade de tomar uma decisão de planejamento. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Garbage Collector (GC)</font></font></i><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Como o GC trabalha com seu próprio conjunto de goroutines, essas gorutinas precisam de tempo em M para serem executadas. </font><font style="vertical-align: inherit;">Isso força o GC a criar muito caos no planejamento. </font><font style="vertical-align: inherit;">No entanto, o planejador é muito inteligente no que a goroutine faz, e ele a usará para tomar decisões. </font><font style="vertical-align: inherit;">Uma solução razoável é mudar o contexto para a goroutine, que deseja acessar o recurso do sistema, e mais ninguém além dele durante a coleta de lixo. </font><font style="vertical-align: inherit;">Quando o GC funciona, muitas decisões de planejamento são tomadas. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Chamadas do sistema</font></font></i><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se a goroutine fizer uma chamada do sistema que o fará bloquear M, o agendador poderá alternar o contexto para outra goroutine, para o mesmo M. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sincronização</font></font></i><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Se uma chamada para uma operação atômica, um mutex ou um canal fizer com que a goroutine seja bloqueada, o agendador poderá alternar o contexto para iniciar uma nova goroutine. </font><font style="vertical-align: inherit;">Uma vez que a goroutine possa funcionar novamente, ela poderá ser colocada na fila e, eventualmente, voltar para M.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Chamadas assíncronas do sistema</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quando o sistema operacional em que você está trabalhando tem a capacidade de processar uma chamada do sistema de forma assíncrona, o que é chamado de poller de rede pode ser usado para processar a chamada do sistema com mais eficiência. </font><font style="vertical-align: inherit;">Isso é feito usando o kqueue (MacOS), epoll (Linux) ou iocp (Windows) nesses respectivos sistemas operacionais.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As chamadas do sistema de rede podem ser tratadas de forma assíncrona por muitos dos sistemas operacionais que usamos hoje. É aqui que o pesquisador da rede se mostra, pois seu principal objetivo é processar as operações da rede. Usando o pesquisador de rede para chamadas do sistema de rede, o planejador pode impedir que goroutines bloqueiem M durante essas chamadas do sistema. Isso ajuda a manter M disponível para executar outras goroutines no LRQ P sem a necessidade de criar um novo M. Isso ajuda a reduzir a carga de planejamento no sistema operacional. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A melhor maneira de ver como isso funciona é ver um exemplo. A figura mostra nosso esquema de planejamento básico. Gorutin-1 é executado em M, e mais 3 Gorutins estão esperando no LRQ para se dedicar a M. O pesquisador da rede está ocioso e ele não tem nada para fazer.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/d76/7cd/b0f/d767cdb0fd640db3a84e3c87d14f38e3.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Na figura a seguir, Gorutin-1 (G1) deseja fazer uma chamada ao sistema de rede, de modo que G1 se move para o pesquisador de rede e é tratado como uma chamada de sistema de rede assíncrona. </font><font style="vertical-align: inherit;">Depois que o G1 foi movido para o pesquisador de rede, M agora está disponível para executar outra goroutine do LRQ. </font><font style="vertical-align: inherit;">Nesse caso, Gorutin-2 muda para M. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/764/93f/af0/76493faf0f599eefae69938878e4ceb1.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Na figura a seguir, a chamada de rede do sistema termina com uma chamada de rede assíncrona e G1 volta para LRQ para P. Depois que G1 pode ser retornado para M, o código associado a Go, para o qual Ele responde pode executar novamente. </font><font style="vertical-align: inherit;">A grande vitória é que nenhuma Sra. Adicional é necessária para fazer chamadas ao sistema de rede. </font><font style="vertical-align: inherit;">O pesquisador de rede possui um encadeamento do SO e processa através de um loop de eventos.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Chamadas síncronas do sistema</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O que acontece quando a goroutine deseja fazer uma chamada do sistema que não pode ser executada de forma assíncrona? </font><font style="vertical-align: inherit;">Nesse caso, o pesquisador da rede não pode ser usado e a goroutine que faz a chamada do sistema bloqueará M. Isso é ruim, mas não há como evitar isso. </font><font style="vertical-align: inherit;">Um exemplo de chamada de sistema que não pode ser feita de forma assíncrona são as chamadas de sistema baseadas em arquivo. </font><font style="vertical-align: inherit;">Se você usar o CGO, poderá haver outras situações em que a chamada de funções C também bloqueie M.</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O sistema operacional Windows pode fazer chamadas assíncronas ao sistema com base em arquivo. </font><font style="vertical-align: inherit;">Tecnicamente, ao trabalhar no Windows, você pode usar o Poller de rede.</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Vamos ver o que acontece com uma chamada de sistema síncrona (por exemplo, arquivo de E / S) que bloqueia M. A figura mostra nosso diagrama de planejamento básico, mas desta vez G1 fará uma chamada de sistema síncrona que bloqueará M1. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/747/549/a28/747549a28a7a627a3cbd98fffe728fad.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Na figura a seguir, o planejador pode determinar que G1 causou um bloqueio M. Nesse momento, o planejador desconecta M1 de P com um G1 de bloqueio ainda anexado. O planejador introduz um novo M2 para servir P. Nesse ponto, o G2 pode ser selecionado no LRQ e incluído no contexto do M2. Se M já existe devido a uma troca anterior, essa transição é mais rápida que a necessidade de criar um novo M.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/966/30c/3dd/96630c3dd34a06fbc5ed5f8b4c8bdfbc.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A próxima etapa completa a chamada do sistema de bloqueio feita pelo G1. </font><font style="vertical-align: inherit;">Nesse ponto, G1 pode retornar ao LRQ e ser atendido novamente por P. M1, depois será retirado para uso futuro se esse cenário for repetido.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/553/0ed/f8c/5530edf8c481aee13a40ff0b55e8e1ed.png" alt="imagem"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Roubo de trabalho</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Outro aspecto do planejador é que ele é um planejador de roubo de goroutine. Isso ajuda em várias áreas a apoiar um planejamento eficaz. Primeiramente, a última coisa que você precisa é que o M entre no estado de espera, porque assim que isso acontecer, o sistema operacional alternará o M do kernel usando o contexto. Isso significa que P não pode fazer nenhum trabalho, mesmo que haja uma Goroutine em um estado íntegro, até que M volte para o kernel. O Gorutin Theft também ajuda a equilibrar os intervalos de tempo entre todos os Ps, para que o trabalho seja melhor distribuído e executado com mais eficiência. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Na figura, temos um programa Go multiencadeado com dois Ps servindo quatro Gs cada e um G no GRQ. O que acontece se um de P serve rapidamente todo o seu G?</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/e1a/745/eaa/e1a745eaaeab4e91bf35e80d8f16ae34.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Além disso, P1 não possui mais goroutines para executar. Mas existem goroutines em condições de trabalho, tanto no LRQ para P2 quanto no GRQ. Este é o momento em que P1 precisa roubar goroutine. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/6f6/190/ccc/6f6190cccec8213c27cadfbb03b67767.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As regras para roubar goroutines são as seguintes. Todo o código pode ser visualizado nas fontes de tempo de execução.</font></font><br>
+<br>
+<pre><code class="go hljs">runtime.schedule() {
+    <span class="hljs-comment">// only 1/61 of the time, check the global runnable queue for a G.</span>
+    <span class="hljs-comment">// if not found, check the local queue.</span>
+    <span class="hljs-comment">// if not found,</span>
+    <span class="hljs-comment">//     try to steal from other Ps.</span>
+    <span class="hljs-comment">//     if not, check the global runnable queue.</span>
+    <span class="hljs-comment">//     if not found, poll network.</span><font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Assim, com base nessas regras, P1 deve verificar P2 quanto à presença de goroutines em seu LRQ e pegar metade do que encontrar. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/af2/b9b/ec2/af2b9bec21571656e051799fb3213020.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O que acontece se o P2 terminar de servir todos os seus programas e o P1 não tiver mais nada no LRQ? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+P2 concluiu todo o seu trabalho e agora deve roubar as goroutines. </font><font style="vertical-align: inherit;">Primeiro, ele examinará o LRQ P1, mas não encontrará nenhuma Goroutines. </font><font style="vertical-align: inherit;">Em seguida, ele analisará o GRQ. </font><font style="vertical-align: inherit;">Lá ele encontrará o G9. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/4f8/2db/b86/4f82dbb86b9005e458097587792dd462.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+P2 rouba G9 do GRQ e começa a fazer o trabalho. </font><font style="vertical-align: inherit;">O bom de todo esse roubo é que ele permite que M permaneça ocupado e não fique inativo.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/e12/221/a4a/e12221a4ad60695c5c5c97837e30cfbb.png" alt="imagem"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Exemplo prático</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Com mecânica e semântica, quero mostrar como tudo isso se ajusta para que o planejador Go possa fazer mais trabalho ao longo do tempo. Imagine um aplicativo multithread escrito em C, no qual o programa gerencia dois threads do SO que enviam mensagens um para o outro. Existem 2 tópicos na imagem que enviam a mensagem para frente e para trás. O segmento 1 recebe o núcleo 1 com alternância de contexto e agora está em execução, o que permite que o segmento 1 envie sua mensagem ao segmento 2.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/bb3/6fb/00d/bb36fb00db345441ca295dd01d153b2b.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Além disso, quando o encadeamento 1 termina de enviar a mensagem, agora é necessário aguardar uma resposta. Isso fará com que o thread 1 seja desconectado do contexto do kernel 1 e colocado em um estado de espera. Assim que o segmento 2 recebe uma notificação de mensagem, ele entra em um estado íntegro. Agora o sistema operacional pode executar uma alternância de contexto e executar o thread 2 no kernel, que acaba sendo o kernel 2. Em seguida, o thread 2 processa a mensagem e envia uma nova mensagem de volta ao thread 1.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/4af/66e/0fe/4af66e0fe8440f757063603b6bc161a2.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em seguida, o fluxo retorna ao contexto quando a mensagem do fluxo 2 é recebida pelo fluxo 1. Agora, o fluxo 2 alterna do estado de execução para o estado em espera e o fluxo 1 alterna do estado de espera para o estado pronto e finalmente retorna ao estado de execução, o que permite processar e envie uma nova mensagem de volta. Todas essas alternâncias de contexto e alterações de estado levam tempo para serem concluídas, o que limita a velocidade do trabalho. Como cada alternância de contexto implica um atraso de ~ 1000 nanossegundos, e esperamos que o hardware execute 12 instruções por nanossegundo, observe 12.000 instruções que são mais ou menos executadas durante essas alternâncias de contexto. Como esses fluxos também se cruzam entre diferentes núcleos,A probabilidade de um atraso adicional na linha de cache também é alta.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/a45/b47/127/a45b47127d054f2b56b6c2534c9150bf.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Na figura há dois gorutins que estão em harmonia um com o outro, passando a mensagem para frente e para trás. O G1 obtém a chave de contexto M1, que é executada no Core 1, o que permite que o G1 faça seu trabalho. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/977/b59/78c/977b5978ca8daa9bfc186c77c901565a.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Além disso, quando G1 termina de enviar a mensagem, agora ele precisa aguardar uma resposta. Isso fará com que G1 seja desconectado do contexto M1 e colocado no estado ocioso. Assim que o G2 é notificado da mensagem, ela entra em um estado íntegro. Agora, o planejador Go pode executar a alternância de contexto e executar G2 no M1, que ainda é executado no Core 1. Em seguida, o G2 processa a mensagem e envia uma nova mensagem de volta ao G1.</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/3e8/86c/003/3e886c003a64536731234abde2746ca2.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Na próxima etapa, tudo muda novamente quando a mensagem enviada por G2 é recebida por G1. Agora, o contexto G2 alterna do estado de execução para o estado de espera, e o contexto G1 alterna do estado de espera para o estado de execução e, finalmente, volta ao estado de execução, o que permite processar e enviar uma nova mensagem de volta. </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/4db/97b/a31/4db97ba314fa8b14bf6497dcaf15135a.png" alt="imagem"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As coisas na superfície não parecem ser diferentes. Todas as mesmas mudanças de contexto e de estado ocorrem independentemente de você usar Streams ou Goroutines. No entanto, existe uma grande diferença entre o uso de Streams e Gorutin, o que pode não ser óbvio à primeira vista.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se a goroutine for usada, os mesmos threads e kernel do sistema operacional serão usados ​​para todo o processamento. Isso significa que, do ponto de vista do SO, o OS Flow nunca entra em um estado de espera; Nunca. Como resultado, todas as instruções que perdemos ao alternar contextos ao usar fluxos não são perdidas ao usar goroutin. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Essencialmente, o Go transformou o trabalho de E / S / Bloqueio em um trabalho vinculado ao processador no nível do SO. Como toda alternância de contexto ocorre no nível do aplicativo, não perdemos as mesmas ~ 12 mil instruções (em média) na alternância de contexto que perdemos ao usar fluxos. No Go, as mesmas opções de contexto custam ~ 200 nanossegundos ou ~ 2,4 mil comandos. O planejador também ajuda a melhorar o desempenho das seqüências de cache e do </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NUMA</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">É por isso que não precisamos de mais threads do que os núcleos virtuais. </font><font style="vertical-align: inherit;">O Go pode fazer mais trabalho com o tempo, porque o planejador Go tenta usar menos threads e fazer mais em cada thread, o que ajuda a reduzir a carga no SO e no hardware.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusão</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O Go Scheduler é realmente incrível na maneira como leva em consideração os meandros do sistema operacional e do hardware. A capacidade de transformar a operação de E / S / bloqueio em uma operação ligada ao processador no nível do sistema operacional é onde obtemos grandes ganhos no uso de mais energia do processador ao longo do tempo. É por isso que você não precisa de mais threads do SO do que dos kernels virtuais. Você pode esperar razoavelmente que todo o seu trabalho seja realizado (com ligação à CPU e E / S / bloqueios) com um encadeamento do SO por kernel virtual. Isso é possível para aplicativos de rede e outros aplicativos que não precisam de chamadas do sistema que bloqueiam threads do SO.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como desenvolvedor, você ainda deve entender o que seu aplicativo faz em termos de tipo de trabalho. </font><font style="vertical-align: inherit;">Você não pode criar uma quantidade ilimitada de goroutines e esperar um desempenho incrível. </font><font style="vertical-align: inherit;">Menos é sempre mais, mas com um entendimento dessa semântica do planejador Go, você pode tomar melhores decisões de engenharia.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt489852/index.html">Autenticação transparente no ASP.Net Core no Linux</a></li>
+<li><a href="../pt489854/index.html">Redux vs MobX sem confusão</a></li>
+<li><a href="../pt489856/index.html">Paradoxo reverso de Banach-Tarski ou como reduzir o volume de dados armazenados em cinco vezes</a></li>
+<li><a href="../pt489858/index.html">Internacionalização: Tornando a Web Acessível a Todos</a></li>
+<li><a href="../pt489860/index.html">A história da Telefunken: a fênix da eletrônica alemã, de Wilhelm II e Goebbels aos Beatles e hoje</a></li>
+<li><a href="../pt489868/index.html">Congelando o Mozilla WebThings</a></li>
+<li><a href="../pt489870/index.html">Intensivo offline gratuito por Node.js em Níjni Novgorod</a></li>
+<li><a href="../pt489872/index.html">Como o sistema DLP e o módulo OCR impediram que os funcionários falsificassem as varreduras de passaporte</a></li>
+<li><a href="../pt489874/index.html">Compilação cruzada de arquivos Rust para Windows executáveis ​​no Linux</a></li>
+<li><a href="../pt489876/index.html">Como resolvemos o problema de três monólitos</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

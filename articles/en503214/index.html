@@ -1,0 +1,212 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍈 👨‍👨‍👦‍👦 🕖 Load optimization on a Highload project with ElasticSearch 💧 🔰 ⛪️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello, Habr! My name is Maxim Vasiliev, I work as an analyst and project manager at FINCH. Today I would like to tell you how with the help of Elastic...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Load optimization on a Highload project with ElasticSearch</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/503214/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Hello, Habr! </font><font style="vertical-align: inherit;">My name is Maxim Vasiliev, I work as an analyst and project manager at FINCH. </font><font style="vertical-align: inherit;">Today I would like to tell you how with the help of ElasticSearch, we were able to process 15 million queries in 6 minutes and optimize the daily load on the site of one of our clients. </font><font style="vertical-align: inherit;">Unfortunately, we will have to do without names, since we have an NDA, we hope that the content of the article will not be affected. </font><font style="vertical-align: inherit;">Let`s go.</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How the project is arranged</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On our backend, we create services that ensure the performance of sites and mobile applications of our client. </font><font style="vertical-align: inherit;">The general structure can be seen in the diagram: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sv/yw/mx/svywmxdiqxb59mwxobsses8vrc8.png" alt="image"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the process, we process a large number of transactions: purchases, payments, operations with user balances, on which we store a lot of logs, and also import and export this data to external systems. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The reverse processes also go when we receive data from the client and transmit it to the user. </font><font style="vertical-align: inherit;">In addition, there are still processes for working with payments and bonus programs.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Short background</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Initially, we used PostgreSQL as the only data warehouse. Its standard advantages for DBMS: availability of transactions, developed language of data sampling, wide tools for integration; coupled with good performance, satisfied people have long satisfied our needs. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We stored absolutely all data in Postgres: from transactions to news. But the number of users grew, and with it the number of requests. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">For understanding, the annual number of sessions in 2017 on the desktop site alone is 131 million. In 2018, 125 million 2019 is again 130 million. Add another 100-200 million from the mobile version of the site and the mobile application, and you will get a huge number of requests.</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+With the growth of the project, Postgres ceased to cope with the load, we did not have time - a large number of various queries appeared, under which we could not create a sufficient number of indexes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We realized that there was a need for other data warehouses that would provide our needs and take the load off PostgreSQL. </font><font style="vertical-align: inherit;">Elasticsearch and MongoDB were considered as possible options. </font><font style="vertical-align: inherit;">The latter lost on the following points:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Slow indexing speed with increasing data volume in indexes. </font><font style="vertical-align: inherit;">At Elastic, the speed does not depend on the amount of data.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">No full text search</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So we chose Elastic for ourselves and prepared for the transition. </font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Switching to Elastic</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. We started the transition with a point of sale search service. </font><font style="vertical-align: inherit;">Our client has a total of about 70,000 points of sale, and it requires several types of searches on the site and in the application:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Text search by city name</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Geo-search in a given radius from some point. </font><font style="vertical-align: inherit;">For example, if a user wants to see which points of sale are closest to his home.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Search by a given square - the user draws a square on the map, and he is shown all the points in this radius. </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Search for additional filters. </font><font style="vertical-align: inherit;">Points of sale differ from each other in assortment</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Speaking of organization, then in Postgres we have a data source both on the map and on the news, and in Elastic Snapshots are made from the original data. The fact is that initially Postgres could not cope with the search by all criteria. Not only were there many indexes, they could also intersect, so the Postgres scheduler got lost and did not understand which index to use for it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2. Next in line was the news section. Every day, publications appear on the site so that the user does not get lost in the flow of information, the data must be sorted before delivery. For this, you need a search: on the site you can search by text match, and at the same time connect additional filters, since they are also made through Elastic.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3. Then we moved the transaction processing. </font><font style="vertical-align: inherit;">Users can buy a specific product on the site and participate in the prize draw. </font><font style="vertical-align: inherit;">After such purchases, we process a large amount of data, especially on weekends and holidays. </font><font style="vertical-align: inherit;">For comparison, if on ordinary days the number of purchases is somewhere between 1.5-2 million, then on holidays the figure can reach 53 million. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the same time, the data needs to be processed in a minimum amount of time - users do not like to wait for a result for several days. </font><font style="vertical-align: inherit;">You won’t achieve such deadlines through Postgres - we often got locks, and while we processed all requests, users couldn’t check whether they received prizes or not. </font><font style="vertical-align: inherit;">This is not very pleasant for the business, so we moved the processing to Elasticsearch.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Periodicity</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now updates are configured event-wise, under the following conditions:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Point of sale. </font><font style="vertical-align: inherit;">As soon as data from an external source comes to us, we immediately start the update.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">News. </font><font style="vertical-align: inherit;">As soon as any news is edited on the site, it is automatically sent to Elastic.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here again, it is worth mentioning the advantages of Elastic. </font><font style="vertical-align: inherit;">In Postgres, when sending a request, you need to wait until it honestly processes all the records. </font><font style="vertical-align: inherit;">You can send 10 thousand records to Elastic, and immediately start working, without waiting until the records are distributed across all Shards. </font><font style="vertical-align: inherit;">Of course, some Shard or Replica may not see the data right away, but very soon everything will be available.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Integration Methods</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are 2 ways to integrate with Elastic:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Through the native client over TCP. </font><font style="vertical-align: inherit;">The native driver is gradually dying out: it is no longer supported, it has very inconvenient syntax. </font><font style="vertical-align: inherit;">Therefore, we practically do not use it and try to completely abandon it.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Via an HTTP interface in which you can use both JSON requests and Lucene syntax. </font><font style="vertical-align: inherit;">The latter is a text engine that uses Elastic. </font><font style="vertical-align: inherit;">In this option, we get the ability to Batch through JSON requests over HTTP. </font><font style="vertical-align: inherit;">This is the option we are trying to use.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thanks to the HTTP interface, we can use libraries that provide an asynchronous implementation of the HTTP client. </font><font style="vertical-align: inherit;">We can take advantage of Batch and the asynchronous API, which in the end gives high performance, which helped a lot in the days of a large action (more on that below) </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A few numbers to compare:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Saving users who received prizes in Postgres in 20 streams without groupings: 460,713 entries in 42 seconds</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Elastic + reactive client for 10 threads + batch for 1000 elements: 596749 records in 11 seconds</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Elastic + reactive client for 10 threads + batch for 1000 elements: </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">23801684 records in 4 minutes</font></font></b></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we have written an HTTP request manager that builds JSON as Batch / not Batch and sends it through any HTTP client, regardless of the library. </font><font style="vertical-align: inherit;">You can also choose to send requests synchronously or asynchronously. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In some integrations, we still use the official transport client, but this is only a matter of coming refactoring. </font><font style="vertical-align: inherit;">At the same time, a custom client built on the basis of Spring WebClient is used for processing.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/x2/sx/qg/x2sxqgijaic0-ldqbrjlwse_tp0.jpeg" alt="image"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Big promotion</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Once a year, a large campaign for users takes place on the project - this is the same Highload, since at this time we work with tens of millions of users at the same time. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Usually peak loads occur during the holidays, but this promotion is a completely different level. The year before last, on the day of the promotion, we sold 27,580,890 units of goods. The data was processed for more than half an hour, which caused inconvenience for users. Users received prizes for participating, but it became clear that the process needed to be accelerated. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the beginning of 2019, we decided that we needed ElasticSearch. For a whole year, we organized the processing of received data in Elastic and its output in the api of the mobile application and site. As a result, the next year during the campaign we processed </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">15 131 783 records in 6 minutes.</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since we have a lot of people who want to buy goods and participate in the prize draw in promotions, this is a temporary measure. </font><font style="vertical-align: inherit;">Now we are sending relevant information to Elastic, but in the future we plan to transfer archive information from the past months to Postgres as a permanent repository. </font><font style="vertical-align: inherit;">In order not to clog the Elastic index, which also has its limitations.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusion / Conclusions</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the moment, we have transferred to Elastic all the services that we wanted and have paused for now. </font><font style="vertical-align: inherit;">Now we are building an index in Elastic on top of the main persistent storage in Postgres, which takes on the user load. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the future, we plan to transfer services if we understand that the data request becomes too diverse and is searched by an unlimited number of columns. </font><font style="vertical-align: inherit;">This is no longer a task for Postgres. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If we need a full-text search in the functional, or if we have many different search criteria, then we already know that this needs to be translated into Elastic.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">⌘⌘⌘</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thanks for reading. </font><font style="vertical-align: inherit;">If your company also uses ElasticSearch and has its own implementation cases, then tell us. </font><font style="vertical-align: inherit;">It will be interesting to know how others have :-)</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en503200/index.html">YOLOv4 - the most accurate real-time neural network on the Microsoft COCO dataset</a></li>
+<li><a href="../en503204/index.html">How to flash Xiaomi Redmi 4 Prime / Pro / Premium on Android 10</a></li>
+<li><a href="../en503208/index.html">When is the best time to invest?</a></li>
+<li><a href="../en503210/index.html">Can phishing sites be eradicated?</a></li>
+<li><a href="../en503212/index.html">30 life hacks to complete the online course</a></li>
+<li><a href="../en503218/index.html">GlobalSign Introduces Atlas - Next Generation PKI Platform</a></li>
+<li><a href="../en503226/index.html">What is stopping business from moving into a “number", and what does it have to do with reputation</a></li>
+<li><a href="../en503228/index.html">Heart rate control while jogging through musical feedback - or “testers who like to run are looking for”</a></li>
+<li><a href="../en503230/index.html">Incident Response Platform class systems: application and main functions</a></li>
+<li><a href="../en503232/index.html">How to become a DevOps engineer in six months or even faster. Part 6. Launching the application</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

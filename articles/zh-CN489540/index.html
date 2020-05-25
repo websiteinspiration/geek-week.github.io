@@ -1,0 +1,468 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏽 🍅 💪🏾 通过UART调试ARM Cortex-M微控制器第2部分 💯 ⤴️ 😮</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在上一篇文章中，我讨论了DebugMon中断及其相关的寄存器。
+ 
+ 在本文中，我们将编写UART调试器的实现。
+ 
+ 低层部分
+ 这里和这里描述了GDB服务器的请求和响应的结构。尽管看起来很简单，但由于以下原因，我们将不会在微控制器中实现它：
+ 
+ 
+
+- 大数据冗余。地址，寄存器的值，变量被编码...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>通过UART调试ARM Cortex-M微控制器第2部分</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/489540/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在上</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一篇文章中，</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我讨论了DebugMon中断及其相关的寄存器。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在本文中，我们将编写UART调试器的实现。</font></font><br>
+<a name="habracut"></a><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">低层部分</font></font></h4><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这里</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这里</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">描述了GDB服务器的请求和响应的结构。</font><font style="vertical-align: inherit;">尽管看起来很简单，但由于以下原因，我们将不会在微控制器中实现它：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大数据冗余。</font><font style="vertical-align: inherit;">地址，寄存器的值，变量被编码为十六进制字符串，这使消息量增加了2倍</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 解析和收集消息将占用更多资源</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">超时（定时器忙）或复杂的自动计算机都需要跟踪数据包的结尾，这将增加在UART中断中花费的时间 </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了获得最简单，最快的调试模块，我们将使用带有控制序列的二进制协议：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0xFF-帧开始 </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0x00-帧结束 </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0xA5-中断 </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xAA 0xAA-替换为0xAA </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要在接收期间处理这些序列，需要具有4种状态的自动机：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 等待ESC字符</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 等待帧开始序列的第二个字符</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 数据接收</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 上次接受Esc字符</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是要发送状态，您已经需要7：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 发送第一个字节开始帧</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 发送第二个字节帧的开始</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 传送资料</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 提交帧结束</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 发送Esc字符替换</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 发送第一个中断字节</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 发送第二个中断字节</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们写出所有模块变量都将位于其中的结构定义：</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">typedef</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> 
+{</span>    
+  <span class="hljs-comment">// disable receive data</span>
+  <span class="hljs-keyword">unsigned</span> tx:<span class="hljs-number">1</span>;
+  <span class="hljs-comment">// program stopped</span>
+  <span class="hljs-keyword">unsigned</span> StopProgramm:<span class="hljs-number">1</span>;
+  <span class="hljs-keyword">union</span> {
+    <span class="hljs-keyword">enum</span> rx_state_e <font></font>
+    {<font></font>
+      rxWaitS = <span class="hljs-number">0</span>, <span class="hljs-comment">// wait Esc symbol</span>
+      rxWaitC = <span class="hljs-number">1</span>, <span class="hljs-comment">// wait Start of frame</span>
+      rxReceive = <span class="hljs-number">2</span>, <span class="hljs-comment">// receiving</span>
+      rxEsc = <span class="hljs-number">3</span>, <span class="hljs-comment">// Esc received</span><font></font>
+    } rx_state;<font></font>
+    <span class="hljs-keyword">enum</span> tx_state_e <font></font>
+    {<font></font>
+      txSendS = <span class="hljs-number">0</span>, <span class="hljs-comment">// send first byte of Start of frame</span>
+      txSendC = <span class="hljs-number">1</span>, <span class="hljs-comment">// send second byte</span>
+      txSendN = <span class="hljs-number">2</span>, <span class="hljs-comment">// send byte of data</span>
+      txEsc = <span class="hljs-number">3</span>,   <span class="hljs-comment">// send escaped byte of data</span>
+      txEnd = <span class="hljs-number">4</span>,   <span class="hljs-comment">// send End of frame</span>
+      txSendS2 = <span class="hljs-number">5</span>,<span class="hljs-comment">// send first byte of Interrupt</span>
+      txBrk = <span class="hljs-number">6</span>,   <span class="hljs-comment">// send second byte</span><font></font>
+    } tx_state;<font></font>
+  };<font></font>
+  <span class="hljs-keyword">uint8_t</span> pos; <span class="hljs-comment">// receive/send position</span>
+  <span class="hljs-keyword">uint8_t</span> buf[<span class="hljs-number">128</span>]; <span class="hljs-comment">// offset = 3</span>
+  <span class="hljs-keyword">uint8_t</span> txCnt; <span class="hljs-comment">// size of send data</span>
+} <span class="hljs-keyword">dbg_t</span>;
+<span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> dbgG ((dbg_t*)DBG_ADDR) <span class="hljs-comment">//   ,         </span></span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于工作将以半双工模式进行，因此接收和发送机的状态被组合为一个变量。</font><font style="vertical-align: inherit;">现在，您可以使用中断处理程序自己编写自动机。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">UART处理程序</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">USART6_IRQHandler</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{
+  <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_RXNE) != <span class="hljs-number">0U</span>)<font></font>
+      &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_RXNEIE) != <span class="hljs-number">0U</span>))<font></font>
+  {<font></font>
+    rxCb(USART6-&gt;RDR);<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+  }<font></font>
+<font></font>
+  <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_TXE) != <span class="hljs-number">0U</span>)<font></font>
+      &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_TXEIE) != <span class="hljs-number">0U</span>))<font></font>
+  {<font></font>
+    txCb();<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+  }<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">rxCb</span><span class="hljs-params">(<span class="hljs-keyword">uint8_t</span> byte)</span>
+</span>{
+  <span class="hljs-keyword">dbg_t</span>* dbg = dbgG; <span class="hljs-comment">// debug vars pointer</span><font></font>
+  <font></font>
+  <span class="hljs-keyword">if</span> (dbg-&gt;tx) <span class="hljs-comment">// use half duplex mode</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+  <font></font>
+  <span class="hljs-keyword">switch</span>(dbg-&gt;rx_state)<font></font>
+  {<font></font>
+  <span class="hljs-keyword">default</span>:
+  <span class="hljs-keyword">case</span> rxWaitS:
+    <span class="hljs-keyword">if</span> (byte==<span class="hljs-number">0xAA</span>)<font></font>
+      dbg-&gt;rx_state = rxWaitC;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> rxWaitC:
+    <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0xFF</span>)<font></font>
+      dbg-&gt;rx_state = rxReceive;<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+      dbg-&gt;rx_state = rxWaitS;<font></font>
+    dbg-&gt;pos = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> rxReceive:
+    <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0xAA</span>)<font></font>
+      dbg-&gt;rx_state = rxEsc;<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+      dbg-&gt;buf[dbg-&gt;pos++] = byte;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> rxEsc:
+    <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0xAA</span>)<font></font>
+    {<font></font>
+      dbg-&gt;buf[dbg-&gt;pos++] = byte;<font></font>
+      dbg-&gt;rx_state  = rxReceive;<font></font>
+    }<font></font>
+    <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (byte == <span class="hljs-number">0x00</span>)<font></font>
+    {<font></font>
+      parseAnswer();<font></font>
+    }<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+      dbg-&gt;rx_state = rxWaitS;<font></font>
+  }<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">txCb</span><span class="hljs-params">()</span>
+</span>{
+  <span class="hljs-keyword">dbg_t</span>* dbg = dbgG;
+  <span class="hljs-keyword">switch</span> (dbg-&gt;tx_state)<font></font>
+  {<font></font>
+  <span class="hljs-keyword">case</span> txSendS:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+    dbg-&gt;tx_state = txSendC;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txSendC:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xFF</span>;<font></font>
+    dbg-&gt;tx_state = txSendN;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txSendN:
+    <span class="hljs-keyword">if</span> (dbg-&gt;txCnt&gt;=dbg-&gt;pos)<font></font>
+    {<font></font>
+      USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+      dbg-&gt;tx_state = txEnd;<font></font>
+      <span class="hljs-keyword">break</span>;<font></font>
+    }<font></font>
+    <span class="hljs-keyword">if</span> (dbg-&gt;buf[dbg-&gt;txCnt]==<span class="hljs-number">0xAA</span>)<font></font>
+    {<font></font>
+      USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+      dbg-&gt;tx_state = txEsc;<font></font>
+      <span class="hljs-keyword">break</span>;<font></font>
+    }<font></font>
+    USART6-&gt;TDR = dbg-&gt;buf[dbg-&gt;txCnt++];<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txEsc:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+    dbg-&gt;txCnt++;<font></font>
+    dbg-&gt;tx_state = txSendN;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txEnd:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0x00</span>;<font></font>
+    dbg-&gt;rx_state = rxWaitS;<font></font>
+    dbg-&gt;tx = <span class="hljs-number">0</span>;<font></font>
+    CLEAR_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txSendS2:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xAA</span>;<font></font>
+    dbg-&gt;tx_state = txBrk;<font></font>
+    <span class="hljs-keyword">break</span>;
+  <span class="hljs-keyword">case</span> txBrk:<font></font>
+    USART6-&gt;TDR = <span class="hljs-number">0xA5</span>;<font></font>
+    dbg-&gt;rx_state = rxWaitS;<font></font>
+    dbg-&gt;tx = <span class="hljs-number">0</span>;<font></font>
+    CLEAR_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+    <span class="hljs-keyword">break</span>;<font></font>
+  }<font></font>
+}</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这里的一切都很简单。</font><font style="vertical-align: inherit;">根据发生的事件，中断处理程序将调用接收计算机或传输计算机。</font><font style="vertical-align: inherit;">为了验证一切正常，我们编写了一个响应一个字节的数据包处理程序：</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">parseAnswer</span><span class="hljs-params">()</span>
+</span>{
+  <span class="hljs-keyword">dbg_t</span>* dbg = dbgG;<font></font>
+  dbg-&gt;pos = <span class="hljs-number">1</span>;<font></font>
+  dbg-&gt;buf[<span class="hljs-number">0</span>] = <span class="hljs-number">0x33</span>;<font></font>
+  dbg-&gt;txCnt = <span class="hljs-number">0</span>;<font></font>
+  dbg-&gt;tx = <span class="hljs-number">1</span>;<font></font>
+  dbg-&gt;tx_state = txSendS;<font></font>
+  SET_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+编译，缝制，运行。</font><font style="vertical-align: inherit;">结果在屏幕上可见，可以正常工作。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">测试交流</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/yt/nh/ax/ytnhaxq7durfoqkvawblnjldrns.png"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接下来，您需要从GDB服务器协议实现命令类似物：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 记忆读取</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 记忆记录</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 程序停止</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 继续执行</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 内核寄存器读取</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 内核寄存器输入</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 设置断点</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 删除断点</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该命令将使用数据的第一个字节进行编码。</font><font style="vertical-align: inherit;">团队代码按执行顺序编号：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2-读取内存</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 3-记忆记录</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 4-停止</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 5-继续</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 6-阅读案例</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 7-安装断点</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 8-清除断点</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 9-步骤（无法实施）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 10-寄存器输入（未实现）</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+参数将与以下数据字节一起发送。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+答案将不包含命令编号，因为 </font><font style="vertical-align: inherit;">我们已经知道哪个团队发送了。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了防止模块在读/写操作期间引发BusFault异常，</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在M3或更高版本上使用时必须屏蔽它，或者为M0编写HardFault处理程序。</font></font></a><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">安全记忆</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">memcpySafe</span><span class="hljs-params">(<span class="hljs-keyword">uint8_t</span>* to,<span class="hljs-keyword">uint8_t</span>* from, <span class="hljs-keyword">int</span> len)</span>
+</span>{
+    <span class="hljs-comment">/* Cortex-M3, Cortex-M4, Cortex-M4F, Cortex-M7 are supported */</span>
+    <span class="hljs-keyword">static</span> <span class="hljs-keyword">const</span> <span class="hljs-keyword">uint32_t</span> BFARVALID_MASK = (<span class="hljs-number">0x80</span> &lt;&lt; SCB_CFSR_BUSFAULTSR_Pos);
+    <span class="hljs-keyword">int</span> cnt = <span class="hljs-number">0</span>;<font></font>
+<font></font>
+    <span class="hljs-comment">/* Clear BFARVALID flag by writing 1 to it */</span><font></font>
+    SCB-&gt;CFSR |= BFARVALID_MASK;<font></font>
+<font></font>
+    <span class="hljs-comment">/* Ignore BusFault by enabling BFHFNMIGN and disabling interrupts */</span>
+    <span class="hljs-keyword">uint32_t</span> mask = __get_FAULTMASK();<font></font>
+    __disable_fault_irq();<font></font>
+    SCB-&gt;CCR |= SCB_CCR_BFHFNMIGN_Msk;<font></font>
+<font></font>
+    <span class="hljs-keyword">while</span> ((cnt&lt;len))<font></font>
+    {<font></font>
+      *(to++) = *(from++);<font></font>
+      cnt++;<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">/* Reenable BusFault by clearing  BFHFNMIGN */</span><font></font>
+    SCB-&gt;CCR &amp;= ~SCB_CCR_BFHFNMIGN_Msk;<font></font>
+    __set_FAULTMASK(mask);<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span> cnt;<font></font>
+}</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通过搜索第一个非活动寄存器FP_COMP来实现断点设置。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">代码安装断点</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs">	
+  dbg-&gt;pos = <span class="hljs-number">0</span>; <span class="hljs-comment">//  -    0</span>
+    addr = ((*(<span class="hljs-keyword">uint32_t</span>*)(&amp;dbg-&gt;buf[<span class="hljs-number">1</span>])))|<span class="hljs-number">1</span>; <span class="hljs-comment">//    FP_COMP</span>
+    <span class="hljs-keyword">for</span> (tmp = <span class="hljs-number">0</span>;tmp&lt;<span class="hljs-number">8</span>;tmp++) <span class="hljs-comment">//      breakpoint </span>
+      <span class="hljs-keyword">if</span> (FP-&gt;FP_COMP[tmp] == addr)
+        <span class="hljs-keyword">break</span>;<font></font>
+    <font></font>
+    <span class="hljs-keyword">if</span> (tmp!=<span class="hljs-number">8</span>) <span class="hljs-comment">//  , </span>
+      <span class="hljs-keyword">break</span>;<font></font>
+    <font></font>
+    <span class="hljs-keyword">for</span> (tmp=<span class="hljs-number">0</span>;tmp&lt;NUMOFBKPTS;tmp++) <span class="hljs-comment">//   </span>
+      <span class="hljs-keyword">if</span> (FP-&gt;FP_COMP[tmp]==<span class="hljs-number">0</span>) <span class="hljs-comment">// ?</span><font></font>
+      {<font></font>
+        FP-&gt;FP_COMP[tmp] = addr; <span class="hljs-comment">// </span>
+        <span class="hljs-keyword">break</span>; <span class="hljs-comment">//  </span><font></font>
+      }<font></font>
+    <span class="hljs-keyword">break</span>;</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通过搜索设置的断点来完成清洁。</font><font style="vertical-align: inherit;">停止执行会在当前PC上设置断点。</font><font style="vertical-align: inherit;">退出UART中断时，内核立即进入DebugMon_Handler。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+DebugMon处理程序本身非常简单：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.设置停止执行的标志。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.清除所有设置的断点。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3.等待发送对uart中命令的响应的完成（如果没有时间执行）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4.开始发送中断序列</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5.在循环中，将调用发送和接收计算机的处理程序，直到降低停止标志为止。</font></font></li>
+</ul><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">DebugMon处理程序代码</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DebugMon_Handler</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{<font></font>
+  dbgG-&gt;StopProgramm = <span class="hljs-number">1</span>; <span class="hljs-comment">//   </span><font></font>
+  <font></font>
+  <span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i=<span class="hljs-number">0</span>;i&lt;NUMOFBKPTS;i++) <span class="hljs-comment">//  breakpoint</span>
+    FP-&gt;FP_COMP[i] = <span class="hljs-number">0</span>;<font></font>
+  <font></font>
+  <span class="hljs-keyword">while</span> (USART6-&gt;CR1 &amp; USART_CR1_TXEIE) <span class="hljs-comment">//    </span>
+    <span class="hljs-keyword">if</span> ((USART6-&gt;ISR &amp; USART_ISR_TXE) != <span class="hljs-number">0U</span>)<font></font>
+      txCb();<font></font>
+<font></font>
+  <font></font>
+  dbgG-&gt;tx_state = txSendS2; <span class="hljs-comment">//   Interrupt </span>
+  dbgG-&gt;tx = <span class="hljs-number">1</span>;<font></font>
+  SET_BIT(USART6-&gt;CR1, USART_CR1_TXEIE);<font></font>
+<font></font>
+  <span class="hljs-keyword">while</span> (dbgG-&gt;StopProgramm) <span class="hljs-comment">//       </span><font></font>
+  {<font></font>
+  	<span class="hljs-comment">//   UART  </span>
+    <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_RXNE) != <span class="hljs-number">0U</span>)<font></font>
+        &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_RXNEIE) != <span class="hljs-number">0U</span>))<font></font>
+      rxCb(USART6-&gt;RDR);<font></font>
+<font></font>
+    <span class="hljs-keyword">if</span> (((USART6-&gt;ISR &amp; USART_ISR_TXE) != <span class="hljs-number">0U</span>)<font></font>
+        &amp;&amp; ((USART6-&gt;CR1 &amp; USART_CR1_TXEIE) != <span class="hljs-number">0U</span>))<font></font>
+      txCb(); <font></font>
+  }<font></font>
+}</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当任务有问题时，请从C-Syshny读取内核寄存器，因此我在ASM上重写了一些代码。</font><font style="vertical-align: inherit;">结果是DebugMon_Handler，UART中断处理程序和计算机都没有使用堆栈。</font><font style="vertical-align: inherit;">这简化了内核寄存器值的定义。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Gdb服务器</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+调试器的微控制器部分正常工作，现在让我们编写IDE与我们模块之间的链接。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从头开始，编写调试服务器没有任何意义，因此让我们以现成的服务器为基础。</font><font style="vertical-align: inherit;">由于我在.net上开发程序的经验最丰富，因此我以</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">该</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">项目</font><font style="vertical-align: inherit;">为基础</font><font style="vertical-align: inherit;">并将其重写为其他要求。</font><font style="vertical-align: inherit;">在OpenOCD中添加对新接口的支持会更正确，但是会花费更多时间。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在启动时，程序会询问要使用哪个COM端口，然后开始侦听TCP端口3333，并等待GDB客户端连接。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+所有GDB协议命令都转换为二进制协议。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+结果，发布了可行的UART调试实现。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最后结果</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/xh/fr/gx/xhfrgxceq7wpwoxewsbawr4nq8k.png"><br>
+</div></div><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结论</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事实证明，调试控制器本身并不是一件非常复杂的事情。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从理论上讲，通过将该模块放置在单独的内存部分中，它也可以用于刷新控制器。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+源文件发布在GitHub上，用于</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">GDB服务器</font></a><font style="vertical-align: inherit;">的</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">微控制器部分</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的常规研究。</font></font><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN489530/index.html">什么使无功系统好？</a></li>
+<li><a href="../zh-CN489532/index.html">Android 11对用户和开发人员的新增功能</a></li>
+<li><a href="../zh-CN489534/index.html">再次关于使用递归下降法的表达式分析</a></li>
+<li><a href="../zh-CN489536/index.html">使用DDIBP的电源系统的功能</a></li>
+<li><a href="../zh-CN489538/index.html">为什么开发人员不喜欢敏捷？</a></li>
+<li><a href="../zh-CN489542/index.html">纳米或简约IDE</a></li>
+<li><a href="../zh-CN489544/index.html">使用Nginx和LuaJIT（OpenResty）动态调整图像大小</a></li>
+<li><a href="../zh-CN489546/index.html">呼吸器的密闭装置制造</a></li>
+<li><a href="../zh-CN489548/index.html">大约20行，结果大致相同：Elixir上的wc</a></li>
+<li><a href="../zh-CN489550/index.html">使用JS对象时使用Rest和Spread运算符的7个技巧</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

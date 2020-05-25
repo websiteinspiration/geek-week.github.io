@@ -1,0 +1,264 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧑🏿‍🤝‍🧑🏾 🙌 💏 CPU limits and aggressive throttling in Kubernetes ⚱️ 😩 🧝🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Note perev. : This cautionary tale of Omio, the European travel aggregator, takes readers from basic theory to the captivating practical intricacies o...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>CPU limits and aggressive throttling in Kubernetes</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/489668/"><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Note perev.</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : This cautionary tale of Omio, the European travel aggregator, takes readers from basic theory to the captivating practical intricacies of Kubernetes configuration. Familiarity with such cases helps not only to broaden one's horizons, but also to prevent non-trivial problems.</font></font></i><br>
+<br>
+<img src="https://habrastorage.org/webt/bw/jr/on/bwjronw-hyhosv46aa1d6pqldie.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Have you ever encountered the fact that the application "stuck" in place, stopped responding to requests for health checks, and you could not understand the reason for this behavior? One possible explanation is the quota limit for CPU resources. He will be discussed in this article.</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> TL; DR: </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We strongly recommend that you refuse CPU limits in Kubernetes (or disable CFS quotas in Kubelet) if you are using a Linux kernel version with a CFS quota error. At the core </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">there</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A serious and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">well-known</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> bug that leads to excessive throttling and delays</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><a name="habracut"></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At Omio, the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">entire infrastructure is managed by Kubernetes</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">All of our stateful and stateless loads work exclusively on Kubernetes (we use the Google Kubernetes Engine). </font><font style="vertical-align: inherit;">In the last six months, we began to observe random slowdowns. </font><font style="vertical-align: inherit;">Applications freeze or stop responding to health checks, lose their connection to the network, etc. </font><font style="vertical-align: inherit;">Such behavior has long perplexed us, and, finally, we decided to tackle the problem closely. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Summary of the article:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> A few words about containers and Kubernetes;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> How CPU requests and limits are implemented;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> How CPU limit works in multi-core environments;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> How to track throttling CPU;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Solving the problem and the nuances.</font></font></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A few words about containers and Kubernetes</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetes, in fact, is the modern standard in the world of infrastructure. </font><font style="vertical-align: inherit;">Its main task is the orchestration of containers.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Containers</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the past, we had to create artifacts like Java JARs / WARs, Python Eggs, or executables for subsequent launch on servers. </font><font style="vertical-align: inherit;">However, in order to make them function, they had to do additional work: install the runtime (Java / Python), place the necessary files in the right places, ensure compatibility with a specific version of the operating system, etc. </font><font style="vertical-align: inherit;">In other words, you had to pay close attention to configuration management (which often caused contention between developers and system administrators). </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Containers have changed everything.</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Now the container image acts as an artifact. </font><font style="vertical-align: inherit;">It can be represented as a kind of extended executable file containing not only a program, but also a full-fledged runtime (Java / Python / ...), as well as the necessary files / packages that are pre-installed and ready to run. </font><font style="vertical-align: inherit;">Containers can be deployed and run on various servers without any additional steps. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In addition, containers work in their own sandbox environment. </font><font style="vertical-align: inherit;">They have their own virtual network adapter, their own file system with limited access, their own hierarchy of processes, their own restrictions on the CPU and memory, etc. All this is realized thanks to a special subsystem of the Linux kernel - namespaces (namespace).</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As stated earlier, Kubernetes is a container orchestra. </font><font style="vertical-align: inherit;">It works as follows: you provide it with a pool of machines, and then say: “Hey Kubernetes, launch ten instances of my container with 2 processors and 3 GB of memory each, and keep them operational!” </font><font style="vertical-align: inherit;">Kubernetes takes care of the rest. </font><font style="vertical-align: inherit;">He will find free capacities, launch containers and restart them if necessary, roll out an update when changing versions, etc. </font><font style="vertical-align: inherit;">In fact, Kubernetes allows you to abstract from the hardware component and makes the entire variety of systems suitable for deployment and operation of applications. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/hs/ux/tu/hsuxtucqvih716edmdtgac_btxa.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes from the point of view of a simple layman</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What are request and limit in Kubernetes</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Okay, we figured out the containers and Kubernetes. We also know that several containers can be on the same machine. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can draw an analogy with a communal apartment. A spacious room is taken (cars / nodes) and leased to several tenants (containers). Kubernetes acts as a realtor. The question arises, how to keep tenants from conflicts with each other? What if one of them, say, decides to occupy the bathroom for half a day? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is where request and limit come into play. CPU </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Request is</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> for planning purposes only. This is something like a container’s “wish list”, and it is used to select the most suitable node. At the same time, CPU </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Limit</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> can be compared with a lease - as soon as we pick up a node for the container, that</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">will not be able</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to go beyond the established limits. </font><font style="vertical-align: inherit;">And here a problem arises ...</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How requests and limits are implemented in Kubernetes</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetes uses the kernel throttling (skipping clock) mechanism to implement CPU limits. </font><font style="vertical-align: inherit;">If the application exceeds the limit, throttling is enabled (i.e. it receives less CPU cycles). </font><font style="vertical-align: inherit;">Requests and limits for memory are organized differently, so they are easier to detect. </font><font style="vertical-align: inherit;">To do this, it is enough to check the last pod restart status: whether it is “OOMKilled”. </font><font style="vertical-align: inherit;">With the throttling of the CPU, everything is not so simple, since K8s only makes available metrics for use, not cgroups.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CPU Request</font></font></h4><br>
+<img src="https://habrastorage.org/webt/hh/fk/qn/hhfkqnuy5oe4tq_ubi57aeblvqe.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How the CPU request is implemented</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+For simplicity, let's look at a process using an example of a machine with a 4-core CPU. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+K8s uses the cgroups mechanism to control the allocation of resources (memory and processor). A hierarchical model is available for him: a descendant inherits the limits of the parent group. Distribution details are stored in the virtual file system ( </font></font><code>/sys/fs/cgroup</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">). In the case of the processor, this </font></font><code>/sys/fs/cgroup/cpu,cpuacct/*</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+K8s uses the file </font></font><code>cpu.share</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to allocate processor resources. In our case, the root control group receives 4096 shares of CPU resources - 100% of the available processor power (1 core = 1024; this is a fixed value). The root group distributes resources proportionally depending on the shares of descendants prescribed in</font></font><code>cpu.share</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, and those, in turn, do the same to their descendants, etc. Typically Kubernetes root node control group has three child: </font></font><code>system.slice</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>user.slice</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>kubepods</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. The first two subgroups are used to distribute resources between critical system loads and user programs outside of K8s. The last - - </font></font><code>kubepods</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">is created by Kubernetes to distribute resources between pods. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The diagram above shows that the first and second subgroups received </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1024</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> shares, with </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4096</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> shares </font><font style="vertical-align: inherit;">allocated to the kuberpod subgroup </font><font style="vertical-align: inherit;">. How is this possible: after all, only </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4,096</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> shares </font><font style="vertical-align: inherit;">are available to the root group </font><font style="vertical-align: inherit;">, and the sum of the shares of its descendants significantly exceeds this number ( </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">6144</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">)? The fact is that the value makes logical sense, so the Linux Scheduler (CFS) uses it to proportionally allocate CPU resources. In our case, the first two groups receive </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">680</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> real shares (16.6% of 4096), and kubepod receives the remaining </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2736</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> shares. In case of downtime, the first two groups will not use the allocated resources. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Fortunately, the scheduler has a mechanism to avoid the loss of unused CPU resources. It transfers “idle” capacities to the global pool, from which they are distributed among groups that need additional processor capacities (transfer occurs in batches to avoid rounding losses). A similar method applies to all descendants of descendants.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This mechanism ensures a fair distribution of processor power and ensures that no process “steals” resources from others.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CPU Limit</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Despite the fact that the configurations of the limits and requests in K8s look similar, their implementation is fundamentally different: this is the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">most misleading</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and least documented part. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+K8s uses </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the CFS quota mechanism</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to implement limits. Their settings are specified in the files </font></font><code>cfs_period_us</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>cfs_quota_us</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in the cgroup directory (the file is also located there </font></font><code>cpu.share</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In contrast </font></font><code>cpu.share</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, the quota is based on a </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">period of time</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and not on the available processor power. </font></font><code>cfs_period_us</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sets the duration of the period (era) - it is always 100,000 μs (100 ms). K8s has the ability to change this value, but it is currently only available in the alpha version. The scheduler uses the era to restart used quotas. Second file</font></font><code>cfs_quota_us</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, sets the available time (quota) in each era. Please note that it is also indicated in microseconds. The quota may exceed the duration of the era; in other words, it can be more than 100 ms. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's look at two scenarios on 16-core machines (the most common type of computers we have in Omio): </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pt/wr/dm/ptwrdmpxueuy4p1mn7mb8vfdhyg.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scenario 1: 2 threads and a limit of 200 ms. Without throttling </font></font></i><br>
+<br>
+<img src="https://habrastorage.org/webt/7f/no/i9/7fnoi9e7kz6ib6jksx2mkqmc-zo.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scenario 2: 10 flows and a limit of 200 ms. Throttling starts after 20 ms, access to processor resources resumes after another 80 ms.</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Suppose you set the CPU limit to </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> cores; Kubernetes will translate this value to 200 ms. This means that the container can use a maximum of 200 ms CPU time without throttling.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And here the fun begins. </font><font style="vertical-align: inherit;">As mentioned above, the available quota is 200 ms. </font><font style="vertical-align: inherit;">If you have </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ten</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> threads </font><font style="vertical-align: inherit;">running in parallel </font><font style="vertical-align: inherit;">on a 12-core machine (see the illustration for scenario 2), while all other pods are idle, the quota will be exhausted in only 20 ms (since 10 * 20 ms = 200 ms), and all threads of this pod is </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">throttle</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> for the next 80 ms. </font><font style="vertical-align: inherit;">The already mentioned </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">scheduler bug</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> aggravates the situation </font><font style="vertical-align: inherit;">, due to which excessive throttling occurs and the container cannot even work out the existing quota.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How to evaluate throttling in pods?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Just go to pod and run </font></font><code>cat /sys/fs/cgroup/cpu/cpu.stat</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<ul>
+<li> <code>nr_periods</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - the total number of periods of the scheduler;</font></font></li>
+<li> <code>nr_throttled</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- the number of throttled periods in the composition </font></font><code>nr_periods</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">;</font></font></li>
+<li> <code>throttled_time</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - cumulative throttled time in nanoseconds.</font></font></li>
+</ul><br>
+<img src="https://habrastorage.org/webt/fb/kp/tp/fbkptpvc9e6c1yua63aawbropk8.png"><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What is really going on?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result, we get high throttling in all applications. </font><font style="vertical-align: inherit;">Sometimes it is </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">one and a half times</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> stronger than the calculated! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This leads to various errors - readiness checks failures, container hangs, network connection breaks, timeouts inside service calls. </font><font style="vertical-align: inherit;">Ultimately, this translates into increased latency and increased errors.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Decision and consequences</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Everything is simple here. </font><font style="vertical-align: inherit;">We abandoned the CPU limits and started updating the OS kernel in the clusters to the latest version, in which the bug was fixed. </font><font style="vertical-align: inherit;">The number of errors (HTTP 5xx) in our services immediately dropped significantly:</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">HTTP Errors 5xx</font></font></h3><br>
+<img src="https://habrastorage.org/webt/rg/t4/wt/rgt4wttq-x7-0dz8-5pfybrk_d8.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">HTTP 5xx errors of one critical service</font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">P95 response time</font></font></h3><br>
+<img src="https://habrastorage.org/webt/xc/ds/er/xcdservm7jabpev6yly59uq_u3i.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Critical Service Request Delay, 95th percentile</font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Operating costs</font></font></h3><br>
+<img src="https://habrastorage.org/webt/zb/ym/nc/zbymnckdg75bfpktepdi8ex4byg.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Number of hours spent</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What's the catch?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As stated at the beginning of the article:</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">You can draw an analogy with a communal apartment ... Kubernetes acts as a realtor. </font><font style="vertical-align: inherit;">But how to keep tenants from conflicts with each other? </font><font style="vertical-align: inherit;">What if one of them, say, decides to occupy the bathroom for half a day?</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That’s the catch. </font><font style="vertical-align: inherit;">One negligent container can absorb all available processor resources on the machine. </font><font style="vertical-align: inherit;">If you have an intelligent application stack (for example, JVM, Go, Node VM are properly configured), then this is not a problem: you can work in such conditions for a long time. </font><font style="vertical-align: inherit;">But if applications are poorly optimized or not optimized at all ( </font></font><code>FROM java:latest</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">), the situation may get out of hand. </font><font style="vertical-align: inherit;">We at Omio have automated basic Dockerfiles with adequate default settings for the stack of main languages, so there was no such problem. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We recommend that you monitor </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">USE</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> metrics </font><font style="vertical-align: inherit;">(usage, saturation, and errors), API delays, and error rates. </font><font style="vertical-align: inherit;">Make sure the results are as expected.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">References</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is our story. </font><font style="vertical-align: inherit;">The following materials have greatly helped to understand what is happening:</font></font><br>
+<br>
+<ul>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kernel.org → CFS Scheduler</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kernel.org → CFS Bandwidth Control</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Understanding Linux Container Scheduling</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Everything You Need to Know about Linux Containers, Part I: Linux Control Groups and Process Isolation</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes Failure Stories</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">Search</font></a><font style="vertical-align: inherit;"> for “cpu throttling”.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetes Error Reporting:</font></font><br>
+<br>
+<ul>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 51135: Avoid setting CPU limits for Guaranteed pods</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 67577: CFS quotas can lead to unnecessary throttling</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Overly aggressive CFS</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Have you encountered similar problems in your practice or have experience with throttling in containerized production environments? </font><font style="vertical-align: inherit;">Share your story in the comments!</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PS from the translator</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Read also in our blog:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Auto-scaling and resource management in Kubernetes (review and video report)</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How does the CPU Manager in Kubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What happens in Kubernetes when kubectl run starts? </font><font style="vertical-align: inherit;">Part 2</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ".</font></font></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en489656/index.html">Bad experience creating and administering a scientific journal site</a></li>
+<li><a href="../en489660/index.html">Why NoSQL Databases Are a Bad Solution for Modern Applications</a></li>
+<li><a href="../en489662/index.html">PHP Digest No. 174 (February 10 - 24, 2020)</a></li>
+<li><a href="../en489664/index.html">NPS, conveyor, automatic computing and again ... coroutines</a></li>
+<li><a href="../en489666/index.html">Overloading in C ++. Part II Operator Overload</a></li>
+<li><a href="../en489672/index.html">We revive the hexapod. Part two</a></li>
+<li><a href="../en489674/index.html">Angular: a clear introduction to NGRX</a></li>
+<li><a href="../en489676/index.html">We make a clone of the food delivery service using Nuxt.js, GraphQL, Strapi and Stripe. Part 1/7</a></li>
+<li><a href="../en489678/index.html">Indestructible memory, indestructible processes</a></li>
+<li><a href="../en489682/index.html">Cross-Origin Read Blocking (CORB) in Chrome Extensions</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

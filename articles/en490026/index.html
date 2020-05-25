@@ -1,0 +1,414 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎙️ 🌍 🏛️ How we Elasticsearch put things in order: data sharing, cleaning, backups ✂️ 👸🏿 😐</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article is a practical story about how we encountered the problem of separating the logs stored in Elasticsearch, because of which we had to chan...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>How we Elasticsearch put things in order: data sharing, cleaning, backups</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/490026/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">This article is a practical story about how we encountered the problem of separating the logs stored in Elasticsearch, because of which we had to change the approach to backups and index management. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/5s/wo/w2/5swow2bqxoliv36e1r3eaboz-ym.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It all started shortly after the production environment was raised. </font><font style="vertical-align: inherit;">We had a “combat” Kubernetes cluster, all the logs from which fluentd collected and sent them directly to indexes </font></font><code>logstash-yyy.mm.dd</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">...</font></font><a name="habracut"></a><br>
+<br>
+<img src="https://habrastorage.org/webt/rm/uc/ce/rmuccezpyhbhaalkmv-n4dfc4xc.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, a request appeared to store some application logs for search for up to 90 days. </font><font style="vertical-align: inherit;">At that time, we could not afford this: the storage of current indices for such a period would exceed all reasonable measures. </font><font style="vertical-align: inherit;">Therefore, it was decided to create a separate index pattern for such applications and configure a separate retention for it.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Log Separation</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To accomplish such a task and to separate the “necessary” logs from the “unnecessary” ones, we used the </font></font><code>match</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fluentd </font><font style="vertical-align: inherit;">parameter </font><font style="vertical-align: inherit;">and created another section in </font></font><code>output.conf</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to search for matches on the necessary services in the namespace </font></font><code>production</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">according to the tagging specified for the input plug-in (and also changing </font></font><code>@id</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>logstash_prefix</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">so send recording to different places). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Fragments of the resulting </font></font><code>output.conf</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">&lt;match kubernetes.var.log.containers.**_production_**&gt;<font></font>
+      @id elasticsearch1<font></font>
+      @type elasticsearch<font></font>
+      logstash_format true<font></font>
+      logstash_prefix log-prod<font></font>
+     ...<font></font>
+&lt;/match&gt;<font></font>
+&lt;match kubernetes.**&gt;<font></font>
+      @id elasticsearch<font></font>
+      @type elasticsearch<font></font>
+      logstash_format true<font></font>
+      logstash_prefix logstash<font></font>
+     ...<font></font>
+&lt;/match&gt;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Bottom line - we have two types of indexes ( </font></font><code>log-prod-yyyy.mm.dd</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>logstash-yyyy.mm.dd</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">):</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pd/ew/n2/pdewn2hdkj-d0rzxnn1g0tc9bpo.png"><br>
+ <br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Index Cleaning</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At that time </font><font style="vertical-align: inherit;">, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">curator</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> was already configured in the cluster </font><font style="vertical-align: inherit;">, which cleared indexes older than 14 days. </font><font style="vertical-align: inherit;">It was described as a CronJob object to deploy directly to a Kubernetes cluster. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Illustration in </font></font><code>action_file.yml</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">-<font></font>
+    actions:<font></font>
+      1:<font></font>
+        action: delete_indices<font></font>
+        description: &gt;-<font></font>
+          Delete indices older than 14 days (based on index name), for logstash-<font></font>
+          prefixed indices. Ignore the error if the filter does not result in an<font></font>
+          actionable list of indices (ignore_empty_list) and exit cleanly.<font></font>
+        options:<font></font>
+          ignore_empty_list: True<font></font>
+          timeout_override:<font></font>
+          continue_if_exception: False<font></font>
+          disable_action: False<font></font>
+          allow_ilm_indices: True<font></font>
+        filters:<font></font>
+        - filtertype: pattern<font></font>
+          kind: prefix<font></font>
+          value: logstash<font></font>
+        - filtertype: age<font></font>
+          source: name<font></font>
+          direction: older<font></font>
+          timestring: '%Y.%m.%d'<font></font>
+          unit: days<font></font>
+          unit_count: 14</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, we decided that the option with a curator is redundant (it runs as a separate software, requires separate configuration and launch by crown) - after all, you can redo the cleaning using the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">index lifecycle policy</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Elasticsearch since version 6.6 </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(released in January 2019) now</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> has the ability to attach a policy to the index template that will track the retention time for the index. </font><font style="vertical-align: inherit;">Policies can be used not only to control cleanup, but also other tasks that will simplify interaction with indexes (for example, aligning indexes by size rather than by day). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To do this, it was only necessary to create two policies of this kind:</font></font><br>
+<br>
+<pre><code class="json hljs">PUT _ilm/policy/prod_retention<font></font>
+{<font></font>
+    <span class="hljs-attr">"policy"</span> : {
+      <span class="hljs-attr">"phases"</span> : {
+        <span class="hljs-attr">"delete"</span> : {
+          <span class="hljs-attr">"min_age"</span> : <span class="hljs-string">"90d"</span>,
+          <span class="hljs-attr">"actions"</span> : {
+            <span class="hljs-attr">"delete"</span> : { }<font></font>
+          }<font></font>
+        }<font></font>
+      }<font></font>
+    }<font></font>
+  }<font></font>
+<font></font>
+PUT _ilm/policy/default_retention<font></font>
+{<font></font>
+    <span class="hljs-attr">"policy"</span> : {
+      <span class="hljs-attr">"phases"</span> : {
+        <span class="hljs-attr">"delete"</span> : {
+          <span class="hljs-attr">"min_age"</span> : <span class="hljs-string">"14d"</span>,
+          <span class="hljs-attr">"actions"</span> : {
+            <span class="hljs-attr">"delete"</span> : { }<font></font>
+          }<font></font>
+        }<font></font>
+      }<font></font>
+    }<font></font>
+  }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+... and attach them to the required index templates:</font></font><br>
+<br>
+<pre><code class="json hljs">PUT _template/log_prod_template<font></font>
+{<font></font>
+  <span class="hljs-attr">"index_patterns"</span>: [<span class="hljs-string">"log-prod-*"</span>],                 
+  <span class="hljs-attr">"settings"</span>: {
+    <span class="hljs-attr">"index.lifecycle.name"</span>: <span class="hljs-string">"prod_retention"</span>,        <font></font>
+  }<font></font>
+}<font></font>
+PUT _template/default_template<font></font>
+{<font></font>
+  <span class="hljs-attr">"index_patterns"</span>: [<span class="hljs-string">"logstash-*"</span>],                 
+  <span class="hljs-attr">"settings"</span>: {
+    <span class="hljs-attr">"index.lifecycle.name"</span>: <span class="hljs-string">"default_retention"</span>,        <font></font>
+  }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now Elasticsearch cluster will independently manage data storage. </font><font style="vertical-align: inherit;">This means that all indexes that fall under the template in the </font></font><code>index_patterns</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">above will be cleared after the number of days specified in the policy. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But here we are faced with another problem ...</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Reindexing within a cluster and from remote clusters</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The policies, patterns, and changes that we created in fluentd that we created will </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">only</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> have effect </font><b><font style="vertical-align: inherit;">on newly created indexes</font></b><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">To put in order what we already have, you will have to start the reindexing process by contacting the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Reindex API</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is required to select the “necessary” logs from already closed indexes and reindex them themselves so that policies are applied. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Two simple queries are enough for this:</font></font><br>
+<br>
+<pre><code class="json hljs">POST _reindex<font></font>
+{<font></font>
+  <span class="hljs-attr">"source"</span>: {
+    <span class="hljs-attr">"index"</span>: <span class="hljs-string">"logstash-2019.10.24"</span>,
+    <span class="hljs-attr">"query"</span>: {
+      <span class="hljs-attr">"match"</span>: {
+        <span class="hljs-attr">"kubernetes.namespace_name"</span>: <span class="hljs-string">"production"</span><font></font>
+      }<font></font>
+    }<font></font>
+  },<font></font>
+  <span class="hljs-attr">"dest"</span>: {
+    <span class="hljs-attr">"index"</span>: <span class="hljs-string">"log-prod-2019.10.24"</span><font></font>
+  }<font></font>
+}<font></font>
+<font></font>
+POST _reindex<font></font>
+{<font></font>
+  <span class="hljs-attr">"source"</span>: {
+    <span class="hljs-attr">"index"</span>: <span class="hljs-string">"logstash-2019.10.24"</span>
+    <span class="hljs-string">"query"</span>: {
+      <span class="hljs-attr">"bool"</span>: { 
+        <span class="hljs-attr">"must_not"</span>: {
+          <span class="hljs-attr">"match"</span>: {
+            <span class="hljs-attr">"kubernetes.namespace_name"</span>: <span class="hljs-string">"production"</span><font></font>
+           }<font></font>
+        }<font></font>
+      }<font></font>
+    }<font></font>
+  },<font></font>
+  <span class="hljs-attr">"dest"</span>: {
+    <span class="hljs-attr">"index"</span>: <span class="hljs-string">"logstash-2019.10.24-ri"</span><font></font>
+  }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now you can delete old indexes! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, there are other difficulties. As already known, curator was previously configured, which cleaned the cluster with a retention of 14 days. Thus, for services that are relevant to us, it will be necessary to restore data from what was once deleted. Backups will help here. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the simplest case, which applies to ours, backups are done by calling </font></font><code>elasticdump</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for all indexes at once:</font></font><br>
+<br>
+<pre><code class="bash hljs">/usr/bin/elasticdump --all <span class="hljs-variable">$OPTIONS</span> --input=http://localhost:9200 --output=$</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Expand everything that was from the start of production was not possible, because </font><font style="vertical-align: inherit;">there wasn’t so much space in the cluster. </font><font style="vertical-align: inherit;">In addition, access to the logs from the backup was required now. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The solution is to </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">deploy a temporary cluster</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> into which the backup is restored, from where we get the logs we need (in a manner similar to that already described). </font><font style="vertical-align: inherit;">In parallel, we began to think about how to make removing backups a more convenient way - see below for more details. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, the following steps (on a temporary cluster):</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Install another Elasticsearch on a separate server with a sufficiently large disk.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Expand the backup from our dump file:</font></font><br>
+<br>
+<pre><code class="bash hljs">/usr/bin/elasticdump --bulk --input=dump.json --output=http://127.0.0.1:9200/</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Please note that indexes in the cluster will not become green, as </font><font style="vertical-align: inherit;">we transfer the dump to a 1-node configuration. </font><font style="vertical-align: inherit;">But worry about this is not worth it: the main thing is to pull out only primal-shards.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Do not forget that to allow reindexing from remote clusters, you need to add them to whitelist in </font></font><code>elasticsearch.yaml</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">reindex.remote.whitelist: 1.2.3.4:9200</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Next, we make a request for reindexing from a remote cluster in the current production cluster:</font></font><br>
+<br>
+<pre><code class="json hljs">POST _reindex<font></font>
+{<font></font>
+  <span class="hljs-attr">"source"</span>: {
+    <span class="hljs-attr">"remote"</span>: {
+      <span class="hljs-attr">"host"</span>: <span class="hljs-string">"http://1.2.3.4:9200"</span><font></font>
+    },<font></font>
+    <span class="hljs-attr">"size"</span>: <span class="hljs-number">10000</span>,
+    <span class="hljs-attr">"index"</span>: <span class="hljs-string">"logstash-2019.10.24"</span>,
+    <span class="hljs-attr">"query"</span>: {
+      <span class="hljs-attr">"match"</span>: {
+        <span class="hljs-attr">"kubernetes.namespace_name"</span>: <span class="hljs-string">"production"</span><font></font>
+      }<font></font>
+    }<font></font>
+  },<font></font>
+  <span class="hljs-attr">"dest"</span>: {
+    <span class="hljs-attr">"index"</span>: <span class="hljs-string">"log-prod-2019.10.24"</span><font></font>
+  }<font></font>
+}</code></pre></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+By this request, we obtain from the indices in the remote cluster documents that will be transmitted to the production cluster over the network. </font><font style="vertical-align: inherit;">On the side of the temporary cluster, all documents that are not suitable for the request will be filtered. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Parameters </font></font><code>size</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>slice</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">are used to speed up the reindexing process:</font></font><br>
+<br>
+<ul>
+<li> <code>size</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - to increase the number of documents for indexation transferred in the package;</font></font></li>
+<li> <code>slice</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- to divide this task into 6 subtasks, which will be engaged in reindexing in parallel. </font><font style="vertical-align: inherit;">(The parameter does not work in reindexing from remote clusters).</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the host Elasticsearch, we tuned index templates for maximum performance. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When all the necessary logs are in one place completely divided as required, the temporary cluster can be deleted:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/4m/9y/xo/4m9yxo7bcko3dslumlqgfeg0ufa.png"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Backups Elasticsearch</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It's time to get back to backups: running </font></font><code>elasticdump</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">on all indexes is far from the best solution. </font><font style="vertical-align: inherit;">At least for the reason that recovery can take indecent time, and there are times when every hour is important. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Such a task can be "given" to Elasticsearch itself - </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Snapshot Repository</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> based on S3. </font><font style="vertical-align: inherit;">And here are the main reasons why we ourselves chose this approach:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> The convenience of creating and restoring from such backups, since the native syntax of queries to Elasticsearch is used.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Snapshots are rolled incrementally, i.e. </font><font style="vertical-align: inherit;">adding new data to existing ones.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> The ability to restore any index from a snapshot and even restore the global state of the cluster.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> S3 seems to be a more reliable place to store backups than just a file (including for the reason that we usually use S3 in HA modes).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> S3 portability: we are not tied to specific providers and can deploy S3 in a new location on our own.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Setting up backup in S3 requires additional installation of the plugin in Elasticsearch so that Snapshot Repository can communicate with S3. </font><font style="vertical-align: inherit;">The whole configuration comes down to the following steps:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Install the plugin for S3 on all nodes:</font></font><br>
+<br>
+<pre><code class="bash hljs">bin/elasticsearch-plugin install repository-s3</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+... and at the same time add S3 to whitelist in </font></font><code>elasticsearch.yml</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">    Repositories.url.allowed_urls:<font></font>
+- "https://example.com/*"</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Add keys </font></font><code>SECRET</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>ACCESS</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in Elasticsearch keystore. </font><font style="vertical-align: inherit;">By default, the user is used to connect to S3 </font></font><code>default</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">bin/elasticsearch-keystore add s3.client.default.access_key<font></font>
+bin/elasticsearch-keystore add s3.client.default.secret_key</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+... and after that we restart the Elasticsearch service on all nodes one by one.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Create a repository for snapshots:</font></font><br>
+<br>
+<pre><code class="json hljs">PUT /_snapshot/es_s3_repository<font></font>
+{<font></font>
+  <span class="hljs-attr">"type"</span>: <span class="hljs-string">"s3"</span>,
+  <span class="hljs-attr">"settings"</span>: {
+    <span class="hljs-attr">"bucket"</span>: <span class="hljs-string">"es-snapshot"</span>,
+    <span class="hljs-attr">"region"</span>: <span class="hljs-string">"us-east-1"</span>,
+    <span class="hljs-attr">"endpoint"</span>: <span class="hljs-string">"https://example.com"</span><font></font>
+  }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this case, to create a snapshot, there </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">are</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> enough </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">examples from the documentation</font></a><font style="vertical-align: inherit;"> where the name of the snapshot will be in the format:, </font></font><code>snapshot-2018.05.11</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- i.e.:</font></font><br>
+<br>
+<pre><code class="json hljs">PUT /_snapshot/my_backup/%<span class="hljs-number">3</span>Csnapshot-%<span class="hljs-number">7</span>Bnow%<span class="hljs-number">2</span>Fd%<span class="hljs-number">7</span>D%<span class="hljs-number">3</span>E</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> It remains only to test the restoration of the index:</font></font><br>
+<br>
+<pre><code class="json hljs">POST /_snapshot/es_s3_repository/snapshot<span class="hljs-number">-2019.12</span><span class="hljs-number">.30</span>/_restore<font></font>
+{<font></font>
+  <span class="hljs-attr">"indices"</span>: <span class="hljs-string">"logstash-2019.12.29"</span>,
+  <span class="hljs-attr">"rename_pattern"</span>: <span class="hljs-string">"logstash-(.+)"</span>,
+  <span class="hljs-attr">"rename_replacement"</span>: <span class="hljs-string">"restored_index_$1"</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So we restore the index “next to”, simply renaming it. </font><font style="vertical-align: inherit;">However, you can restore it to the same index - only for this the index in the cluster must be closed and have the same number of shards as the index in the snapshot.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The snapshot removal status can be checked by name via the API, calling up the snapshot information and looking in the field </font></font><code>state</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="json hljs">GET /_snapshot/es_s3_repository/snapshot_2019<span class="hljs-number">.12</span><span class="hljs-number">.30</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The recovery status can be checked from the cluster itself: at the beginning of recovery, the cluster will go into status </font></font><code>red</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, because </font><font style="vertical-align: inherit;">primal shards of your indices will be restored. </font><font style="vertical-align: inherit;">As soon as the process is completed, the indexes and cluster will go into status </font></font><code>yellow</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- until the specified number of replicas is created. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can also track the status with the help </font></font><code>wait_for_completion=true</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">indicated directly in the query line. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Result - we get an exact copy of the index from the snapshot made:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">green open restored_index_2019.12.29    eJ4wXqg9RAebo1Su7PftIg 1 1 1836257 0   1.9gb 1000.1mb<font></font>
+green open logstash-2019.12.29          vE8Fyb40QiedcW0k7vNQZQ 1 1 1836257 0   1.9gb 1000.1mb</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Summary and disadvantages</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The optimal solutions for us in the Elasticsearch cluster were:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Configuring the output plugin in fluentd, with which you can share logs directly at the exit from the cluster.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Index lifecycle policy, which allows you not to worry about problems with the space occupied by indexes. </font></font></li>
+<li>     snapshot repository (   ),         S3,    .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, it will be useful to caution that changes in policies and templates due to changing needs will subsequently lead to the need to reindex all indexes in the cluster. And with backups, the picture is even further from the ideal ... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Despite the fact that we “handed over” the backups to Elasticsearch itself, launching the snapshot removal and monitoring its implementation still remains our task: accessing the API, tracking statuses (through </font></font><code>wait_for_completion</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) and by status we We will produce it ourselves using scripts. For all its convenience, the backup repository has another problem: too few plugins. For example, there is no way to work through WebDAV if instead of S3 you need something completely simple, but just as mobile.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, this isolation of the system does not fit well with the use of a centralized approach to backups and we have not yet found (among Open Source tools) a universal tool that would allow this.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PS</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Read also in our blog:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Logs in Kubernetes (and not only) today: expectations and reality</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">One story with the Redis operator in K8s and a mini-overview of utilities for analyzing data from this database</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">6 practical stories from our SRE-everyday life</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ."</font></font></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en490010/index.html">Examination of the type system for checking the correctness of music</a></li>
+<li><a href="../en490012/index.html">Alert-s and Error-s of storage, how to deal with them?</a></li>
+<li><a href="../en490014/index.html">JavaScript tree shaking, like a pro</a></li>
+<li><a href="../en490018/index.html">How to design mobile applications for one hand</a></li>
+<li><a href="../en490020/index.html">Translation into English in IT sphere by the example of PVS-Studio</a></li>
+<li><a href="../en490034/index.html">ML REPA Meetup at Raffeisenbank: keep broadcasting</a></li>
+<li><a href="../en490040/index.html">Python-Celery in Windows with Docker managing</a></li>
+<li><a href="../en490042/index.html">Positive Technologies study: 7 out of 8 financial institutions can enter the network from the Internet</a></li>
+<li><a href="../en490044/index.html">CRM implementation through the eyes of the customer</a></li>
+<li><a href="../en490046/index.html">NDA for development - “residual” clause and other ways to protect yourself</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

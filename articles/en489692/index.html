@@ -1,0 +1,250 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩‍🎓 👶🏿 👨🏾 Using RabbitMQ with MonsterMQ Part 3 🐷 🕺🏽 👨🏽‍🤝‍👨🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In our previous article, we created a task queue. It assumes that one task in the form of a message is delivered to one recipient. In this article we ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Using RabbitMQ with MonsterMQ Part 3</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/489692/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In our </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">previous article,</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> we created a task queue. </font><font style="vertical-align: inherit;">It assumes that one task in the form of a message is delivered to one recipient. </font><font style="vertical-align: inherit;">In this article we will do something else, we will send one message to several recipients at once. </font><font style="vertical-align: inherit;">We will create a logging system that will consist of two programs: the first will send messages, and the second will receive and display them. </font><font style="vertical-align: inherit;">In our system, all running recipients will receive a message sent by the sender.</font></font><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Exchanges (exchangers)</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In previous articles, we sent and received messages from queues, now it's time to introduce a complete message forwarding model in RabbitMQ. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's quickly go through what we covered in previous articles:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Producer - an application that sends messages </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Queue - a buffer that stores messages </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Consumer - an application that receives and processes messages </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The key idea of ​​RabbitMQ (or rather AMQP) is that the sender (Producer) never sends a message directly to the queue. </font><font style="vertical-align: inherit;">Moreover, he doesn’t even know if it is in the queue. </font><font style="vertical-align: inherit;">Instead, the sender sends messages to exchangers (Exchange). </font><font style="vertical-align: inherit;">The exchanger is a very simple thing, it does two things: receives a message from senders and redirects them to the queue. </font><font style="vertical-align: inherit;">Exchangers are of different types: some send messages to a specific queue (direct type), others send the same message to several queues at once (fanout type), others redirect messages to the queue based on specific, specified redirection rules (topic type). </font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/1bd/dc5/c2d/1bddc5c2d6aa4b26ba0f675162aaecf7.png" alt="image"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(image taken from </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RabbitMQ official site</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> )</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's look at a fanout type exchanger. </font><font style="vertical-align: inherit;">In order to create it, write the following code:</font></font><br>
+<br>
+<pre><code class="php hljs">$producer-&gt;newFanoutExchange(<span class="hljs-string">'logs'</span>);
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The Fanout exchanger works according to a very simple scheme, it simply sends the received message to all queues attached to it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To list all exchangers existing on the server, call </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">rabbitmqctl</font></font></b><br>
+<br>
+<pre><code class="bash hljs">sudo rabbitmqctl list_exchanges</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This list will </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">contain amq. *</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Exchangers and a standard nameless (empty line) exchanger. Do not pay attention to them we do not need them yet. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the last article, we did not know anything about exchangers, but nonetheless were able to send messages. This happened because if in MonsterMQ you do not explicitly specify the exchanger as the third argument to the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Producer :: publish ()</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> method, the </font><font style="vertical-align: inherit;">library will use the standard nameless exchanger RabbitMQ, which sends messages in queues whose names are passed as the second argument to the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Producer :: publish ()</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> method </font><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we can send messages to our new exchanger by specifying its name as the third argument to the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Producer :: publish ()</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> method </font><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="php hljs">$producer-&gt;publish($message, <span class="hljs-string">''</span>, <span class="hljs-string">'logs'</span>);
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now let's create two workers with two queues that will exist as long as the workers who announced them are active. </font><font style="vertical-align: inherit;">You can do this as follows:</font></font><br>
+<br>
+<pre><code class="php hljs"><span class="hljs-comment">//Worker 1</span>
+$producer-&gt;queue(<span class="hljs-string">'queue-1'</span>)-&gt;setExclusive()-&gt;declare();
+</code></pre><br>
+<pre><code class="php hljs"><span class="hljs-comment">//Worker 2</span>
+$producer-&gt;queue(<span class="hljs-string">'queue-2'</span>)-&gt;setExclusive()-&gt;declare();
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now when the worker who has announced the queue ends the session and disconnects, it will automatically be deleted. </font><font style="vertical-align: inherit;">If both workers complete their work, both queues will be deleted.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We connect the queue with the exchanger</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We have already created an exchange and a queue. </font><font style="vertical-align: inherit;">Now we just have to tell the exchanger to send the received messages to our queues. </font><font style="vertical-align: inherit;">We need </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to bind the</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> exchanger and queues. </font><font style="vertical-align: inherit;">To do this, write the following code:</font></font><br>
+<br>
+<pre><code class="php hljs"><span class="hljs-comment">//Worker 1</span>
+$producer-&gt;queue(<span class="hljs-string">'queue-1'</span>)-&gt;bind(<span class="hljs-string">'logs'</span>);
+</code></pre><br>
+<pre><code class="php hljs"><span class="hljs-comment">//Worker 2</span>
+$producer-&gt;queue(<span class="hljs-string">'queue-2'</span>)-&gt;bind(<span class="hljs-string">'logs'</span>);
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+From now on, our </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">logs</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> exchanger </font><font style="vertical-align: inherit;">is connected to our queues and will forward the received messages to them. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can list all existing links with the following command on linux</font></font><br>
+<br>
+<pre><code class="bash hljs">rabbitmqctl list_bindings</code></pre><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Putting the code together</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Our sender script has not changed much compared to the previous lesson. </font><font style="vertical-align: inherit;">The main difference is that now it sends messages to the previously announced exchanger, and not to the standard one (accessible from the box). </font><font style="vertical-align: inherit;">Here is the </font><b><font style="vertical-align: inherit;">send.php</font></b><font style="vertical-align: inherit;"> code</font></font><b><font style="vertical-align: inherit;"></font></b><br>
+<br>
+<pre><code class="php hljs"><span class="hljs-keyword">try</span> {<font></font>
+   $producer = \MonsterMQ\Client\Producer();<font></font>
+<font></font>
+   $producer-&gt;connect(<span class="hljs-string">'127.0.0.1'</span>, <span class="hljs-number">5672</span>);<font></font>
+   $producer-&gt;logIn(<span class="hljs-string">'guest'</span>, <span class="hljs-string">'guest'</span>);<font></font>
+<font></font>
+   $producer-&gt;newFanoutExchange(<span class="hljs-string">'logs'</span>);<font></font>
+<font></font>
+   $message = implode(<span class="hljs-string">' '</span>, array_slice($argv, <span class="hljs-number">1</span>));<font></font>
+   $message = <span class="hljs-keyword">empty</span>($message) ? <span class="hljs-string">'Hello world!'</span> : $message;<font></font>
+<font></font>
+   $producer-&gt;publish($message, <span class="hljs-string">''</span>, <span class="hljs-string">'logs'</span>);<font></font>
+<font></font>
+   <span class="hljs-keyword">echo</span> <span class="hljs-string">"\n Sent {$message} \n"</span>;<font></font>
+} <span class="hljs-keyword">catch</span>(\<span class="hljs-built_in">Exception</span> $e) {<font></font>
+   var_dump($e);<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is worth mentioning that by sending a message to an exchanger that is not associated with any queue, the message will be lost. </font><font style="vertical-align: inherit;">But now it suits us, since we have not yet launched our recipients. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here is the code for our first </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-1.php worker</font></font></b><br>
+<br>
+<pre><code class="php hljs"><span class="hljs-keyword">try</span> {<font></font>
+   $consumer = \MonsterMQ\Client\Consumer();<font></font>
+<font></font>
+   $consumer-&gt;connect(<span class="hljs-string">'127.0.0.1'</span>, <span class="hljs-number">5672</span>);<font></font>
+   $consumer-&gt;logIn(<span class="hljs-string">'guest'</span>, <span class="hljs-string">'guest'</span>);<font></font>
+<font></font>
+   $producer-&gt;queue(<span class="hljs-string">'queue-1'</span>)-&gt;setExclusive()-&gt;declare();<font></font>
+   $producer-&gt;queue(<span class="hljs-string">'queue-1'</span>)-&gt;bind(<span class="hljs-string">'logs'</span>);<font></font>
+<font></font>
+   $consumer-&gt;consume(<span class="hljs-string">'queue-1'</span>);<font></font>
+<font></font>
+   $consumer-&gt;wait(<span class="hljs-function"><span class="hljs-keyword">function</span> (<span class="hljs-params">$message, $channelNumber</span>) <span class="hljs-title">use</span> (<span class="hljs-params">$consumer</span>)</span>{
+      <span class="hljs-keyword">echo</span> <span class="hljs-string">"\n $message \n"</span>;<font></font>
+   });<font></font>
+} <span class="hljs-keyword">catch</span>(\<span class="hljs-built_in">Exception</span> $e) {<font></font>
+   var_dump($e);<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here is the code for the second </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">worker-2.php worker</font></font></b><br>
+<br>
+<pre><code class="php hljs"><span class="hljs-keyword">try</span> {<font></font>
+   $consumer = \MonsterMQ\Client\Consumer();<font></font>
+<font></font>
+   $consumer-&gt;connect(<span class="hljs-string">'127.0.0.1'</span>, <span class="hljs-number">5672</span>);<font></font>
+   $consumer-&gt;logIn(<span class="hljs-string">'guest'</span>, <span class="hljs-string">'guest'</span>);<font></font>
+<font></font>
+   $producer-&gt;queue(<span class="hljs-string">'queue-2'</span>)-&gt;setExclusive()-&gt;declare();<font></font>
+   $producer-&gt;queue(<span class="hljs-string">'queue-2'</span>)-&gt;bind(<span class="hljs-string">'logs'</span>);<font></font>
+<font></font>
+   $consumer-&gt;consume(<span class="hljs-string">'queue-2'</span>);<font></font>
+<font></font>
+   $consumer-&gt;wait(<span class="hljs-function"><span class="hljs-keyword">function</span> (<span class="hljs-params">$message, $channelNumber</span>) <span class="hljs-title">use</span> (<span class="hljs-params">$consumer</span>)</span>{
+      <span class="hljs-keyword">echo</span> <span class="hljs-string">"\n $message \n"</span>;<font></font>
+   });<font></font>
+} <span class="hljs-keyword">catch</span>(\<span class="hljs-built_in">Exception</span> $e) {<font></font>
+   var_dump($e);<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If you want to save messages sent to the first worker in a log file, just call the following command in the console:</font></font><br>
+<br>
+<pre><code class="bash hljs">php worker-1.php &gt; logs_from_rabbit.log</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To start both workers and display messages in terminal windows, call the following commands, each in its own window:</font></font><br>
+<br>
+<pre><code class="bash hljs">php worker-1.php</code></pre><br>
+<pre><code class="bash hljs">php worker-2.php</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And to send messages, call the following command:</font></font><br>
+<br>
+<pre><code class="bash hljs">php send.php</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">next lesson,</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> we will look at how to get only a certain subset of messages from all sent.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en489676/index.html">We make a clone of the food delivery service using Nuxt.js, GraphQL, Strapi and Stripe. Part 1/7</a></li>
+<li><a href="../en489678/index.html">Indestructible memory, indestructible processes</a></li>
+<li><a href="../en489682/index.html">Cross-Origin Read Blocking (CORB) in Chrome Extensions</a></li>
+<li><a href="../en489684/index.html">This is the norm - 4: solving problems with normal maps</a></li>
+<li><a href="../en489688/index.html">OData + RxJava + Retrofit 2 for android application</a></li>
+<li><a href="../en489696/index.html">How bioacoustics helps explore the animal kingdom</a></li>
+<li><a href="../en489700/index.html">Where to go: the next free events for developers in Moscow (February 25 - March 11)</a></li>
+<li><a href="../en489704/index.html">Digital events in Moscow from February 24 to March 1</a></li>
+<li><a href="../en489706/index.html">Digital events in St. Petersburg from February 24 to March 1</a></li>
+<li><a href="../en489708/index.html">And a mouse and a frog. Universal Compiler</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
