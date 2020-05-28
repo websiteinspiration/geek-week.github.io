@@ -1,0 +1,236 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨‍👨‍👧 ☕️ 💱 Making Faster POSTGRESQL COUNT (*) ↖️ 👨🏼‍💼 👩‍🏫</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="It is often complained that count (*) in PostgreSQL is very slow. 
+ 
+ In this article, I want to explore options so that you get the result as quickly...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Making Faster POSTGRESQL COUNT (*)</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/490320/"><img src="https://habrastorage.org/webt/gd/v7/vr/gdv7vrlvosn5rd46igghex_2ofe.png" height="60%" width="60%"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is often complained that count (*) in PostgreSQL is very slow. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this article, I want to explore options so that you get the result as quickly as possible.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Why is count (*) so slow?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Most people understand without problems that the following request will be executed slowly:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">count</span>(*)
+<span class="hljs-keyword">FROM</span> <span class="hljs-comment">/*   */</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is, after all, a complex query, and PostgreSQL must calculate the result before it knows how many rows it will contain. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But many people are shocked when they find out that the following query is slow:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">count</span>(*) <span class="hljs-keyword">FROM</span> large_table;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, if you think again, all of the above remains valid: PostgreSQL must compute the result set before it can count it. </font><font style="vertical-align: inherit;">Since the “magic row counter” is not stored in the table (as in MyISAM MySQL), the only way to count the rows is to view them. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Therefore, count (*) usually performs sequential table scans, which can be quite expensive.</font></font><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Is the "*" in count (*) a problem?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The "*" in SELECT * FROM ... applies to all columns. </font><font style="vertical-align: inherit;">Therefore, many people find that using count (*) is inefficient, and instead use count (id) or count (1) instead. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But the "*" in count (*) is completely different, it simply means "string" and does not expand at all (in fact, it is "an aggregate with zero argument"). </font><font style="vertical-align: inherit;">The notation count (1) or count (id) is actually slower than count (*), because it must be checked whether the argument is NULL or not (count, like most aggregates, ignores the arguments NULL). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So you will not achieve anything by avoiding the "*".</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Using </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">index only scan</font></font></i></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is tempting to scan a small index, not the entire table, to count the number of rows. However, this is not so simple in PostgreSQL due to its multi-version concurrency management strategy. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Each version of the row (“tuple”) contains information about which database snapshot it is visible to</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . But this (redundant) information is not stored in indexes. Therefore, it is usually not enough to count the entries in the index, since PostgreSQL must look at the table entry (“heap tuple”) to make sure that the index entry is visible. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To mitigate this problem, PostgreSQL introduced a </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">visibility map</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , a data structure that stores information about whether all tuples in a table block are visible to everyone or not.</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If most of the blocks in the table are fully visible, then index scans do not require frequent visits to a bunch of tuples to determine visibility. </font><font style="vertical-align: inherit;">Such an index scan is called an “index only scan," and it is often faster to scan an index to count the rows. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now it is VACUUM that supports the visibility map, so make sure autovacuum is done often enough if you want to use a small index to speed up count (*).</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Using pivot table</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I wrote above that PostgreSQL does not store the number of rows in a table. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Maintaining such a row count is a big overhead, since this event occurs with every data modification and does not pay off. That would be a bad deal. Moreover, since different requests can see different versions of strings, the counter must also be versioned. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But nothing prevents you from implementing such a line counter yourself. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suppose you want to track the number of rows in a mytable. You can do it as follows:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">START</span> <span class="hljs-keyword">TRANSACTION</span>;<font></font>
+ <font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> mytable_count(c <span class="hljs-built_in">bigint</span>);<font></font>
+ <font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">FUNCTION</span> mytable_count() <span class="hljs-keyword">RETURNS</span> <span class="hljs-keyword">trigger</span>
+   <span class="hljs-keyword">LANGUAGE</span> plpgsql <span class="hljs-keyword">AS</span>
+$$<span class="hljs-keyword">BEGIN</span>
+   <span class="hljs-keyword">IF</span> TG_OP = <span class="hljs-string">'INSERT'</span> <span class="hljs-keyword">THEN</span>
+      <span class="hljs-keyword">UPDATE</span> mytable_count <span class="hljs-keyword">SET</span> c = c + <span class="hljs-number">1</span>;<font></font>
+ <font></font>
+      RETURN NEW;<font></font>
+   ELSIF TG_OP = '<span class="hljs-keyword">DELETE</span><span class="hljs-string">' THEN
+      UPDATE mytable_count SET c = c - 1;
+ 
+      RETURN OLD;
+   ELSE
+      UPDATE mytable_count SET c = 0;
+ 
+      RETURN NULL;
+   END IF;
+END;$$;
+ 
+CREATE CONSTRAINT TRIGGER mytable_count_mod
+   AFTER INSERT OR DELETE ON mytable
+   DEFERRABLE INITIALLY DEFERRED
+   FOR EACH ROW EXECUTE PROCEDURE mytable_count();
+ 
+-- TRUNCATE triggers must be FOR EACH STATEMENT
+CREATE TRIGGER mytable_count_trunc AFTER TRUNCATE ON mytable
+   FOR EACH STATEMENT EXECUTE PROCEDURE mytable_count();
+ 
+-- initialize the counter table
+INSERT INTO mytable_count
+   SELECT count(*) FROM mytable;
+ 
+COMMIT;</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We do everything in one transaction so that no data changes on concurrent transactions can be “lost” due to a ring condition. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is guaranteed by the CREATE TRIGGER command locking the table in SHARE ROW EXCLUSIVE mode, which prevents all concurrent changes. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The downside is that all parallel data modifications must wait until SELECT count (*) is executed. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This gives us a really quick alternative to count (*), but at the cost of slowing down all the data changes in the table. Using a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">deferred constraint trigger</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ensures that the row lock in mytable_count is as short as possible to improve concurrency. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Despite the fact that this counter table can receive many updates, there is no danger</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">There is no “bloating of the table"</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , because all these will be "hot" updates (HOT updates).</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">You really need count (*)</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sometimes the best solution is to look for an alternative. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Often the approximation is good enough and you do not need the exact amount. </font><font style="vertical-align: inherit;">In this case, you can use the score that PostgreSQL uses to schedule queries:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span> reltuples::<span class="hljs-built_in">bigint</span>
+<span class="hljs-keyword">FROM</span> pg_catalog.pg_class
+<span class="hljs-keyword">WHERE</span> relname = <span class="hljs-string">'mytable'</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This value is updated by both autovacuum and autoanalyze, so it should never exceed 10%. </font><font style="vertical-align: inherit;">You can reduce autovacuum_analyze_scale_factor for this table so that autoanalyze runs there more often.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Estimating the number of query results</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So far, we have been exploring how to speed up the counting of table rows. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But sometimes you need to know how many rows the SELECT statement will return without actually executing the query. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Obviously, the only way to get an accurate answer to this question is to complete the request. </font><font style="vertical-align: inherit;">But if the grade is good enough, you can use the PostgreSQL optimizer to get it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The following simple function uses dynamic SQL and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">EXPLAIN</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to get the query execution plan passed as an argument, and returns an estimate of the number of rows:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">FUNCTION</span> row_estimator(<span class="hljs-keyword">query</span> <span class="hljs-built_in">text</span>) <span class="hljs-keyword">RETURNS</span> <span class="hljs-built_in">bigint</span>
+   <span class="hljs-keyword">LANGUAGE</span> plpgsql <span class="hljs-keyword">AS</span>
+$$<span class="hljs-keyword">DECLARE</span><font></font>
+   plan jsonb;<font></font>
+<span class="hljs-keyword">BEGIN</span>
+   <span class="hljs-keyword">EXECUTE</span> <span class="hljs-string">'EXPLAIN (FORMAT JSON) '</span> || <span class="hljs-keyword">query</span> <span class="hljs-keyword">INTO</span> plan;<font></font>
+ <font></font>
+   RETURN (plan-&gt;0-&gt;'Plan'-&gt;&gt;'Plan Rows')::bigint;<font></font>
+<span class="hljs-keyword">END</span>;$$;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Do not use this function to process untrusted SQL statements, as it is inherently vulnerable to SQL injection.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en490302/index.html">Learning to deploy microservices. Part 3. Helm</a></li>
+<li><a href="../en490306/index.html">How we made space technology mockups for the Moscow Aviation Institute</a></li>
+<li><a href="../en490310/index.html">Faraday law or how a magnet gets stuck in a copper pipe</a></li>
+<li><a href="../en490314/index.html">RE: 23 minutes. Justification of the slow-witted</a></li>
+<li><a href="../en490318/index.html">Bionic prostheses nowadays</a></li>
+<li><a href="../en490322/index.html">Namibia: infrastructure and what to know before travel</a></li>
+<li><a href="../en490324/index.html">How do we find unobvious errors in the online assignment interfaces for children</a></li>
+<li><a href="../en490328/index.html">Profession: Tester</a></li>
+<li><a href="../en490332/index.html">We make a clone of the food delivery service using Nuxt.js, GraphQL, Strapi and Stripe. Part 2/7</a></li>
+<li><a href="../en490336/index.html">Channel Anatomy in Go</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

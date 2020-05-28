@@ -1,0 +1,363 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📲 👉🏽 🤦🏿 PostgreSQL Antipatterns: a tale about iterative refinement of the search by name, or “Optimization back and forth” 🤕 👵🏻 ▪️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Thousands of managers from sales offices across the country record tens of thousands of contacts in our CRM system  every day - facts of communication...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: a tale about iterative refinement of the search by name, or “Optimization back and forth”</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/491162/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Thousands of managers from sales offices across the country record </font><b><font style="vertical-align: inherit;">tens of thousands of contacts</font></b><font style="vertical-align: inherit;"> in </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">our CRM system </font></font></a> <b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">every day</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - facts of communication with potential or already working with us customers. And for this client you must first find, and preferably very quickly. And this happens most often by name. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Therefore, it is not surprising that, once again analyzing “heavy” requests at one of the most loaded databases — our own </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">corporate VLSI account</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , I found “in the top” a </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">request for a “quick” search by name</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> for company cards. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Moreover, a further investigation revealed an interesting example of </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">optimization and then degradation of performance</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> request in its subsequent refinement by several teams, each of which acted solely from well-meaning.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0: what did the user want</font></font></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/du/k9/mg/duk9mgzeofw0ka5_lrg8lewch7k.png"></div><font color="#c0c0c0"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[KDPV </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">from here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ]</font></font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+What does the user usually mean when he says “quick” search by name? </font><font style="vertical-align: inherit;">Almost never it turns out to be an “honest” search on a substring of the type </font></font><code>... LIKE '%%'</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- because then not only </font><font style="vertical-align: inherit;">and </font><font style="vertical-align: inherit;">, but </font><font style="vertical-align: inherit;">even even </font><font style="vertical-align: inherit;">get the result </font><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">
+The user implies at the household level that you will provide him with a </font><b><font style="vertical-align: inherit;">search at the beginning of a word</font></b><font style="vertical-align: inherit;"> in the title and show more relevant what </font><b><font style="vertical-align: inherit;">begins with the</font></b><font style="vertical-align: inherit;"> entered one. </font><font style="vertical-align: inherit;">And do it </font><b><font style="vertical-align: inherit;">almost instantly</font></b><font style="vertical-align: inherit;"> - with interlinear input.</font></font><code>'<u></u>'</code><font style="vertical-align: inherit;"></font><code>' <u></u>'</code><font style="vertical-align: inherit;"></font><code>'<u></u>'</code><font style="vertical-align: inherit;"></font><code>'  <u></u>'</code><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1: limit the task</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And even more so, a person will not specifically enter </font></font><code>' '</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">so that you have to search for every word prefix. </font><font style="vertical-align: inherit;">No, it’s much easier for the user to respond to a quick hint for the last word than to deliberately “miss” the previous ones - see how any search engine works. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">correctly</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> formulating requirements for a task is more than half the solution. </font><font style="vertical-align: inherit;">Sometimes careful analysis of the use case </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">can significantly affect the result</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What does the abstract developer do?</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.0: external search engine</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Oh, searching is difficult, I don’t want to do anything at all - let's give it to devops! </font><font style="vertical-align: inherit;">Let them deploy to us an external search engine relative to the database: Sphinx, ElasticSearch, ... A </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+working, albeit time-consuming, option in terms of synchronization and speed of change. </font><font style="vertical-align: inherit;">But not in our case, since the search is carried out for each client only within the framework of his account data. </font><font style="vertical-align: inherit;">And the data has a rather high variability - and if the manager has now inserted the card </font></font><code>' '</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, then after 5-10 seconds he can already remember that he forgot to indicate the email there and want to find and correct it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Therefore - let's </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">search "directly in the database</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><b><font style="vertical-align: inherit;">" </font></b><font style="vertical-align: inherit;">Fortunately, PostgreSQL allows us to do this, and not just one option - we’ll consider them.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.1: “honest” substring</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We cling to the word "substring." </font><font style="vertical-align: inherit;">But exactly for index search by substring (and even by regular expressions!) There is an excellent </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">module pg_trgm</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ! </font><font style="vertical-align: inherit;">Only then it will be necessary to sort correctly. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's try to take a plate for simplicity of the model:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> firms(
+  <span class="hljs-keyword">id</span>
+    <span class="hljs-built_in">serial</span>
+      PRIMARY <span class="hljs-keyword">KEY</span>
+, <span class="hljs-keyword">name</span>
+    <span class="hljs-built_in">text</span>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We fill in there 7.8 million records of real organizations and index:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> EXTENSION pg_trgm;
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> firms <span class="hljs-keyword">USING</span> gin(<span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) gin_trgm_ops);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let’s look for the first 10 entries for interline search:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) ~ (<span class="hljs-string">'(^|\s)'</span> || <span class="hljs-string">''</span>)
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) ~ (<span class="hljs-string">'^'</span> || <span class="hljs-string">''</span>) <span class="hljs-keyword">DESC</span> <span class="hljs-comment">--  " "</span>
+, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-comment">--   </span>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;
+</code></pre><br>
+<img src="https://habrastorage.org/webt/0m/pk/su/0mpksuspk5xdasdj7mtg5ch4jvw.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[take a look at explain.tensor.ru]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Well, that’s ... </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">26ms, 31MB of</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> read data and more than 1.7K filtered records - for 10 people. </font><font style="vertical-align: inherit;">The overhead is too high, is it possible to be somehow more efficient?</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.2: text search? </font><font style="vertical-align: inherit;">it's FTS!</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Indeed, PostgreSQL provides a very powerful </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mechanism for full text search</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (Full Text Search), including the possibility of prefix search. </font><font style="vertical-align: inherit;">A great option, even extensions do not need to be installed! </font><font style="vertical-align: inherit;">Let's try:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> firms <span class="hljs-keyword">USING</span> gin(to_tsvector(<span class="hljs-string">'simple'</span>::regconfig, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)));</code></pre><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  to_tsvector(<span class="hljs-string">'simple'</span>::regconfig, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)) @@ to_tsquery(<span class="hljs-string">'simple'</span>, <span class="hljs-string">':*'</span>)
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) ~ (<span class="hljs-string">'^'</span> || <span class="hljs-string">''</span>) <span class="hljs-keyword">DESC</span>
+, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/wd/ln/tq/wdlntqgqo_zvb4sbhcq-wln_jrw.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[look at explain.tensor.ru]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Here parallelization of query execution helped us a bit, reducing the time by half to </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">11ms</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Yes, and we had to read 1.5 times less - only </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">20MB</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">And here, the smaller the better, because the larger the amount we subtract, the higher the chances of getting cache miss, and every extra data page read from disk is a potential “brake” for the request.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.3: Still LIKE?</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The previous request is good for everyone, but only if you pull it a hundred thousand times a day, then </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2TB of</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> read data </font><font style="vertical-align: inherit;">will run up </font><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">At best - from memory, but if you are not lucky, then from the disk. </font><font style="vertical-align: inherit;">So let's try to make it smaller. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Recall that the user wants to see </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">first "that begin with ..."</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">So this is in its pure form a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">prefix search</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> with </font></font><code>text_pattern_ops</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">! </font><font style="vertical-align: inherit;">And only if we are "not enough" up to 10 required records, then we will have to read them using the FTS search:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> firms(<span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) text_pattern_ops);</code></pre><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">LIKE</span> (<span class="hljs-string">''</span> || <span class="hljs-string">'%'</span>)
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/_7/e_/jx/_7e_jxpnkc7n97e9rj2rbbk2ukq.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[look at explain.tensor.ru]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Excellent performance - just </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.05ms and a little over 100KB</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> read! </font><font style="vertical-align: inherit;">Only we forgot to </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sort by name</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> so that the user does not get lost in the results:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">LIKE</span> (<span class="hljs-string">''</span> || <span class="hljs-string">'%'</span>)
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/ku/d4/r1/kud4r1oipobzbsljhvbavzd2ypa.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[look at explain.tensor.ru]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Oh, something is not so pretty anymore - it seems that there is an index, but sorting flies past it ... It, of course, is many times more effective than the previous version, but ...</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.4: “modify with a file”</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But there is an index that allows you to search by range, and it’s normal to use sorting - </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">normal btree</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> !</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> firms(<span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>));</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Only a request for it will have to be “manually assembled”:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) &gt;= <span class="hljs-string">''</span> <span class="hljs-keyword">AND</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) &lt;= (<span class="hljs-string">''</span> || <span class="hljs-keyword">chr</span>(<span class="hljs-number">65535</span>)) <span class="hljs-comment">--  UTF8,   - chr(255)</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+   <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/eh/o3/-i/eho3-irvjqbcpgpmmp7fuheb9nm.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[look at explain.tensor.ru]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Great - both sorting works and resource consumption remains “microscopic”, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">thousands of times more efficient than “pure” FTS</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ! </font><font style="vertical-align: inherit;">It remains to collect in a single request:</font></font><br>
+<br>
+<pre><code class="sql hljs">(
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    firms<font></font>
+  <span class="hljs-keyword">WHERE</span>
+    <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) &gt;= <span class="hljs-string">''</span> <span class="hljs-keyword">AND</span>
+    <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) &lt;= (<span class="hljs-string">''</span> || <span class="hljs-keyword">chr</span>(<span class="hljs-number">65535</span>)) <span class="hljs-comment">--  UTF8,    - chr(255)</span>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+     <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+  <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span><font></font>
+)<font></font>
+<span class="hljs-keyword">UNION</span> <span class="hljs-keyword">ALL</span><font></font>
+(<font></font>
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    firms<font></font>
+  <span class="hljs-keyword">WHERE</span>
+    to_tsvector(<span class="hljs-string">'simple'</span>::regconfig, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)) @@ to_tsquery(<span class="hljs-string">'simple'</span>, <span class="hljs-string">':*'</span>) <span class="hljs-keyword">AND</span>
+    <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">NOT</span> <span class="hljs-keyword">LIKE</span> (<span class="hljs-string">''</span> || <span class="hljs-string">'%'</span>) <span class="hljs-comment">-- " "    </span>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+    <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) ~ (<span class="hljs-string">'^'</span> || <span class="hljs-string">''</span>) <span class="hljs-keyword">DESC</span> <span class="hljs-comment">--    ,     btree-</span>
+  , <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+  <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span><font></font>
+)<font></font>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I note that the second subquery is </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">only</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> executed </font><b><font style="vertical-align: inherit;">if the first returned less than the</font></b></font><code>LIMIT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> number of rows </font><b><font style="vertical-align: inherit;">expected by the</font></b><font style="vertical-align: inherit;"> last </font><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">I </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">already wrote</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> about this method of query optimization </font><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So yes, we now have btree and gin on the table at the same time, but statistically it turned out that </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">less than 10% of the requests reach the second block</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">That is, with such well-known typical limitations for the task, we were able to reduce the total server resource consumption by almost a thousand times!</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.5 *: dispense with the file</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Above </font></font><code>LIKE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">we were prevented from using the wrong sort. </font><font style="vertical-align: inherit;">But it can be "set on the true path" by specifying the USING statement:</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The default is implied </font></font><code>ASC</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">In addition, you can specify the name of a specific sort operator in a sentence </font></font><code>USING</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">The sort operator must be a member of less than or greater than a certain family of B-tree operators. </font></font><code>ASC</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">usually equivalent </font></font><code>USING &lt;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>DESC</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">usually equivalent </font></font><code>USING &gt;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In our case, “less” is </font></font><code>~&lt;~</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">LIKE</span> (<span class="hljs-string">''</span> || <span class="hljs-string">'%'</span>)
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">USING</span> ~&lt;~
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/s8/6r/4u/s86r4ujfiklgl9rqwn0fl7_g44i.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[look at explain.tensor.ru]</font></font></a><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2: how to "sour" requests</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we leave our request to “insist” for half a year or a year, and with surprise we again find it “in the top” with indicators of the total daily “pumping” of memory ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">buffers shared hit</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) in </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5.5TB</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - that is, even more than it was originally. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No, of course, our business has grown, and the load has increased, but not so much! </font><font style="vertical-align: inherit;">So something is dirty here - let's figure it out.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.1: the birth of paging</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At some point, another development team wanted to make it possible to “jump” into the registry from a quick subscript search with the same, but expanded results. </font><font style="vertical-align: inherit;">And what registry without page navigation? </font><font style="vertical-align: inherit;">Let's screw it!</font></font><br>
+<br>
+<pre><code class="sql hljs">( ... LIMIT &lt;N&gt; + 10)<font></font>
+UNION ALL<font></font>
+( ... LIMIT &lt;N&gt; + 10)<font></font>
+LIMIT 10 OFFSET &lt;N&gt;;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now it was possible without straining for the developer to show the registry of search results with "type-page" loading. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Of course, in fact, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for each next page of data, more and more is being read</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (all of the previous time, which we discard, plus the desired “tail”) - that is, this is an unambiguous antipattern. </font><font style="vertical-align: inherit;">And it would be more correct to start the search at the next iteration from the key stored in the interface, but about it - another time.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.2: want exotic</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At some point, the developer wanted to </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">diversify the resulting selection with data</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> from another table, for which purpose the entire previous request was sent to the CTE:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> q <span class="hljs-keyword">AS</span> (<font></font>
+  ...<font></font>
+  <span class="hljs-keyword">LIMIT</span> &lt;N&gt; + <span class="hljs-number">10</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+, (<span class="hljs-keyword">SELECT</span> ...) sub_query <span class="hljs-comment">-- -    </span>
+<span class="hljs-keyword">FROM</span><font></font>
+  q<font></font>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span> <span class="hljs-keyword">OFFSET</span> &lt;N&gt;;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And even so - not bad, because a subquery is calculated only for 10 returned records, if not ...</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.3: DISTINCT meaningless and merciless</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Somewhere in the process of such an evolution, a </font><b><font style="vertical-align: inherit;">condition was </font></b></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">lost</font></font><code>NOT LIKE</code><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> from the 2nd subquery </font><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">It is clear that after that I </font></font><code>UNION ALL</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">began to return </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">some records twice</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - first found at the beginning of the line, and then again - at the beginning of the first word of this line. </font><font style="vertical-align: inherit;">In the limit, all records of the 2nd subquery could coincide with the records of the first. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What does a developer do instead of searching for a reason? .. No question!</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">double the size of the</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> original samples</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">put DISTINCT</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> so that we get only single instances of each row</font></font></li>
+</ul><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> q <span class="hljs-keyword">AS</span> (<font></font>
+  ( ... <span class="hljs-keyword">LIMIT</span> &lt;<span class="hljs-number">2</span> * N&gt; + <span class="hljs-number">10</span>)
+  <span class="hljs-keyword">UNION</span> <span class="hljs-keyword">ALL</span>
+  ( ... <span class="hljs-keyword">LIMIT</span> &lt;<span class="hljs-number">2</span> * N&gt; + <span class="hljs-number">10</span>)
+  <span class="hljs-keyword">LIMIT</span> &lt;<span class="hljs-number">2</span> * N&gt; + <span class="hljs-number">10</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">DISTINCT</span><font></font>
+  *<font></font>
+, (<span class="hljs-keyword">SELECT</span> ...) sub_query
+<span class="hljs-keyword">FROM</span><font></font>
+  q<font></font>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span> <span class="hljs-keyword">OFFSET</span> &lt;N&gt;;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is, it is clear that the result, in the end, is exactly the same, but the chance to “fly” to the 2nd CTE subquery has become much higher, and without this, it </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">is clearly read more</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But this is not the saddest thing. </font><font style="vertical-align: inherit;">Since the developer asked me to select </font></font><b><code>DISTINCT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">not by specific, but immediately by all fields of the</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> record, then the sub_query field - the result of the subquery - got there automatically. </font><font style="vertical-align: inherit;">Now, for execution </font></font><code>DISTINCT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, the database had to execute </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">not 10 subqueries, but all &lt;2 * N&gt; + 10</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> !</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.4: cooperation above all!</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, the developers lived - they didn’t bother, because in the registry they were "patched up" to significant N values ​​with a chronic slowdown in receiving each next "page". </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Until developers from another department came to them, and did not want to use such a convenient method </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for iterative search</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - that is, we take a piece from some sample, filter by additional conditions, draw the result, then the next piece (which in our case is achieved by increase N), and so on until we fill the screen. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, in the caught specimen </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">N reached values ​​of almost 17K</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and in just 24 hours at least 4K such requests were executed “in the chain”. </font><font style="vertical-align: inherit;">The last of them boldly scanned already</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1GB of memory at each iteration</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ...</font></font><br>
+<br>
+<h2></h2><br>
+<img src="https://habrastorage.org/webt/zt/yx/ss/ztyxssr661ga_wndmpmqmvgtrq0.png"></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en491138/index.html">Satellite and Ansible Tower Integration</a></li>
+<li><a href="../en491146/index.html">UML for developers</a></li>
+<li><a href="../en491150/index.html">How I hacked scammers, or just the insides of phishing panels</a></li>
+<li><a href="../en491154/index.html">Course search: how to build a learning path</a></li>
+<li><a href="../en491156/index.html">Measurable Empathy: Predicting Sympathy for Brain MRI</a></li>
+<li><a href="../en491164/index.html">How to programmer write a diploma. Complete guide</a></li>
+<li><a href="../en491170/index.html">How Amplifer uses Logux - a tool for communication between client and server</a></li>
+<li><a href="../en491172/index.html">When a front-end developer should switch from React to Vue, and when it will complicate the development</a></li>
+<li><a href="../en491174/index.html">Don't write the same thing: how reused React components will help front-end developers create applications faster</a></li>
+<li><a href="../en491176/index.html">5 signs of an it-product to be sold</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

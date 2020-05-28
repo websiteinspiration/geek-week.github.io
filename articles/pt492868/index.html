@@ -1,0 +1,241 @@
+<!doctype html>
+<html class="no-js" lang="pt">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏽‍🏭 👨‍🎨 🍓 Otimização de string no ClickHouse. Relatório Yandex 🦏 🌠 🐖</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="O mecanismo de banco de dados analítico ClickHouse processa muitas linhas diferentes, consumindo recursos. Para acelerar o sistema, novas otimizações ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Otimização de string no ClickHouse. Relatório Yandex</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/492868/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O mecanismo de banco de dados analítico ClickHouse processa muitas linhas diferentes, consumindo recursos. </font><font style="vertical-align: inherit;">Para acelerar o sistema, novas otimizações são adicionadas constantemente. </font><font style="vertical-align: inherit;">Nikolay Kochetov, desenvolvedor do ClickHouse, fala sobre o tipo de dados da string, incluindo o novo tipo, LowCardinality, e explica como acelerar o trabalho com strings.</font></font><br>
+<br>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/rqf-ILRgBdY" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+- Primeiro, vamos ver como você pode armazenar strings. </font></font><br>
+<a name="habracut"></a><br>
+<img src="https://habrastorage.org/webt/ch/9s/zs/ch9szsqfnkkvpmjjxoo0lmpacno.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Temos tipos de dados de string. </font><font style="vertical-align: inherit;">A string funciona bem por padrão, deve ser usada quase sempre. </font><font style="vertical-align: inherit;">Possui uma pequena sobrecarga - 9 bytes por linha. </font><font style="vertical-align: inherit;">Se queremos que o tamanho da linha seja corrigido e conhecido com antecedência, é melhor usar o FixedString. </font><font style="vertical-align: inherit;">Nele, você pode definir o número de bytes que precisamos; é conveniente para dados como endereços IP ou funções de hash. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rd/lx/mo/rdlxmobm0ch5l88ab74sszn_fps.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Claro, às vezes algo diminui a velocidade. </font><font style="vertical-align: inherit;">Suponha que você esteja fazendo uma consulta em uma tabela. </font><font style="vertical-align: inherit;">O ClickHouse lê uma quantidade bastante grande de dados, digamos, a uma velocidade de 100 GB / s, com poucas linhas sendo processadas. </font><font style="vertical-align: inherit;">Temos duas tabelas que armazenam quase os mesmos dados. </font><font style="vertical-align: inherit;">O ClickHouse lê os dados da segunda tabela em uma velocidade mais alta, mas lê três vezes menos linhas por segundo.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/nd/tz/6l/ndtz6l6-1pwaycgcoxhslfj2hcm.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se observarmos o tamanho dos dados compactados, será quase igual. De fato, os mesmos dados são gravados nas tabelas - o primeiro bilhão de números - somente na primeira coluna são gravados na forma de UInt64 e na segunda coluna em String. Por esse motivo, a segunda consulta lê os dados do disco por mais tempo e os descompacta. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/i8/a2/vf/i8a2vfterxcfto5foypz6tig3zy.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Aqui está outro exemplo. Suponha que exista um conjunto predeterminado de linhas, que esteja limitado a uma constante de 1000 ou 10.000 e quase nunca mude. Nesse caso, o tipo de dados Enum é adequado para nós, no ClickHouse existem dois deles - Enum8 e Enum16. Devido ao armazenamento no Enum, processamos solicitações rapidamente.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O ClickHouse possui acelerações para GROUP BY, IN, DISTINCT e otimizações para algumas funções, por exemplo, para comparação com uma string constante. Obviamente, os números na string não são convertidos, mas, pelo contrário, a string constante é convertida no valor Enum. Depois disso, tudo é comparado rapidamente. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mas também há desvantagens. Mesmo que conheçamos o conjunto exato de linhas, às vezes ele precisa ser reabastecido. Chegou uma nova linha - temos que fazer ALTER. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/b0/ay/sz/b0ayszedkf252ktki2xizo2fxfm.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O ALTER para Enum no ClickHouse é implementado de maneira ideal. Não sobrescrevemos os dados no disco, mas ALTER pode ficar lento devido ao fato de que as estruturas Enum são armazenadas no esquema da própria tabela. Portanto, devemos aguardar solicitações de leitura da tabela, por exemplo.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A questão é: alguém pode fazer melhor? Talvez sim. Você pode salvar a estrutura Enum não no esquema da tabela, mas no ZooKeeper. No entanto, podem ocorrer problemas de sincronização. Por exemplo, uma réplica recebeu dados, a outra não, e se tiver um Enum antigo, algo será interrompido. (No ClickHouse, quase concluímos as solicitações ALTER sem bloqueio. Quando as concluímos completamente, não precisamos aguardar solicitações de leitura.) </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/yf/rc/vj/yfrcvjamitxxi5taditsaouvrl4.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para não mexer com o ALTER Enum, você pode usar dicionários ClickHouse externos. Deixe-me lembrá-lo de que essa é uma estrutura de dados de valor-chave dentro do ClickHouse, com a qual você pode obter dados de fontes externas, por exemplo, de tabelas MySQL.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No dicionário ClickHouse, armazenamos muitas linhas diferentes e, na tabela, seus identificadores na forma de números. Se precisamos obter uma string, chamamos a função dictGet e trabalhamos com ela. Depois disso, não devemos fazer ALTER. Para adicionar algo ao Enum, inserimos isso na mesma tabela MySQL. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mas existem outros problemas. Em primeiro lugar, a sintaxe estranha. Se queremos obter uma string, devemos chamar dictGet. Em segundo lugar, a falta de algumas otimizações. A comparação com a cadeia constante de dicionários também não é rápida. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ainda pode haver problemas com a atualização. Suponha que solicitamos uma linha no dicionário de cache, mas ela não entrou no cache. Então temos que esperar até que os dados sejam carregados de uma fonte externa.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/em/4z/ii/em4ziibqzsukh-mvfu2o8dpncv0.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Uma desvantagem comum de ambos os métodos é que armazenamos todas as chaves em um único local e as sincronizamos. </font><font style="vertical-align: inherit;">Então, por que não armazenar dicionários localmente? </font><font style="vertical-align: inherit;">Sem sincronização - não há problema. </font><font style="vertical-align: inherit;">Você pode armazenar o dicionário localmente em uma peça no disco. </font><font style="vertical-align: inherit;">Ou seja, fizemos Inserção, gravamos um dicionário. </font><font style="vertical-align: inherit;">Se trabalharmos com dados na memória, podemos escrever um dicionário em um bloco de dados ou em um pedaço de uma coluna ou em algum cache para acelerar os cálculos.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Codificação de Cadeia de Vocabulário </font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Então chegamos à criação de um novo tipo de dados no ClickHouse - LowCardinality. Este é um formato para armazenar dados: como eles são gravados em disco e como são lidos, como são apresentados na memória e o esquema de seu processamento. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/se/5h/5e/se5h5er0yccult4fjfamsksw4rk.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Existem duas colunas no slide. À direita, as strings são armazenadas de maneira padrão no tipo String. Pode-se ver que esses são alguns tipos de modelos de telefones celulares. À esquerda, há exatamente a mesma coluna, apenas no tipo LowCardinality. Consiste em um dicionário com muitas linhas diferentes (linhas da coluna à direita) e uma lista de posições (números de linhas). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Usando essas duas estruturas, você pode restaurar a coluna original. Há também um índice inverso inverso - uma tabela de hash que ajuda a encontrar a posição no dicionário por linha. É necessário acelerar algumas consultas. Por exemplo, se quisermos comparar, procure uma linha em nossa coluna ou junte-as.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+LowCardinality é um tipo de dados paramétrico. Pode ser um número, ou algo que é armazenado como um número, ou uma sequência ou Anulável a partir deles. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/et/r4/h9/etr4h9fjutj5sf6ffxqjmf04xpu.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A peculiaridade do LowCardinality é que ele pode ser salvo para algumas funções. Um exemplo de solicitação é mostrado no slide. Na primeira linha, criei uma coluna do tipo LowCardinality da String, com o nome S. Em seguida, perguntei o nome dela - ClickHouse disse que era LowCardinality da String. Tudo certo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A terceira linha é quase a mesma, apenas chamamos de função length. No ClickHouse, a função length retorna o tipo de dados UInt64. Mas obtivemos LowCardinality do UInt64. Qual é o objetivo?</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/6h/hs/0x/6hhs0xgy2-hnsc8tputwp8ukqqu.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O dicionário contém os nomes dos telefones celulares, aplicamos a função length. Agora, temos um dicionário semelhante, composto apenas por números, esses são os comprimentos das strings. A coluna com as posições não mudou. Como resultado, processamos menos dados, economizamos no tempo de solicitação. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pode haver outras otimizações, como adicionar um cache simples. Ao calcular o valor de uma função, você pode lembrá-la e torná-la a mesma, não recalcule.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A otimização de GROUP BY também pode ser feita, porque nossa coluna com o dicionário já está parcialmente agregada - você pode calcular rapidamente o valor das funções de hash e encontrar aproximadamente o intervalo onde colocar a próxima linha. Você também pode especializar algumas funções agregadas, por exemplo, uniq, porque você pode enviar apenas um dicionário para ele e deixar as posições intocadas - dessa forma, tudo funcionará mais rápido. As duas primeiras otimizações que já adicionamos ao ClickHouse.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/kc/6u/v4/kc6uv48b2vbsmki20ckwvvbc990.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mas e se criarmos uma coluna com nosso tipo de dados e inserirmos muitas linhas diferentes incorretas? Nossa memória está cheia? Não, existem duas configurações especiais para isso no ClickHouse. O primeiro é low_cardinality_max_dictionary_size. Esse é o tamanho máximo de um dicionário que pode ser gravado no disco. A inserção ocorre da seguinte forma: quando inserimos os dados, um fluxo de linhas chega até nós, a partir deles formamos um grande dicionário geral. Se o dicionário se tornar maior que o valor definido, gravamos o dicionário atual no disco e o restante das linhas em algum lugar do lado, próximo aos índices. Como resultado, nunca recontaremos um dicionário grande e não obteremos problemas de memória.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A segunda configuração é chamada low_cardinality_use_single_dictionary_for_part. Imagine que no esquema anterior, quando inserimos os dados, nosso dicionário estava cheio e os escrevemos em disco. Surge a pergunta: por que não formar outro exatamente exatamente o mesmo dicionário? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quando ela estourar, novamente a gravaremos no disco e começaremos a formar uma terceira. Essa configuração apenas desativa esse recurso por padrão.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+De fato, muitos dicionários podem ser úteis se quisermos inserir algum conjunto de linhas, mas inserir "lixo" acidentalmente. Digamos que primeiro inserimos as linhas ruins e depois inserimos as boas. Em seguida, o dicionário será dividido em muitos pequenos dicionários. Alguns deles estarão com lixo, mas o último estará com boas linhas. E se lermos, digamos, apenas o último pellet, tudo também funcionará rapidamente. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/jc/jx/jb/jcjxjbo7vmgmexmzxryscvj0lhu.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Antes de falar sobre as vantagens do LowCardinality, direi imediatamente que é improvável que obtenhamos dados reduzidos no disco (embora isso possa acontecer), porque o ClickHouse compacta os dados. Existe uma opção padrão - LZ4. Você também pode fazer a compactação usando o ZSTD. Como os dois algoritmos já implementam a compactação de dicionário, nosso dicionário ClickHouse externo não ajuda muito.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para não ser infundado, peguei alguns dados da métrica - String, LowCardinality (String) e Enum - e os salvei em diferentes tipos de dados. </font><font style="vertical-align: inherit;">Foram três colunas, onde um bilhão de linhas é gravado. </font><font style="vertical-align: inherit;">A primeira coluna, CodePage, possui um total de 62 valores. </font><font style="vertical-align: inherit;">E você pode ver que em LowCardinality (String), eles os pressionavam melhor. </font><font style="vertical-align: inherit;">A string é um pouco pior, mas isso provavelmente ocorre porque as strings são curtas, armazenamos seus comprimentos e elas ocupam muito espaço e não são compactadas bem. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se você usar o PhoneModel, existem mais de 48 mil e quase não há diferenças entre String e LowCardinality (String). </font><font style="vertical-align: inherit;">Para o URL, também salvamos apenas 2 GB - acho que você não deve confiar nisso.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Estimativa da velocidade do trabalho</font></font></h3> <br>
+<img src="https://habrastorage.org/webt/3q/v7/ar/3qv7aronmenayqfhdjait6xo3tw.jpeg"><br>
+<b><sup><sub><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Link do slide</font></font></a></sub></sup></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Agora vamos avaliar a velocidade do trabalho. Para avaliar, usei um conjunto de dados descrevendo viagens de táxi em Nova York. Está</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">disponível</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">no GitHub. Tem um pouco mais de um bilhão de viagens. Ele mostra a localização, o horário de início e término da viagem, a forma de pagamento, o número de passageiros e até o tipo de táxi - verde, amarelo e Uber.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/2o/9n/qb/2o9nqbsb7dodtnoimgnnl66lhlg.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Fiz a primeira solicitação bastante simples - perguntei onde os táxis são mais pedidos. Para fazer isso, é necessário escolher o local de onde você solicitou, fazer GROUP BY e calcular a função de contagem. Aqui ClickHouse dá algo.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/te/uy/kz/teuykz6_ucr7tuklbfsnobntncc.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para medir a velocidade do processamento de consultas, criei três tabelas com os mesmos dados, mas usei três tipos de dados diferentes para a nossa localização inicial - String, LowCardinality e Enum. LowCardinality e Enum são cinco vezes mais rápidos que String. O enum é mais rápido porque funciona com números. Baixa cardinalidade - porque a otimização GROUP BY está implementada. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pl/mx/qr/plmxqrgggpwl4xp2quqggej847k.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Vamos complicar a solicitação - pergunte onde fica o parque mais popular de Nova York. Novamente, mediremos isso onde o táxi é mais frequentemente solicitado, mas, ao mesmo tempo, filtraremos apenas os locais onde a palavra "parque" está disponível. Adicione também uma função similar.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/0u/iq/bz/0uiqbzwkh280_wuzn8bccqg2lhi.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Observamos o momento - vemos que Enum de repente começou a desacelerar. E funciona ainda mais lentamente que o tipo de dados String padrão. Isso ocorre porque a função like não é totalmente otimizada para o Enum. Temos que converter nossas linhas de Enum em linhas regulares - trabalhamos mais. LowCardinality (String) também não é otimizado por padrão, mas funciona como no dicionário, portanto, a consulta é mais rápida em comparação com String. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Há um problema mais global com o Enum. Se queremos otimizá-lo, devemos fazê-lo em todos os lugares do código. Suponha que escrevemos uma nova função - você deve definitivamente criar otimizações para o Enum. E no LowCardinality, tudo é otimizado por padrão.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_j/oc/eq/_joceq5ioy66p6gjatm1l5f2rqy.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Vejamos o último pedido, mais artificial. </font><font style="vertical-align: inherit;">Simplesmente calcularemos a função hash da nossa localização. </font><font style="vertical-align: inherit;">A função hash é uma solicitação bastante lenta, leva muito tempo e, portanto, tudo fica mais lento três vezes. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/dn/06/x9/dn06x9ujvdxgdpmjcus8qzlccbg.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A baixa cardinalidade ainda é mais rápida, embora não haja filtragem. </font><font style="vertical-align: inherit;">Isso se deve ao fato de que nossas funções funcionam apenas no dicionário. </font><font style="vertical-align: inherit;">A função de cálculo de hash possui um argumento - pode processar menos dados e também pode retornar LowCardinality. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/63/yt/qz/63ytqzwuufiatce0y8wdy4whn5s.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nosso plano global é atingir uma velocidade não inferior à de String em qualquer caso e economizar aceleração. </font><font style="vertical-align: inherit;">E talvez um dia substituamos String por LowCardinality, você atualize o ClickHouse e tudo funcionará um pouco mais rápido.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt492850/index.html">Nem todo mundo quer mudar para o trabalho remoto</a></li>
+<li><a href="../pt492856/index.html">Covid19, Sua sociedade e você são do ponto de vista da Ciência de Dados. Artigo traduzido por Jeremy Howard e Rachel Thomas (fast.ai)</a></li>
+<li><a href="../pt492862/index.html">15 melhores dicas de ajuste de desempenho do Oracle APEX para desenvolvedores</a></li>
+<li><a href="../pt492864/index.html">Posso invadir um navio?</a></li>
+<li><a href="../pt492866/index.html">O livro "Machine Learning sem palavras"</a></li>
+<li><a href="../pt492872/index.html">Como organizar o acesso remoto e não sofrer hackers</a></li>
+<li><a href="../pt492874/index.html">Otimização de renderização para celular</a></li>
+<li><a href="../pt492878/index.html">Chinelos geek: procurando resultados positivos em fechamentos temporários de escritórios</a></li>
+<li><a href="../pt492880/index.html">O que devemos construir uma casa inteligente?</a></li>
+<li><a href="../pt492884/index.html">Recebendo mensagens de transmissões do youtube + autorização do google em PHP</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

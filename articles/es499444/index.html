@@ -1,0 +1,378 @@
+<!doctype html>
+<html class="no-js" lang="es">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💃 👩🏾‍🚒 👨🏼‍⚖️ Postgres: hinchazón, pg_repack y restricciones diferidas ⏩ 👩‍👩‍👧‍👧 🖲️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="El efecto de tablas e índices de hinchazón (hinchazón) es ampliamente conocido y está presente no solo en Postgres. Hay formas de tratarlo "fuera de l...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Postgres: hinchazón, pg_repack y restricciones diferidas</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/miro/blog/499444/"><img src="https://habrastorage.org/webt/vf/eu/y5/vfeuy53s9e1md_jhdwxbkkmr-8e.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El efecto de tablas e índices de hinchazón (hinchazón) es ampliamente conocido y está presente no solo en Postgres. </font><font style="vertical-align: inherit;">Hay formas de tratarlo "fuera de la caja" como VACUUM FULL o CLUSTER, pero bloquean las tablas durante la operación y, por lo tanto, no siempre se pueden usar. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El artículo tendrá un poco de teoría sobre cómo se produce la hinchazón, cómo lidiar con ella, sobre las restricciones diferidas y sobre los problemas que traen al uso de la extensión pg_repack.</font></font><a name="habracut"></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Este artículo se basa en </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mi presentación</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> en PgConf.Russia 2020.</font></font><br>
+<br>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/8vaVeCKuz6M" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Por qué ocurre la hinchazón</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Postgres se basa en el modelo de múltiples versiones ( </font></font><abbr title="Control de concurrencia de versiones múltiples"><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MVCC</font></font></a></abbr><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). Su esencia es que cada fila de la tabla puede tener varias versiones, mientras que las transacciones no ven más de una de estas versiones, pero no necesariamente la misma. Esto permite que varias transacciones funcionen simultáneamente y prácticamente no tengan efecto entre ellas. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Obviamente, todas estas versiones necesitan ser almacenadas. Postgres funciona con memoria página por página y la página es la cantidad mínima de datos que se pueden leer desde el disco o escribir. Veamos un pequeño ejemplo para entender cómo sucede esto.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Supongamos que tenemos una tabla en la que hemos agregado varios registros. En la primera página del archivo donde se almacena la tabla, han aparecido nuevos datos. Estas son versiones en vivo de cadenas que están disponibles para otras transacciones después de una confirmación (por simplicidad, asumiremos que el nivel de aislamiento de Confirmación de lectura). </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pb/ep/av/pbepavyhm5_alpqup33j8vfcocm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Luego, actualizamos una de las entradas y, por lo tanto, marcamos la versión anterior como irrelevante. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/na/tr/tg/natrtgitck2f7ymtdalnr_coecu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Paso a paso, actualizando y eliminando la versión de las líneas, obtuvimos una página en la que aproximadamente la mitad de los datos son "basura". Estos datos no son visibles para ninguna transacción. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_j/8d/ji/_j8djifah3idpuohxwseop01xcw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Postgres tiene un mecanismo de </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">VACÍO</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, que limpia versiones irrelevantes y libera espacio para nuevos datos. Pero si no está configurado de manera suficientemente agresiva o está ocupado trabajando en otras tablas, entonces los "datos basura" permanecen, y tenemos que usar páginas adicionales para obtener nuevos datos. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entonces, en nuestro ejemplo, en algún momento, la tabla constará de cuatro páginas, pero solo tendrá la mitad de los datos en vivo. Como resultado, al acceder a la tabla, leeremos muchos más datos de los necesarios. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/nz/ni/rn/nznirnw2kenpvkn7kv7hqwi1k08.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Incluso si VACUUM ahora elimina todas las versiones irrelevantes de cadenas, la situación no mejorará dramáticamente. Tendremos espacio libre en las páginas o incluso en páginas enteras para nuevas líneas, pero continuaremos leyendo más datos de los necesarios.</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Por cierto, si una página completamente en blanco (la segunda en nuestro ejemplo) estuviera al final del archivo, VACUUM podría recortarla. </font><font style="vertical-align: inherit;">Pero ahora ella está en el medio, así que no se puede hacer nada con ella. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fy/ix/rq/fyixrqdxzpivbooplfjoqpeyc-q.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Cuando el número de páginas en blanco o muy planas aumenta, lo que se llama hinchazón, comienza a afectar el rendimiento. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Todo lo descrito anteriormente es la mecánica de la aparición de hinchazón en las tablas. </font><font style="vertical-align: inherit;">En los índices, esto sucede aproximadamente igual.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">¿Tengo una hinchazón?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hay varias formas de determinar si tiene una hinchazón. La idea del primero es utilizar estadísticas internas de Postgres, que contienen información aproximada sobre el número de filas en las tablas, el número de filas "en vivo", etc. En Internet, puede encontrar muchas variaciones de secuencias de comandos listas para usar. Tomamos como base una </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">secuencia</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> de </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;">comandos</font></a><font style="vertical-align: inherit;"> de los expertos de PostgreSQL, que puede evaluar las tablas de relleno junto con los índices de btree de pan tostado e hinchado. En nuestra experiencia, su error es del 10-20%. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Otra forma es usar la extensión </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgstattuple</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , que le permite mirar dentro de las páginas y obtener valores de hinchamiento estimados y precisos. Pero en el segundo caso, debe escanear toda la tabla.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Un valor de hinchazón pequeño, hasta 20%, lo consideramos aceptable. </font><font style="vertical-align: inherit;">Se puede considerar como un análogo del factor de relleno para </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tablas</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">índices</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Al 50% o más, pueden comenzar problemas de rendimiento.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Formas de lidiar con la hinchazón</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hay varias formas de lidiar con la hinchazón fuera de la caja en Postgres, pero están lejos de ser siempre adecuadas para todos. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Establezca AUTOVACUUM para que no se produzca hinchazón</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Y más precisamente, para mantenerlo en un nivel aceptable para usted. Este parece ser el consejo del "capitán", pero en realidad esto no siempre es fácil de lograr. Por ejemplo, está desarrollando activamente con cambios regulares en el esquema de datos o se está produciendo algún tipo de migración de datos. Como resultado, su perfil de carga puede cambiar con frecuencia y, como regla, puede ser diferente para diferentes tablas. Esto significa que debe trabajar constantemente un poco por delante de la curva y ajustar AUTOVACUUM al perfil cambiante de cada tabla. Pero es obvio que esto no es fácil.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Otra razón común por la que AUTOVACUUM no tiene tiempo para procesar tablas es la presencia de transacciones largas que evitan que se borren datos debido al hecho de que están disponibles para estas transacciones. La recomendación aquí también es obvia: deshacerse de las transacciones pendientes y minimizar el tiempo de las transacciones activas. Pero si la carga en su aplicación es un híbrido de OLAP y OLTP, al mismo tiempo puede tener muchas actualizaciones frecuentes y solicitudes cortas, así como operaciones largas, por ejemplo, la creación de un informe. En tal situación, vale la pena pensar en distribuir la carga a diferentes bases, lo que permitirá un ajuste más fino de cada una de ellas.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Otro ejemplo: incluso si el perfil es uniforme, pero la base de datos está bajo una carga muy alta, incluso el AUTOVACUUM más agresivo puede no hacer frente, y se producirá una hinchazón. La escala (vertical u horizontal) es la única solución. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pero, ¿qué pasa con la situación cuando configuró AUTOVACUUM, pero la hinchazón continúa creciendo? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Comando </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">VACÍO COMPLETO</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">reconstruye el contenido de tablas e índices y deja solo datos relevantes en ellos. Para eliminar la hinchazón, funciona perfectamente, pero durante su ejecución, se captura un bloqueo exclusivo en la tabla (AccessExclusiveLock), que no permitirá consultas a esta tabla, incluso las selecciona. Si puede permitirse detener su servicio o parte de él por un tiempo (de decenas de minutos a varias horas, dependiendo del tamaño de la base de datos y su hardware), entonces esta opción es la mejor. Desafortunadamente, no tenemos tiempo para ejecutar VACUUM FULL durante el mantenimiento programado, por lo que este método no nos conviene. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Comando </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CLUSTER</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">también reconstruye el contenido de las tablas, al igual que VACUUM FULL, al mismo tiempo que le permite especificar el índice según el cual los datos se ordenarán físicamente en el disco (pero en el futuro el pedido no está garantizado). En ciertas situaciones, esta es una buena optimización para varias consultas, con la lectura de varios registros por índice. La desventaja del comando es la misma que la de VACUUM FULL: bloquea la tabla durante la operación. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El comando </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">REINDEX es</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> similar a los dos anteriores, pero reconstruye un índice específico o todos los índices de la tabla. Los bloqueos son ligeramente más débiles: ShareLock en la tabla (evita modificaciones, pero le permite seleccionar) y AccessExclusiveLock en un índice ajustable (bloquea las solicitudes que utilizan este índice). Sin embargo, en la versión 12 de Postgres, el parámetro </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CONCURRENTEMENTE</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, que le permite reconstruir el índice sin bloquear la adición, modificación o eliminación paralela de registros. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En versiones anteriores de Postgres, puede lograr un resultado similar a REINDEX CONCURRENTEMENTE con </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CREATE INDEX CONCURRENTLY</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Le permite crear un índice sin un bloqueo estricto (ShareUpdateExclusiveLock, que no interfiere con las consultas paralelas), luego reemplazar el índice antiguo por uno nuevo y eliminar el índice anterior. Esto elimina los índices de hinchazón sin interferir con su aplicación. Es importante tener en cuenta que al reconstruir índices habrá una carga adicional en el subsistema de disco. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Por lo tanto, si hay formas para que los índices eliminen la hinchazón "en caliente", entonces para las tablas no hay ninguna. Aquí entran en </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;">juego</font></a><font style="vertical-align: inherit;"> varias extensiones externas: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_repack</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(anteriormente pg_reorg), </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgcompact</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgcompacttable</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> y otros. </font><font style="vertical-align: inherit;">En el marco de este artículo, no los compararé y solo hablaré sobre pg_repack, que, después de algunos ajustes, usamos en casa.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cómo funciona pg_repack</font></font></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/5j/bp/ng/5jbpng5ietzdlekjqc32gdf_5cs.gif"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Supongamos que tenemos una tabla muy normal para nosotros, con índices, restricciones y, desafortunadamente, con hinchazón. El primer paso es pg_repack crea una tabla de registro para almacenar datos sobre todos los cambios durante la operación. El activador replicará estos cambios en cada inserción, actualización y eliminación. Luego se crea una tabla que es similar a la estructura original, pero sin índices y restricciones, para no ralentizar el proceso de inserción de datos. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A continuación, pg_repack transfiere datos de la tabla anterior a la nueva, filtrando automáticamente todas las filas irrelevantes y luego crea índices para la nueva tabla. Durante la ejecución de todas estas operaciones, los cambios se acumulan en la tabla de registro.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El siguiente paso es transferir los cambios a la nueva tabla. </font><font style="vertical-align: inherit;">La migración se realiza en varias iteraciones, y cuando quedan menos de 20 entradas en la tabla de registro, pg_repack captura un bloqueo estricto, transfiere los últimos datos y reemplaza la tabla anterior por la nueva en las tablas del sistema Postgres. </font><font style="vertical-align: inherit;">Este es el único y muy corto momento en el que no puede trabajar con la tabla. </font><font style="vertical-align: inherit;">Después de eso, la tabla anterior y la tabla con los registros se eliminan y se libera espacio en el sistema de archivos. </font><font style="vertical-align: inherit;">El proceso está completo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En teoría, todo se ve muy bien, ¿qué pasa en la práctica? </font><font style="vertical-align: inherit;">Probamos pg_repack sin carga y bajo carga, verificamos su funcionamiento en caso de una parada prematura (en otras palabras, Ctrl + C). </font><font style="vertical-align: inherit;">Todas las pruebas fueron positivas. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Fuimos a la producción y luego todo salió mal como esperábamos.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">El primer panqueque en prod</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En el primer clúster, recibimos un error sobre la violación de una restricción única:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ ./pg_repack -t tablename -o id<font></font>
+INFO: repacking table <span class="hljs-string">"tablename"</span><font></font>
+ERROR: query failed: <font></font>
+    ERROR: duplicate key value violates unique constraint <span class="hljs-string">"index_16508"</span><font></font>
+DETAIL:  Key (id, index)=(100500, 42) already exists.<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Esta restricción tenía el nombre autogenerado index_16508: fue creado por pg_repack. </font><font style="vertical-align: inherit;">Por los atributos incluidos en su composición, determinamos "nuestra" restricción, que le corresponde. </font><font style="vertical-align: inherit;">El problema resultó ser que no se trata de una restricción ordinaria, sino de una </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">restricción diferida</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , es decir, </font><font style="vertical-align: inherit;">su verificación se realiza más tarde que el comando sql, lo que lleva a consecuencias inesperadas.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Restricciones diferidas: por qué son necesarias y cómo funcionan</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Un poco de teoría sobre las restricciones diferidas. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Considere un ejemplo simple: tenemos una tabla de referencia de automóviles con dos atributos: el nombre y el orden del automóvil en el directorio.</font></font><br>
+<img src="https://habrastorage.org/webt/n8/1s/td/n81stdw9kie5wll03ylnel18aie.png" align="right"><br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> cars<font></font>
+(<font></font>
+  <span class="hljs-type">name</span> <span class="hljs-type">text</span> <span class="hljs-keyword">constraint</span> pk_cars <span class="hljs-keyword">primary key</span>,<font></font>
+  ord <span class="hljs-type">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">null</span> <span class="hljs-keyword">constraint</span> uk_cars <span class="hljs-keyword">unique</span><font></font>
+);<font></font>
+</code></pre><br>
+<br clear="all"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Digamos que necesitábamos cambiar el primer y el segundo auto. </font><font style="vertical-align: inherit;">La solución "en la frente" es actualizar el primer valor al segundo y el segundo al primero:</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">begin</span>;
+  <span class="hljs-keyword">update</span> cars <span class="hljs-keyword">set</span> ord = <span class="hljs-number">2</span> <span class="hljs-keyword">where</span> <span class="hljs-type">name</span> = <span class="hljs-string">'audi'</span>;
+  <span class="hljs-keyword">update</span> cars <span class="hljs-keyword">set</span> ord = <span class="hljs-number">1</span> <span class="hljs-keyword">where</span> <span class="hljs-type">name</span> = <span class="hljs-string">'bmw'</span>;
+<span class="hljs-keyword">commit</span>;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pero al ejecutar este código, esperamos obtener una violación de la restricción, porque el orden de los valores en la tabla es único:</font></font><br>
+<br>
+<pre><code class="bash hljs">[23305] ERROR: duplicate key value violates unique constraint “uk_cars”<font></font>
+Detail: Key (ord)=(2) already exists.<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+¿Cómo hacerlo de manera diferente? Opción uno: agregue un reemplazo adicional del valor por un pedido que se garantiza que no existe en la tabla, por ejemplo, "-1". En programación, esto se llama "intercambiar los valores de dos variables a través de la tercera". El único inconveniente de este método es la actualización adicional. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Opción dos: rediseñar la tabla para usar un tipo de datos de punto flotante para el valor del pedido en lugar de enteros. Luego, al actualizar el valor de 1, por ejemplo, a 2.5, el primer registro se “levantará” automáticamente entre el segundo y el tercero. Esta solución funciona, pero hay dos limitaciones. En primer lugar, no funcionará si el valor se usa en algún lugar de la interfaz. En segundo lugar, dependiendo de la precisión del tipo de datos, tendrá un número limitado de inserciones posibles antes de volver a calcular los valores de todos los registros.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Opción tres: diferir la restricción para que se verifique solo en el momento de la confirmación:</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> cars<font></font>
+(<font></font>
+  <span class="hljs-type">name</span> <span class="hljs-type">text</span> <span class="hljs-keyword">constraint</span> pk_cars <span class="hljs-keyword">primary key</span>,<font></font>
+  ord <span class="hljs-type">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">null</span> <span class="hljs-keyword">constraint</span> uk_cars <span class="hljs-keyword">unique</span> <span class="hljs-keyword">deferrable</span> <span class="hljs-keyword">initially</span> <span class="hljs-keyword">deferred</span>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dado que la lógica de nuestra solicitud inicial garantiza que todos los valores sean únicos en el momento de la confirmación, tendrá éxito. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El ejemplo anterior es, por supuesto, muy sintético, pero revela la idea. </font><font style="vertical-align: inherit;">En nuestra aplicación, utilizamos restricciones diferidas para implementar una lógica responsable de resolver conflictos mientras trabajamos simultáneamente con objetos de widget comunes en el tablero. </font><font style="vertical-align: inherit;">El uso de tales restricciones nos permite hacer que el código de la aplicación sea un poco más fácil. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En general, dependiendo del tipo de restricción en Postgres, existen tres niveles de granularidad para verificarlos: nivel de fila, transacción y expresión. </font></font><br>
+<img src="https://habrastorage.org/webt/vn/bw/qq/vnbwqqmhgjpnd7kb8dtxpixb8xi.png"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Fuente: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">begriffs</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+CHECK y NOT NULL siempre se verifican a nivel de fila, para otras restricciones, como se puede ver en la tabla, hay diferentes opciones. </font><font style="vertical-align: inherit;">Lee más </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">aquí</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para resumir brevemente, las restricciones pendientes en algunas situaciones dan un código más legible y menos comandos. </font><font style="vertical-align: inherit;">Sin embargo, debe pagar esto complicando el proceso de depuración, desde el momento en que se produjo el error y el momento en que se entera de que se separan en el tiempo. </font><font style="vertical-align: inherit;">Otro posible problema es que el planificador no siempre puede construir el plan óptimo si hay una restricción retrasada en la solicitud.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Refinamiento pg_repack</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Descubrimos cuáles son las restricciones pendientes, pero ¿cómo se relacionan con nuestro problema? </font><font style="vertical-align: inherit;">Recordemos el error que recibimos anteriormente:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ ./pg_repack -t tablename -o id<font></font>
+INFO: repacking table <span class="hljs-string">"tablename"</span><font></font>
+ERROR: query failed: <font></font>
+    ERROR: duplicate key value violates unique constraint <span class="hljs-string">"index_16508"</span>
+DETAIL:  Key (id, index)=(100500, 42) already exists.</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ocurre al momento de copiar datos de la tabla de registro a la nueva tabla. Se ve raro porque los datos en la tabla de registro se confirman junto con los datos en la tabla original. Si satisfacen las restricciones de la tabla original, ¿cómo pueden violar las mismas restricciones en la nueva? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Resultó que la raíz del problema radica en el paso anterior de pg_repack, en el que solo se crean índices, pero no restricciones: la tabla anterior tenía una restricción única, y la nueva creó un índice único.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_y/da/fc/_ydafcxizllawi1jo3o5ai-x-kg.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Es importante señalar aquí que si la restricción es normal y no diferida, entonces el índice único creado en su lugar es equivalente a esta restricción, porque </font><font style="vertical-align: inherit;">Las restricciones únicas de Postgres se implementan creando un índice único. </font><font style="vertical-align: inherit;">Pero en el caso de una restricción diferida, el comportamiento no es el mismo, porque el índice no puede diferirse y siempre se verifica en el momento en que se ejecuta el comando sql. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Por lo tanto, la esencia del problema radica en el "aplazamiento" de la verificación: en la tabla original se produce en el momento de la confirmación, y en la nueva, en el momento de la ejecución del comando sql. </font><font style="vertical-align: inherit;">Por lo tanto, debemos asegurarnos de que las comprobaciones se realicen de la misma manera en ambos casos: siempre diferidas o siempre de forma inmediata. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entonces, ¿qué ideas tuvimos?</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Crear un índice similar al diferido</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La primera idea es realizar ambas comprobaciones en modo inmediato. Esto puede dar lugar a varios desencadenantes falsos positivos de la restricción, pero si hay pocos, entonces esto no debería afectar el trabajo de los usuarios, ya que para ellos estos conflictos son una situación normal. Ocurren, por ejemplo, cuando dos usuarios comienzan a editar simultáneamente el mismo widget, y el cliente del segundo usuario no tiene tiempo para obtener información de que el primer usuario ya ha bloqueado el widget para editarlo. En esta situación, el servidor rechaza al segundo usuario y su cliente revierte los cambios y bloquea el widget. Un poco más tarde, cuando el primer usuario termine de editar, el segundo recibirá información de que el widget ya no está bloqueado y podrá repetir su acción.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/dw/oq/jw/dwoqjwhuqva3veavihajfcd5t4c.gif"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para garantizar que las comprobaciones estén siempre en modo de emergencia, creamos un nuevo índice similar a la restricción diferida original:</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">UNIQUE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">CONCURRENTLY</span> uk_tablename__immediate <span class="hljs-keyword">ON</span> tablename (id, <span class="hljs-keyword">index</span>);
+<span class="hljs-comment">-- run pg_repack</span>
+<span class="hljs-keyword">DROP</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">CONCURRENTLY</span> uk_tablename__immediate;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En el entorno de prueba, recibimos solo algunos errores esperados. ¡Éxito! Nuevamente lanzamos pg_repack en el producto y obtuvimos 5 errores en el primer clúster en una hora de trabajo. Este es un resultado aceptable. Sin embargo, ya en el segundo clúster, el número de errores aumentó muchas veces y tuvimos que detener pg_repack. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+¿Por qué sucedió? La probabilidad de un error depende de cuántos usuarios trabajen simultáneamente con los mismos widgets. Aparentemente, en ese momento con los datos almacenados en el primer grupo, hubo muchos menos cambios competitivos que en el resto, es decir. solo fuimos "afortunados". </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La idea no funcionó. En ese momento, vimos otras dos opciones de solución: reescribir nuestro código de aplicación para abandonar las restricciones pendientes, o "enseñar" a pg_repack para trabajar con ellas. Hemos elegido el segundo.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Reemplazar índices en una nueva tabla con restricciones diferidas de la tabla fuente</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El propósito de la revisión era obvio: si la tabla original tiene una restricción diferida, entonces para la nueva debe crear dicha restricción, no un índice. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para probar nuestros cambios, escribimos una prueba simple:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tabla con restricción diferida y un registro;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">inserte datos en el bucle que entren en conflicto con el registro existente;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hacer actualización: los datos ya no entran en conflicto;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">comprometer el cambio</font></font></li>
+</ul><br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> test_table<font></font>
+(<font></font>
+  id <span class="hljs-type">serial</span>,<font></font>
+  val <span class="hljs-type">int</span>,
+  <span class="hljs-keyword">constraint</span> uk_test_table__val <span class="hljs-keyword">unique</span> (val) <span class="hljs-keyword">deferrable</span> <span class="hljs-keyword">initially</span> <span class="hljs-keyword">deferred</span> <font></font>
+);<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> test_table (val) <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">0</span>);
+<span class="hljs-keyword">FOR</span> i <span class="hljs-keyword">IN</span> <span class="hljs-number">1.</span><span class="hljs-number">.10000</span> <span class="hljs-keyword">LOOP</span>
+  <span class="hljs-keyword">BEGIN</span>
+    <span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> test_table <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">0</span>) <span class="hljs-keyword">RETURNING</span> id <span class="hljs-keyword">INTO</span> v_id;
+    <span class="hljs-keyword">UPDATE</span> test_table <span class="hljs-keyword">set</span> val = i <span class="hljs-keyword">where</span> id = v_id;
+    <span class="hljs-keyword">COMMIT</span>;
+  <span class="hljs-keyword">END</span>;
+<span class="hljs-keyword">END</span> <span class="hljs-keyword">LOOP</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La versión original de pg_repack siempre fallaba en la primera inserción, la versión revisada funcionaba sin errores. </font><font style="vertical-align: inherit;">Multa. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Vamos al producto y nuevamente tenemos un error en la misma fase de copiar datos de la tabla de registro a la nueva:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ ./pg_repack -t tablename -o id<font></font>
+INFO: repacking table <span class="hljs-string">"tablename"</span><font></font>
+ERROR: query failed: <font></font>
+    ERROR: duplicate key value violates unique constraint <span class="hljs-string">"index_16508"</span>
+DETAIL:  Key (id, index)=(100500, 42) already exists.</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Situación clásica: ¿todo funciona en entornos de prueba, pero no en productos?</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">APPLY_COUNT y la unión de dos lotes</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Comenzamos a analizar el código literalmente línea por línea y encontramos un punto importante: los datos se transfieren de la tabla de registro a la nueva con lotes, la constante APPLY_COUNT indica el tamaño de los lotes:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">for</span> (;;)<font></font>
+{<font></font>
+num = apply_log(connection, table, APPLY_COUNT);<font></font>
+<font></font>
+<span class="hljs-keyword">if</span> (num &gt; MIN_TUPLES_BEFORE_SWITCH)
+     <span class="hljs-keyword">continue</span>;  <span class="hljs-comment">/* there might be still some tuples, repeat. */</span><font></font>
+...<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El problema es que los datos de la transacción original, en la que varias operaciones pueden violar potencialmente la restricción, se pueden transferir a la unión de dos lotes durante la transferencia: la mitad de los equipos se comprometerán en el primer partido y la otra mitad en el segundo. Y aquí está la suerte: si los equipos en el primer lote no violan nada, entonces todo está bien, pero si violan, se produce un error. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+APPLY_COUNT es igual a 1000 entradas, lo que explica por qué nuestras pruebas tuvieron éxito: no cubrieron el caso de "unión de lotes". Utilizamos dos comandos: insertar y actualizar, por lo que exactamente 500 transacciones de dos equipos siempre se colocaron en el lote y no tuvimos problemas. Después de agregar la segunda actualización, nuestra edición dejó de funcionar:</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">FOR</span> i <span class="hljs-keyword">IN</span> <span class="hljs-number">1.</span><span class="hljs-number">.10000</span> <span class="hljs-keyword">LOOP</span>
+  <span class="hljs-keyword">BEGIN</span>
+    <span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> test_table <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">1</span>) <span class="hljs-keyword">RETURNING</span> id <span class="hljs-keyword">INTO</span> v_id;
+    <span class="hljs-keyword">UPDATE</span> test_table <span class="hljs-keyword">set</span> val = i <span class="hljs-keyword">where</span> id = v_id;
+    <span class="hljs-keyword">UPDATE</span> test_table <span class="hljs-keyword">set</span> val = i <span class="hljs-keyword">where</span> id = v_id; <span class="hljs-comment">-- one more update</span>
+    <span class="hljs-keyword">COMMIT</span>;
+  <span class="hljs-keyword">END</span>;
+<span class="hljs-keyword">END</span> <span class="hljs-keyword">LOOP</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Por lo tanto, la siguiente tarea es asegurarse de que los datos de la tabla de origen que cambiaron en una transacción caigan en la nueva tabla también dentro de la misma transacción.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rechazo de carnicería</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Y nuevamente tuvimos dos soluciones. </font><font style="vertical-align: inherit;">Primero: abandonemos por completo el procesamiento por lotes y realicemos la transferencia de datos en una transacción. </font><font style="vertical-align: inherit;">A favor de esta solución fue su simplicidad: los cambios de código requeridos fueron mínimos (por cierto, en versiones anteriores, pg_reorg funcionaba de esa manera). </font><font style="vertical-align: inherit;">Pero hay un problema: estamos creando una transacción larga, y esto, como se dijo anteriormente, es una amenaza para la aparición de una nueva hinchazón.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La segunda solución es más complicada, pero probablemente más correcta: cree una columna en la tabla de registro con el identificador de la transacción que agregó los datos a la tabla. Luego, al copiar datos, podremos agruparlos por este atributo y asegurarnos de que los cambios relacionados se transfieran juntos. Se formará un lote a partir de varias transacciones (o una grande) y su tamaño variará según la cantidad de datos que hayan cambiado en estas transacciones. Es importante tener en cuenta que dado que los datos de diferentes transacciones caen en la tabla de registro en orden aleatorio, no será posible leerlos secuencialmente, como era antes. seqscan para cada solicitud filtrada por tx_id es demasiado costoso, necesita un índice, pero ralentizará el método debido a la sobrecarga de actualizarlo. En general, como siempre, debes sacrificar algo.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entonces, decidimos comenzar con la primera opción, como una más simple. Primero, era necesario comprender si una transacción larga sería un problema real. Dado que la transferencia de datos principal de la tabla anterior a la nueva también se produce en una transacción larga, la pregunta se ha transformado en "¿cuánto aumentaremos esta transacción?" La duración de la primera transacción depende principalmente del tamaño de la tabla. La duración del nuevo depende de cuántos cambios se acumulen en la tabla durante la transferencia de datos, es decir. de la intensidad de la carga. La ejecución de pg_repack se produjo durante la carga mínima en el servicio, y la cantidad de cambio fue incomparablemente pequeña en comparación con el tamaño de la tabla original. Decidimos que podemos descuidar el tiempo de la nueva transacción (en comparación, esto es un promedio de 1 hora y 2-3 minutos).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Los experimentos fueron positivos. Corriendo en prod también. Para mayor claridad, una imagen con el tamaño de una de las bases después de la ejecución: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/z4/ps/gu/z4psgu_s8jsbhwnxst2pogfcsfa.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+dado que esta solución nos convenía completamente, no intentamos implementar la segunda, pero estamos considerando discutirla con los desarrolladores de la extensión. Desafortunadamente, nuestra revisión actual aún no está lista para su publicación, ya que hemos resuelto el problema solo con restricciones pendientes únicas, y para un parche completo es necesario hacer soporte de otros tipos. Esperamos poder hacer esto en el futuro.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quizás tenga una pregunta, ¿por qué nos involucramos en esta historia con la finalización de pg_repack, y no utilizamos, por ejemplo, sus análogos? </font><font style="vertical-align: inherit;">En algún momento, también pensamos en esto, pero la experiencia positiva de usarlo antes, en tablas sin restricciones pendientes, nos motivó a tratar de comprender la esencia del problema y solucionarlo. </font><font style="vertical-align: inherit;">Además, para usar otras soluciones, también lleva tiempo realizar pruebas, por lo que decidimos que primero trataríamos de solucionar el problema, y ​​si nos dimos cuenta de que no podíamos hacerlo en un período de tiempo razonable, entonces comenzaríamos a considerar los análogos.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">recomendaciones</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lo que podemos recomendar en base a nuestra propia experiencia:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Controla tu hinchazón. </font><font style="vertical-align: inherit;">Según los datos de monitoreo, puede comprender qué tan bien está configurado el vacío automático.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Establezca AUTOVACUUM para mantener la hinchazón a un nivel razonable.</font></font></li>
+<li>   bloat           “ ”,     .  –   .</li>
+<li>        –        ,     .</li>
+</ol></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es499434/index.html">Cómo implementar la gestión del conocimiento: beneficios "bolsas", "multas de loro" y pensamiento de clip</a></li>
+<li><a href="../es499436/index.html">La enzima controlada a distancia acelerará el tratamiento de accidentes cerebrovasculares y lesiones de la columna</a></li>
+<li><a href="../es499438/index.html">Stream para probadores y no solo</a></li>
+<li><a href="../es499440/index.html">Mientras escribíamos el piloto automático más genial del mundo para una locomotora de maniobras</a></li>
+<li><a href="../es499442/index.html">Creando un juego de carreras pseudo-3D: implementando las colinas y terminando el juego</a></li>
+<li><a href="../es499446/index.html">Prueba de cargadores de arranque en formato STEP para VR</a></li>
+<li><a href="../es499448/index.html">Implementación de arquitectura SOLID y en capas en Node.js con TypeScript e InversifyJS</a></li>
+<li><a href="../es499450/index.html">Elegir el equipo para un juego persa usando genética / evolución en Python</a></li>
+<li><a href="../es499452/index.html">La vida cotidiana de un oftalmólogo en la clínica: cuando los médicos no son suficientes</a></li>
+<li><a href="../es499454/index.html">Video en vivo! Badoo Localization Meetup 21 de abril</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

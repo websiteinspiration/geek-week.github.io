@@ -1,0 +1,230 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😣 📧 😮 Two-node cluster - the devil in detail 🚱 💇 📫</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello, Habr! I present to you the translation of the article "Two Nodes - The Devil is in the Details" by Andrew Beekhof. 
+ 
+ Many people prefer two-n...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Two-node cluster - the devil in detail</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/494264/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Hello, Habr! I present to you the translation of the article </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"Two Nodes - The Devil is in the Details"</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> by Andrew Beekhof. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Many people prefer two-node clusters because they seem conceptually simpler, and also 33% cheaper than their three-node counterparts. Although it is quite possible to assemble a good cluster of two nodes, in most cases, due to unaccounted-for scenarios, such a configuration will create many unobvious problems.</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The first step to creating any high-availability system is to search for and attempt to eliminate individual points of failure, often abbreviated as </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SPoF</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (single point of failure). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It should be borne in mind that in any system it is impossible to eliminate all possible risks of downtime. This follows at least from the fact that a typical risk protection is the introduction of some redundancy, which leads to an increase in the complexity of the system and the emergence of new points of failure. Therefore, we initially compromise and focus on events related to individual points of failure, and not on chains of related and, therefore, all less likely events.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Given the trade-offs, we are not only looking for SPoF, but also balancing the risks and consequences, as a result, the conclusion is what is critical and what cannot be different for each deployment.</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Not everyone needs alternative electricity providers with independent power lines. </font><font style="vertical-align: inherit;">Although paranoia paid off for at least one client when their monitoring detected a faulty transformer. </font><font style="vertical-align: inherit;">The customer called by phone, trying to warn the energy company, until a faulty transformer exploded.</font></font></blockquote> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The natural starting point is the presence of more than one node in the system. </font><font style="vertical-align: inherit;">However, before the system can move the services to the surviving node after the failure, in general, you need to make sure that the services being moved are not active in any other place. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A two-node cluster has no drawbacks if, as a result of a failure, both nodes serve the same static website. </font><font style="vertical-align: inherit;">However, everything changes if, as a result, both parties independently manage the shared job queue or provide uncoordinated write access to the replicated database or shared file system. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Therefore, to prevent data corruption due to the failure of one node - we rely on what is called </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"dissociation»</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (fencing).</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Principle of separation</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The principle of separation is based on the question: can a competing node cause data corruption? In the event that data corruption is a likely scenario, isolating the node from both incoming requests and persistent storage is a good solution. The most common approach to disengaging is disabling faulty nodes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are two categories of separation methods that I will call </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">direct</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">indirect</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , but equally they can be called </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">active</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">passive</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Direct methods include actions by surviving peers, such as interacting with an IPMI device (Intelligent Platform Management Interface - an interface for remotely monitoring and managing the physical state of a server) or iLO (a server management mechanism in the absence of physical access to them), while indirect methods rely on the failed node to somehow recognize that it is in an unhealthy state (or at least prevents the rest of the members from recovering) and to signal the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hardware watchdog</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> about the need to disconnect the failed node. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A quorum helps in the case of using both direct and indirect methods.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Direct dissociation</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the case of direct dissociation, we can use a quorum to prevent exclusion races in the event of a network failure. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Having the concept of quorum, the system has enough information (even without connecting to its partners) so that the nodes automatically know whether they should initiate the separation and / or recovery. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Without quorum, both sides of network sharing rightly assume that the other side is dead, and will seek to dissociate the other. In the worst case, both sides manage to disconnect the entire cluster. An alternative scenario is deathmatch, an endless loop of nodes appearing, not seeing their peers, reloading them and initiating recovery only for a reboot when their peer follows the same logic.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The problem with exclusion is that the most frequently used devices become inaccessible due to the same failure events that we want to focus on for recovery. </font><font style="vertical-align: inherit;">Most IPMI and iLO cards are installed on the hosts that they control and, by default, use the same network, because of which the target nodes assume that the other nodes are offline. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Unfortunately, the features of the operation of IPMI and iLo devices are rarely considered at the time of purchase of equipment.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Indirect Separation</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A quorum is also important for managing indirect exclusion; if everything is done correctly, the quorum may allow survivors to assume that the lost nodes will enter a safe state after a certain period of time. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+With this setting, the hardware watchdog timer resets every N seconds if the quorum is not lost. If the timer (usually a multiple of N) expires, the device performs an ungraceful shutdown of power (not shutdown). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This approach is very effective, but without quorum, there is not enough information inside the cluster to manage it. It is not easy to determine the difference between a network outage and a partner host failure. The reason this matters is that without the ability to distinguish between two cases, you are forced to choose the same behavior in both cases.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The problem with choosing one mode is that there is no way of action that would maximize accessibility and prevent data loss.</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If you decide to assume that the partner node is active, but in fact there was a failure, the cluster will unnecessarily stop the services that would have to work to compensate for the loss of services of the fallen partner node.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If you decide to assume that the node is not working, but it was just a network failure and the remote node is actually functioning, then, at best, you subscribe to some future manual reconciliation of the resulting data sets.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No matter what heuristic you use, it is trivial to create a failure that either forces both sides to work, or forces the cluster to disconnect the surviving nodes. </font><font style="vertical-align: inherit;">Not using quorum really robs the cluster of one of the most powerful tools in its arsenal. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If there is no other alternative, the best approach would be to sacrifice accessibility (here the author refers to the CAP-theorem). </font><font style="vertical-align: inherit;">High availability of corrupted data does not help anyone, and manually reconciling various data sets is also not a pleasure.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Quorum</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quorum sounds great, right? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The only drawback is that in order to have it in a cluster with N members, you need to keep the connection between N / 2 + 1 of your nodes. What is impossible in a cluster with two nodes after the failure of one node. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Which ultimately leads us to a fundamental problem with two nodes: a </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+quorum does not make sense in two node clusters, and without this it is impossible to reliably determine the course of action that maximizes accessibility and prevents data loss</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Even in a system of two nodes connected by a cross-cable, it is impossible to finally distinguish between disconnecting the network and the failure of another node. </font><font style="vertical-align: inherit;">Disconnecting one end (the probability of which is, of course, proportional to the distance between the nodes) will be enough to refute any assumption that the channel is working equal to the health of the partner node.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Making the cluster of two nodes work</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sometimes the client cannot or does not want to buy a third node, and we are forced to look for an alternative.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Option 1 - Duplicate separation method</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The node’s iLO or IPMI device is a failure point because, in the event of a failure, survivors cannot use it to put the node in a safe state. In a cluster of 3 or more nodes, we can mitigate this by calculating the quorum and using the hardware watchdog (an indirect disengagement mechanism, as discussed earlier). In the case of two nodes, we should instead use network power switches (power distribution units or PDUs). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After the failure, the survivor first tries to contact the primary separation device (built-in iLO or IPMI). If this succeeds, the recovery continues as usual. Only in the event of an iLO / IPMI device failure does the call to the PDU occur, if the call is successful, recovery can continue.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Be sure to place the PDU on a network other than cluster traffic, otherwise a single network failure will block access to both isolation devices and block service recovery. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here you may ask - is the PDU not a single point of failure? </font><font style="vertical-align: inherit;">To which the answer is of course. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If this risk is significant to you, you are not alone: ​​connect both nodes to two PDUs and instruct the cluster software to use both when turning nodes on and off. </font><font style="vertical-align: inherit;">Now the cluster remains active if one PDU dies and a second failure of either another PDU or IPMI device is required to block recovery.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Option 2 - Adding an Arbitrator</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In some scenarios, although the duplicate separation method is technically possible, it is politically complex. Many companies like to have a certain separation between administrators and application owners, and security-conscious network administrators are not always enthusiastic about passing PDU access parameters to anyone. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this case, the recommended alternative is to create a neutral third party that can complement the quorum calculation. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the event of a failure, the node should be able to see the broadcast of its partner or arbiter in order to restore services. The arbiter also includes a disconnect function, if both nodes can see the arbiter, but do not see each other.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This option should be used in conjunction with an indirect method of dissociation, such as a hardware watchdog timer, which is configured to turn off the machine if it loses connection with its partner node and the arbiter. </font><font style="vertical-align: inherit;">Thus, the survivor can confidently assume that his partner node will be in a safe state after the expiration of the hardware watchdog timer. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The practical difference between the arbiter and the third node is that the arbiter requires much less resources for its work and, potentially, can serve more than one cluster.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Option 3 - The Human Factor</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The last approach is for survivors to continue to perform any services that they have already performed, but not to start new ones, until either the problem is resolved itself (network restoration, node reboot), or the person does not take responsibility for manually confirming that the other side is dead.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Bonus Option</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Did I mention that you can add a third node?</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Two racks</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For the sake of argument, let's imagine that I convinced you of the merits of the third node, now we must consider the physical location of the nodes. If they are placed (and powered) in the same rack, this also represents SPoF, and one that cannot be resolved by adding a second rack. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If this is surprising, consider what will happen if the rack with two nodes goes down, and how the surviving node will distinguish between this case and the network failure. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Short answer: this is not possible, and again we are dealing with all the problems in the case of two nodes. Or survivor:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ignores the quorum and incorrectly tries to initiate recovery during network outages (the possibility of completing the separation is a separate story and depends on whether the PDUs are involved and whether they share power from any of the racks), or</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">respects the quorum and disconnects itself prematurely when its partner node fails</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In any case, two racks are not better than one, and the nodes must either receive independent power sources, or be distributed among three (or more, depending on how many nodes you have) racks.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Two data centers</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At this point, readers who are no longer risk averse may consider recovering from an accident. What happens when an asteroid enters a single data center with our three nodes distributed across three different racks? Obviously, Bad Things, but depending on your needs, adding a second data center may not be enough.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If everything is done correctly, the second data center provides you (and this is reasonable) an up-to-date and consistent copy of your services and their data. However, as in the scenarios with two nodes and two racks, the system does not have enough information to ensure maximum availability and prevent damage (or divergence of data sets). Even if there are three nodes (or racks), their distribution over only two data centers leaves the system unable to reliably make the right decision in the event of a (now much more likely) event that the two sides cannot connect.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This does not mean that a solution with two data centers never fits. </font><font style="vertical-align: inherit;">Companies often want people to be aware before taking an exceptional step when moving to a backup data center. </font><font style="vertical-align: inherit;">Just keep in mind that if you want to automate the failure, you will need either a third data center so that the quorum makes sense (either directly or through an arbiter), or you will find a way to reliably disable the entire data center.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en494252/index.html">3D printing: three and a half houses in four days</a></li>
+<li><a href="../en494254/index.html">OpenShift as an enterprise version of Kubernetes</a></li>
+<li><a href="../en494256/index.html">Who else needs Selenium? Does anyone use BDD in 2020? Machine Learning at Selenium</a></li>
+<li><a href="../en494258/index.html">Open Materials from Computer Science Center, Part 1</a></li>
+<li><a href="../en494260/index.html">200 TB Elasticsearch Cluster +</a></li>
+<li><a href="../en494266/index.html">About udalenka, unprotected RDP and the increase in the number of servers available from the Internet</a></li>
+<li><a href="../en494270/index.html">Antiquities: Remote Work on 1998 Devices</a></li>
+<li><a href="../en494272/index.html">Creating an IT startup business plan: step-by-step detailed structure</a></li>
+<li><a href="../en494274/index.html">E-commerce autotest system</a></li>
+<li><a href="../en494278/index.html">EF Core + Oracle: how to make migrations idempotent</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

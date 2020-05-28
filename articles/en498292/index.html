@@ -1,0 +1,284 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👃🏿 ➿ 🍭 Save a lot of money on large volumes in PostgreSQL 😥 🚴🏾 ⌛️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Continuing the topic of recording large streams of data, raised by the previous article on partitioning , in this we consider the ways in which you ca...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Save a lot of money on large volumes in PostgreSQL</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/498292/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Continuing the topic of recording large streams of data, raised by the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">previous article on partitioning</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , in this we consider the ways in which you can </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">reduce the "physical" size stored</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in PostgreSQL, and their impact on server performance. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It's about </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TOAST settings and data alignment</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">“On average”, these methods will save not too many resources, but without any modification to the application code.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/cj/c-/lx/cjc-lxht8brbyy9xif_sicdwk70.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, our experience turned out to be very productive in this regard, since the repository of almost any monitoring is by its nature </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mostly append-only</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in terms of recorded data. </font><font style="vertical-align: inherit;">And if you are interested in how you can teach a database to write to a disk instead of </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">200MB / s</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> half as much - I ask for a cut.</font></font><br>
+<a name="habracut"></a><br>
+<font color="#4060a0"><h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Little Secrets of Big Data</font></font></h2></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+According to the profile of </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">our service</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , he regularly receives </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">text packets</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> from the logs </font><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And since </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the VLSI complex</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , whose databases we are monitoring, is a multicomponent product with complex data structures, queries </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">for achieving maximum performance</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> are obtained by such </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“multi-volumes” with complex algorithmic logic</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">So the volume of each individual instance of the request or the resulting execution plan in the log coming to us turns out to be “average” quite large. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's look at the structure of one of the tables into which we write the "raw" data - that is, here is the original text from the log entry:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> rawdata_orig(<font></font>
+  pack <span class="hljs-comment">-- PK</span>
+    <span class="hljs-keyword">uuid</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>
+, recno <span class="hljs-comment">-- PK</span>
+    <span class="hljs-built_in">smallint</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>
+, dt <span class="hljs-comment">--  </span>
+    <span class="hljs-built_in">date</span>
+, <span class="hljs-keyword">data</span> <span class="hljs-comment">--  </span>
+    <span class="hljs-built_in">text</span>
+, PRIMARY <span class="hljs-keyword">KEY</span>(pack, recno)<font></font>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Such a typical plate (already partitioned, of course, therefore it is a section template), where the most important is the text. Sometimes quite voluminous. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Recall that the “physical” size of one record in PG cannot occupy more than one page of data, but the “logical” size is a completely different matter. To write a volume value (varchar / text / bytea) into the field, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TOAST technology is</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> used </font><font style="vertical-align: inherit;">:</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQL uses a fixed page size (usually 8 KB), and does not allow tuples to span multiple pages. </font><font style="vertical-align: inherit;">Therefore, it is impossible to directly store very large field values. </font><font style="vertical-align: inherit;">To overcome this limitation, large field values ​​are compressed and / or split into several physical lines. </font><font style="vertical-align: inherit;">This happens unnoticed by the user and affects most of the server code slightly. </font><font style="vertical-align: inherit;">This method is known as TOAST ...</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In fact, for each table with "potentially large" fields </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, a paired table is</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> automatically </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">created with "slicing"</font></a><font style="vertical-align: inherit;"> each "large" record in 2KB segments:</font></font><br>
+<br>
+<pre><code class="sql hljs">TOAST(<font></font>
+  chunk_id<font></font>
+    integer<font></font>
+, chunk_seq<font></font>
+    integer<font></font>
+, chunk_data<font></font>
+    bytea<font></font>
+, PRIMARY KEY(chunk_id, chunk_seq)<font></font>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is, if we have to write a row with a "large" value </font></font><code>data</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, then the real record will occur </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">not only in the main table and its PK, but also in TOAST and its PK</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Reduce the TOAST effect</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But most of the records we have are still not so big, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">they should fit in 8KB</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - how would you save on this? .. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here the attribute </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><code>STORAGE</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">at the table column </font><font style="vertical-align: inherit;">comes to our aid </font><font style="vertical-align: inherit;">:</font></font><br>
+<blockquote><ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">EXTENDED</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> allows both compression and separate storage. </font><font style="vertical-align: inherit;">This is the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">standard option</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> for most TOAST compatible data types. </font><font style="vertical-align: inherit;">First, an attempt is made to perform compression, then it is saved outside the table if the row is still too large.</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MAIN</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> allows compression, but not separate storage. </font><font style="vertical-align: inherit;">(In fact, separate storage, however, will be performed for such columns, but only </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">as a last resort</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , when there is no other way to reduce the row so that it fits on the page.)</font></font></li>
+</ul></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In fact, this is exactly what we need for the text - </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">squeeze it as much as possible, and even if it doesn’t fit at all - put it in TOAST</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">You can do this directly "on the fly", with one command:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> rawdata_orig <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">COLUMN</span> <span class="hljs-keyword">data</span> <span class="hljs-keyword">SET</span> <span class="hljs-keyword">STORAGE</span> <span class="hljs-keyword">MAIN</span>;</code></pre><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How to evaluate the effect</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since the data flow changes every day, we cannot compare absolute numbers, but in relative terms, the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">smaller the proportion</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> we recorded in TOAST, the better. </font><font style="vertical-align: inherit;">But there is a danger - the more we have the “physical” volume of each individual record, the “wider” the index becomes, because we have to cover more data pages. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Section </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">before changes</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<pre><code class="plaintext hljs">heap  = 37GB (39%)<font></font>
+TOAST = 54GB (57%)<font></font>
+PK    =  4GB ( 4%)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Section </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">after changes</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<pre><code class="plaintext hljs">heap  = 37GB (67%)<font></font>
+TOAST = 16GB (29%)<font></font>
+PK    =  2GB ( 4%)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In fact, we </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">began to write in TOAST 2 times less often</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which unloaded not only the disk, but also the CPU:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/jc/te/dr/jctedr4gcninasuw54qer9qu_8u.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/bp/lj/wr/bpljwrysoy42rtnu3ds0btue7ka.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I note that we also began to “read” the disk less, not only “write” - because when you insert a record into some table, you also have to “subtract” a part of the tree of each of the indices to determine its future position in them.</font></font><br>
+<br>
+<font color="#4060a0"><h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Who on PostgreSQL 11 live well</font></font></h2></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After upgrading to PG11, we decided to continue “tuning” TOAST and noticed that starting with this version, the parameter became available for configuration </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><code>toast_tuple_target</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The TOAST processing code is triggered only when the row value to be stored in the table is larger than TOAST_TUPLE_THRESHOLD bytes (usually 2 Kb). </font><font style="vertical-align: inherit;">TOAST code will compress and / or move field values ​​out of the table until the row value is less than TOAST_TUPLE_TARGET bytes (variable, usually 2 KB as well) or it becomes impossible to reduce the size.</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We decided that the data we usually have is either “very short” or immediately “very long”, so we decided to limit ourselves to the lowest possible value:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> rawplan_orig <span class="hljs-keyword">SET</span> (toast_tuple_target = <span class="hljs-number">128</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's see how the new settings affected disk loading after the migration:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/pp/cz/k7/ppczk7f8qj9cu_hixtltdk_wvo4.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Not bad! </font><font style="vertical-align: inherit;">The average </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">queue for a disk was reduced by</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> about 1.5 times, and the disk “occupancy” - by 20 percent! </font><font style="vertical-align: inherit;">But maybe this somehow affected the CPU?</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/xa/vj/sq/xavjsqger1hmawiiidzngvzcff0.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At least, it definitely didn’t get worse. </font><font style="vertical-align: inherit;">Although, it is difficult to judge if even such volumes still cannot raise the average CPU load above </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5%</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<font color="#4060a0"><h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">From a change of position, the sum ... changes!</font></font></h2></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As you know, a penny saves a ruble, and with our storage volumes of about </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">10TB / month,</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> even a small optimization can give a good profit. Therefore, we drew attention to the physical structure of our data - how exactly </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the “fields” are laid out inside the record of</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> each table. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Because due to </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">data alignment,</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> this directly </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">affects the resulting volume</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Many architectures provide data alignment across machine word boundaries. </font><font style="vertical-align: inherit;">For example, on a x86 32-bit system, integers (integer type, occupies 4 bytes) will be aligned on the border of 4-byte words, as well as double-precision floating-point numbers (double precision type, 8 bytes). </font><font style="vertical-align: inherit;">And on a 64-bit system, double values ​​will be aligned on the border of 8-byte words. </font><font style="vertical-align: inherit;">This is another reason for incompatibility. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Due to alignment, the size of the table row depends on the order of the fields. </font><font style="vertical-align: inherit;">Usually this effect is not very noticeable, but in some cases it can lead to a significant increase in size. </font><font style="vertical-align: inherit;">For example, if you place fields of types char (1) and integer mixed, between them, as a rule, 3 bytes will be wasted for nothing.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's start with synthetic models:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span> pg_column_size(<span class="hljs-keyword">ROW</span>(
+  <span class="hljs-string">'0000-0000-0000-0000-0000-0000-0000-0000'</span>::<span class="hljs-keyword">uuid</span>
+, <span class="hljs-number">0</span>::<span class="hljs-built_in">smallint</span>
+, <span class="hljs-string">'2019-01-01'</span>::<span class="hljs-built_in">date</span><font></font>
+));<font></font>
+<span class="hljs-comment">-- 48 </span><font></font>
+<font></font>
+<span class="hljs-keyword">SELECT</span> pg_column_size(<span class="hljs-keyword">ROW</span>(
+  <span class="hljs-string">'2019-01-01'</span>::<span class="hljs-built_in">date</span>
+, <span class="hljs-string">'0000-0000-0000-0000-0000-0000-0000-0000'</span>::<span class="hljs-keyword">uuid</span>
+, <span class="hljs-number">0</span>::<span class="hljs-built_in">smallint</span><font></font>
+));<font></font>
+<span class="hljs-comment">-- 46 </span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Where did the extra pair of bytes come from in the first case? </font><font style="vertical-align: inherit;">Everything is simple - a </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2-byte smallint is aligned on a 4-byte boundary</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> before the next field, and when it is the last one, there is nothing and there is no need to align it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In theory, everything is fine and you can rearrange the fields as you like. </font><font style="vertical-align: inherit;">Let's check on real data on the example of one of the tables, the daily section of which takes 10-15GB. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Source structure:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> public.plan_20190220<font></font>
+(<font></font>
+<span class="hljs-comment">--  from table plan:  pack uuid NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  recno smallint NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  host uuid,</span>
+<span class="hljs-comment">--  from table plan:  ts timestamp with time zone,</span>
+<span class="hljs-comment">--  from table plan:  exectime numeric(32,3),</span>
+<span class="hljs-comment">--  from table plan:  duration numeric(32,3),</span>
+<span class="hljs-comment">--  from table plan:  bufint bigint,</span>
+<span class="hljs-comment">--  from table plan:  bufmem bigint,</span>
+<span class="hljs-comment">--  from table plan:  bufdsk bigint,</span>
+<span class="hljs-comment">--  from table plan:  apn uuid,</span>
+<span class="hljs-comment">--  from table plan:  ptr uuid,</span>
+<span class="hljs-comment">--  from table plan:  dt date,</span>
+  <span class="hljs-keyword">CONSTRAINT</span> plan_20190220_pkey PRIMARY <span class="hljs-keyword">KEY</span> (pack, recno),
+  <span class="hljs-keyword">CONSTRAINT</span> chck_ptr <span class="hljs-keyword">CHECK</span> (ptr <span class="hljs-keyword">IS</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>),
+  <span class="hljs-keyword">CONSTRAINT</span> plan_20190220_dt_check <span class="hljs-keyword">CHECK</span> (dt = <span class="hljs-string">'2019-02-20'</span>::<span class="hljs-built_in">date</span>)<font></font>
+)<font></font>
+INHERITS (public.plan)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The section after changing the order of the columns is exactly </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the same field, only the order is different</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> public.plan_20190221<font></font>
+(<font></font>
+<span class="hljs-comment">--  from table plan:  dt date NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  ts timestamp with time zone,</span>
+<span class="hljs-comment">--  from table plan:  pack uuid NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  recno smallint NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  host uuid,</span>
+<span class="hljs-comment">--  from table plan:  apn uuid,</span>
+<span class="hljs-comment">--  from table plan:  ptr uuid,</span>
+<span class="hljs-comment">--  from table plan:  bufint bigint,</span>
+<span class="hljs-comment">--  from table plan:  bufmem bigint,</span>
+<span class="hljs-comment">--  from table plan:  bufdsk bigint,</span>
+<span class="hljs-comment">--  from table plan:  exectime numeric(32,3),</span>
+<span class="hljs-comment">--  from table plan:  duration numeric(32,3),</span>
+  <span class="hljs-keyword">CONSTRAINT</span> plan_20190221_pkey PRIMARY <span class="hljs-keyword">KEY</span> (pack, recno),
+  <span class="hljs-keyword">CONSTRAINT</span> chck_ptr <span class="hljs-keyword">CHECK</span> (ptr <span class="hljs-keyword">IS</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>),
+  <span class="hljs-keyword">CONSTRAINT</span> plan_20190221_dt_check <span class="hljs-keyword">CHECK</span> (dt = <span class="hljs-string">'2019-02-21'</span>::<span class="hljs-built_in">date</span>)<font></font>
+)<font></font>
+INHERITS (public.plan)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The total volume of the section is determined by the number of “facts” and depends only on external processes, so we divide the size of heap ( </font></font><code>pg_relation_size</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) by the number of records in it - that is, we get the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">average size of the actual stored record</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/jx/6e/im/jx6eimznnvdqtrzp6aohdvxluzs.png"></div><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Minus 6% of the volume</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , excellent! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But everything, of course, is not so rosy - because </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in the indices we cannot change the order of the fields</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and therefore "in general" ( </font></font><code>pg_total_relation_size</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) ...</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/az/3m/6z/az3m6zsyv47wtawrbk_tdmwdpfg.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+... after all, they </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">saved 1.5% here</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , without changing a single line of code. </font><font style="vertical-align: inherit;">Yes, yes!</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/gb/dr/ps/gbdrpsonli0eclk4ozdjjtofnda.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I note that the above arrangement of the fields is not the fact that the most optimal. </font><font style="vertical-align: inherit;">Because some field blocks do not want to be “torn apart” already for aesthetic reasons - for example, a pair </font></font><code>(pack, recno)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, which is PK for this table. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, the definition of the "minimum" field arrangement is a fairly simple "exhaustive" task. </font><font style="vertical-align: inherit;">Therefore, you can get results on your data even better than ours - try it!</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en498280/index.html">The story of the Dodo bird from the genus Phoenix. The Great Fall of Dodo IS</a></li>
+<li><a href="../en498282/index.html">[instruction] Creating an account and site on the Google Site platform</a></li>
+<li><a href="../en498284/index.html">How to optimize learning English</a></li>
+<li><a href="../en498288/index.html">Your city needs a metro bus</a></li>
+<li><a href="../en498290/index.html">Procedural hydrology: dynamic simulation of rivers and lakes</a></li>
+<li><a href="../en498294/index.html">Object Detection Recognize and rule. Part 1</a></li>
+<li><a href="../en498296/index.html">Design at the system level. Part 1. From idea to system</a></li>
+<li><a href="../en498298/index.html">Firms use bug bounties to buy hacker silence</a></li>
+<li><a href="../en498300/index.html">Blitz.Engine: Asset System</a></li>
+<li><a href="../en498302/index.html">ILO Advanced License. Why is it needed right now?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

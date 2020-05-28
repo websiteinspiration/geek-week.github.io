@@ -1,0 +1,457 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🙇🏿 👩🏾‍🚒 🐗 Improving performance using uop cache on Sandy Bridge + 👩🏼‍✈️ 💣 👨🏼‍🍳</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In modern x86 Intel processors, the pipeline can be divided into 2 parts: Front End and Back End. 
+ 
+ Front End is responsible for loading code from m...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Improving performance using uop cache on Sandy Bridge +</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/497290/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In modern x86 Intel processors, the pipeline can be divided into 2 parts: Front End and Back End. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Front End is responsible for loading code from memory and decoding it in micro-operations. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Back End is responsible for performing micro-operations from Front End. </font><font style="vertical-align: inherit;">Since these microoperations can be performed by the kernel out of order, the Back End also ensures that the </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">result</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> of these microoperations strictly corresponds to the order in which they go in the code. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In most cases, inefficient use of Front End'a does not have a noticeable effect on performance. </font><font style="vertical-align: inherit;">Peak bandwidth on most Intel processors is 4 micro operations per cycle, therefore, for example, for a Memory / L3-bound code, the CPU will not be able to completely utilize it.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pro relatively new Ice Lake</font></font></b><div class="spoiler_text">   ,      Ice Lake    4  5   .  ,        ,         . <br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, in some cases, the difference in performance can be quite significant. </font><font style="vertical-align: inherit;">Under the cut is an analysis of the impact of the microoperation cache on performance.</font></font><br>
+<a name="habracut"></a><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The content of the article</font></font></h4><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Environment</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Overview of Front End'a Intel processors</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Peak Bandwidth Analysis µop cache -&gt; IDQ</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Example</font></font></li>
+</ul><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Environment</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For all measurements in this article will be used </font></font><code>i7-8550U Kaby Lake</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, HT enabled / </font></font><code>Ubuntu 18.04/Linux Kernel 5.3.0-45-generic</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">In this case, such an environment can be significant, because </font><font style="vertical-align: inherit;">each CPU model has its own performance event. </font><font style="vertical-align: inherit;">In particular, for microarchitectures older than Sandy Bridge, some of the events used in the future simply do not make sense.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Overview of Front End'a Intel processors</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The high-level assembly line organization is publicly available information and is published in </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Intel official documentation on software optimization</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">A more detailed description of some of the features that are omitted from the official documentation can be found in other reputable sources, such as </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Agner Fog</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> or </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Travis Downs</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">So, for example, the assembly pipeline scheme for Skylake in the Intel documentation looks like this: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/qe/jr/xa/qejrxaieyvky3yjl5yps8toljme.png" alt="Skylake pipeline"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's take a closer </font><font style="vertical-align: inherit;">look at the </font><font style="vertical-align: inherit;">upper part of this scheme - Front End. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/dp/ya/yw/dpyaywk2lq0qub5zh4dvjlqwjn4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Legacy Decode Pipeline is responsible for decoding the code in micro-operations. </font><font style="vertical-align: inherit;">It consists of the following components:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Instruction Fetch Unit - IFU</font></font><br>
+ <ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">First Level Instructions Cache - L1i</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Instruction Log Translation Address Cache - ITLB</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Instructor Prefector</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pre-decoder instructions</font></font></li>
+</ul></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Queue of pre-decoded instructions</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Micro-operation pre-decoded instruction decoders</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Consider each of the parts of the Legacy Decode Pipeline individually. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Instruction Fetch Unit. </font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+He is responsible for loading the code, pre-coding (determining the length of the instruction and properties such as “whether the instruction is a branch”) and delivering pre-decoded instructions to the queue. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">First Level Instructions Cache - L1i</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To download the code, the IFU uses L1i, the first-level instruction cache, and L2 / LLC, the second-level cache and the top-level offcore cache, common to code and data. Download is performed in pieces of 16 bytes, also aligned to 16 bytes. When the next 16-byte piece of code is loaded in order, a call is made to L1i and, if the corresponding line is not found, then a search is performed in L2 and, in case of failure, in LLC and memory. Before Skylake LLC, the cache was inclusive - each line in L1 (i / d) and L2 should be contained in the LLC. Thus, LLC “knew” about all the lines in all cores and, in the case of an LLC slip, it was known whether the caches in other cores contained the required line in the Modified state, which means that this line could be loaded from another core. Skylake LLC became a non-inclusive L2-victim cache, but the L2 size was increased 4 times. I don’t knowwhether L2 is inclusive with respect to L1i. L2</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">not</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> inclusive with respect to L1d. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Translation of logical addresses of instructions - ITLB</font></font></b> <br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Before downloading data from the cache, you must search for the corresponding line. For </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><code>n</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-way associative caches</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , each line can be in </font></font><code>n</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">different places in the cache itself. To determine the possible positions in the cache, an index is used (usually a few lower bits of the address). To determine if the line matches the address we need, a tag is used (the rest of the address). Which addresses to use: physical or logical - </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">depends on cache implementation</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. Using physical addresses requires address translation. For address translation, a TLB buffer is used, which caches the results of page walks, thereby reducing the delay in receiving a physical address from a logical address on subsequent calls. For instructions, there is its own Instruction TLB buffer, located separately from the Data TLB. The CPU core also has a second-level TLB common to code and data - STLB. Whether STLB is inclusive is unknown to me (rumored to be not an inclusive victim cache relative to D / I TLB). Using Software Prefetch Instructions</font></font><code>prefetcht1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">you can pull up the line with the code in L2, however, the corresponding TLB record will be pulled up only in DTLB. </font><font style="vertical-align: inherit;">If STLB is not inclusive, then when you look for this line with the code in the caches, you will get ITLB miss -&gt; STLB miss -&gt; page walk (in fact, it’s not so simple, because the kernel can </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">initiate a speculative page walk</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> before it happens TLB miss). </font><font style="vertical-align: inherit;">Intel documentation also discourages the use of SW prefetches for code, Intel Software Optimization Manual / 2.5.5.4:</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The software-controlled prefetch is intended for prefetching data, but not for prefetching code.</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, Travis D. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mentioned</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> that such a prefetch can be very effective (and most likely it is), but so far this is not obvious to me and in order to be convinced of this I will need to separately examine this issue. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Instructor Prefector</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Data loading into the cache (L1d / i, L2, etc) occurs when accessing an un-cached memory location. </font><font style="vertical-align: inherit;">However, if this happened only under such conditions, then as a result we would get an inefficient use of cache bandwidth. </font><font style="vertical-align: inherit;">For example, on Sandy Bridge for L1d - 2 read operations, 1 write 16 bytes per cycle; </font><font style="vertical-align: inherit;">for L1i - 1 read operation of 16 bytes, write throughput is not specified in the documentation, Agner Fog was also not found. </font><font style="vertical-align: inherit;">To solve this problem, there are Hardware prefetchers who can determine the pattern of access to memory and pull the necessary lines into the cache before the code actually addresses them. </font><font style="vertical-align: inherit;">Intel documentation defines 4 prefetchers: 2 for L1d, 2 for L2:</font></font><br>
+<br>
+<ol>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">L1 DCU</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - Prefix serial cache lines. </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Read Only Forward</font></font></b></li>
+<li><b>L1 IP</b> —              (. 0x5555555545a0, 0x5555555545b0, 0x5555555545c0, ...),    ,   ,  </li>
+<li><b>L2 Spatial</b> —       L2    -,        128-.       LLC</li>
+<li><b>L2 Streamer</b> —    .    L1 DCU      «».       LLC</li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Intel documentation does not describe the principle of the L1i prefector. </font><font style="vertical-align: inherit;">All that is known is that the Branch Prediction Unit (BPU) is involved in this process, Intel Software Optimization Manual / 2.6.2: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sd/js/y3/sdjsy3jrgseyeuukletr84i2gyu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Agner Fog also does not see any details. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Code prefetching in L2 / LLC is explicitly defined only for Streamer. </font><font style="vertical-align: inherit;">Optimization Manual / 2.5.5.4 Data Prefectching:</font></font><br>
+<blockquote><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Streamer</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : This prefetcher monitors read requests from the L1 cache for ascending and descending sequences of addresses. </font><font style="vertical-align: inherit;">Monitored read requests include L1 DCache requests initiated by load and store operations and by the hardware prefetchers, and L1 ICache requests for code fetch.</font></font></blockquote> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For the Spatial prefetcher, this is clearly not spelled out:</font></font><br>
+<blockquote><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Spatial Prefetcher:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> This prefetcher strives to complete every cache line fetched to the L2 cache with the pair line that completes it to a 128-byte aligned chunk.</font></font></blockquote> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But this can be verified. </font><font style="vertical-align: inherit;">Each of these prefetchers can be turned off using </font></font><code>MSR 0x1A4</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, as described in the </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">Model-Specific Registers</font></a><font style="vertical-align: inherit;"> manual </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></a><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">About MSR 0x1A4</font></font></b><div class="spoiler_text">  MSR     L2 Spatial    L1i.     .              ,    LLC.     L2 Streamer       2.5 . <br>
+<br>
+ Linux  msr ,   msr     .  <code>$ sudo wrmsr -p 1 0x1a4 1</code>  L2 Streamer   1.<br>
+</div></div><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pre-decoder instructions</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+After the next 16-byte code is loaded, they fall into the pre-decoder instructions. </font><font style="vertical-align: inherit;">Its task is to determine the length of the instruction, decode the prefixes and mark whether the corresponding instruction is a branch (most likely there are still many different properties, but the documentation about them is silent). </font><font style="vertical-align: inherit;">Intel Software Optimization Manual / 2.6.2.2:</font></font><br>
+<blockquote>The predecode unit accepts the sixteen bytes from the instruction cache or prefetch buffers and carries out the following tasks:<br>
+<br>
+<ul>
+<li>Determine the length of the instructions</li>
+<li>Decode all prefixes associated with instructions</li>
+<li>Mark various properties of instructions for the decoders (for example, “is branch.”)</li>
+</ul></blockquote><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A line of pre-decoded instructions. </font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+From the IFU, instructions are added to the pre-encoded instruction queue. </font><font style="vertical-align: inherit;">This queue has appeared since Nehalem, in accordance with Intel documentation, its size is 18 instructions. </font><font style="vertical-align: inherit;">Agner Fog also mentions that this queue holds no more than 64 bytes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Also in Core2, this queue was used as a loop cache. </font><font style="vertical-align: inherit;">If all microoperations from the cycle are in the queue, then in some cases the cost of loading and pre-coding could be avoided. </font><font style="vertical-align: inherit;">The Loop Stream Detector (LSD) can deliver instructions that are already in the queue until the BPU signals that the cycle has ended. </font><font style="vertical-align: inherit;">Agner Fog has a number of interesting notes regarding LSD on Core2:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Consists of 4 lines of 16 bytes</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Peak throughput up to 32 bytes of code per cycle</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Starting with Sandy Bridge, this loop cache has moved from the pre-decoded instruction queue back to IDQ. </font></font><br>
+ <br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Decoders of pre-decoded instructions in microoperation</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+From the queue of pre-decoded instructions, the code is sent to decoding in microoperation. Decoders are responsible for decoding - there are 4 in total. According to Intel documentation, one of the decoders can decode instructions consisting of 4 micro-operations or less. The rest decodes instructions consisting of one microoperation (micro / macro fused), Intel Software Optimization Manual / 2.5.2.1:</font></font><br>
+<blockquote>There are four decoding units that decode instruction into micro-ops. The first can decode all IA-32 and Intel 64 instructions up to four micro-ops in size. The remaining three decoding units handle single-micro-op instructions. All four decoding units support the common cases of single micro-op flows including micro-fusion and macro-fusion.</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Instructions decoded in a large number of micro-operations (e.g. rep movsb used in the implementation of memcpy in libc on certain sizes of copied memory) come from Microcode Sequencer (MS ROM). The peak bandwidth of the sequencer is 4 micro-operations per cycle. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As you can see in the assembly line diagram, the Legacy Decode Pipeline can decode up to 5 micro operations per cycle on Skylake. On Broadwell and older, the Legacy Decode Pipeline's peak throughput was 4 micro-operations per cycle. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Microoperation cache</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After the instructions are decoded in microoperations, from the Legacy Decode Pipeline they fall into the special microoperation queue - Instruction Decode Queue (IDQ), as well as the so-called microoperation cache (Decoded ICache, µop cache). The microoperation cache was originally introduced in Sandy Bridge and is used to avoid fetching and decoding instructions in microoperations, thereby increasing the throughput for delivering microoperations in IDQ - up to 6 per cycle. After getting into IDQ, microoperations go to the Back End for execution with a peak throughput of 4 microoperations per cycle.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+According to Intel documentation, the microoperation cache consists of 32 sets, each set contains 8 lines, each line can cache up to 6 micro operations (micro / macro fused), allowing a total cache of up to 32 * 8 * 6 = 1536 micro operations . </font><font style="vertical-align: inherit;">Microoperation caching occurs with a granularity of 32 bytes, i.e. </font><font style="vertical-align: inherit;">micro-operations that follow instructions from different 32-byte regions cannot fall into one line. </font><font style="vertical-align: inherit;">However, up to 3 different cache lines can correspond to one 32-byte region. </font><font style="vertical-align: inherit;">Thus, up to 18 microoperations in µop cache can correspond to each 32-byte region.</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Intel Software Optimization Manual / 2.5.5.2</font></font></b><div class="spoiler_text"><blockquote>The Decoded ICache consists of 32 sets. Each set contains eight Ways. Each Way can hold up to six micro-ops. The Decoded ICache can ideally hold up to 1536 micro-ops. The following are some of the rules how the Decoded ICache is filled with micro-ops:<br>
+<br>
+<ul>
+<li>ll micro-ops in a Way represent instructions which are statically contiguous in the code and have their EIPs within the same aligned 32-byte region.</li>
+<li>Up to three Ways may be dedicated to the same 32-byte aligned chunk, allowing a total of 18 micro-ops to be cached per 32-byte region of the original IA program.</li>
+<li>A multi micro-op instruction cannot be split across Ways.</li>
+<li>Up to two branches are allowed per Way. </li>
+<li>An instruction which turns on the MSROM consumes an entire Way.</li>
+<li>A non-conditional branch is the last micro-op in a Way. </li>
+<li>Micro-fused micro-ops (load+op and stores) are kept as one micro-op.</li>
+<li>A pair of macro-fused instructions is kept as one micro-op.</li>
+<li>Instructions with 64-bit immediate require two slots to hold the immediate.</li>
+</ul></blockquote><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Agner Fog also mentions that only single line micro-operations can be downloaded per cycle (not explicitly stated in Intel documentation, although it can be easily checked manually).</font></font><br>
+<br>
+<h4>    µop cache --&gt; IDQ</h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In some cases, it is very convenient to use </font></font><code>nop</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1-byte lengths </font><font style="vertical-align: inherit;">to study the behavior of Front End </font><font style="vertical-align: inherit;">. At the same time, we can be sure that we are investigating the Front End, and not the Resource Stall on the Back End, for any reason. The fact is that </font></font><code>nop</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, as well as other instructions, they are decoded in the Legacy Decode Pipeline, mixed in µop cache and sent to IDQ. Further </font></font><code>nop</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, as well as other instructions, takes back end. The significant difference is that of the resources on the Back End it </font></font><code>nop</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">uses only the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Reorder Buffer</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and does not require a slot in the Reservation Station (aka Scheduler). Thus, immediately after entering Reorder Buffer, it is </font></font><code>nop</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ready for retirement, which will be performed in accordance with the order in the program code.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To test throughput, declare a function </font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">test_decoded_icache</span><span class="hljs-params">(<span class="hljs-keyword">size_t</span> iteration_count)</span></span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+with implementation on </font></font><code>nasm</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">align 32<font></font>
+test_decoded_icache:<font></font>
+    ;nop',  0  23 <font></font>
+    dec rdi<font></font>
+    ja test_decoded_icache<font></font>
+    ret</code></pre><br>
+<code>ja</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">It was not chosen by chance. </font></font><code>ja</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>dec</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">use different flags - </font></font><code>ja</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">reads from </font></font><code>CF</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>ZF</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, </font></font><code>dec</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">not recording in the CF, so Macro Fusion does not apply. </font><font style="vertical-align: inherit;">This is done purely for the convenience of counting microoperations in a cycle - each instruction corresponds to one microoperation. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For measurements, we need the following perf events: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. </font></font><code>uops_issued.any</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- Used to count the micro-operations that Renamer takes from IDQ. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The Intel System Programming Guide documents this event as the number of micro-operations that Renamer puts into the Reservation Station:</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Counts the number of uops that the Resource Allocation Table (RAT) issues to the Reservation Station (RS).</font></font><br>
+</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This description does not completely correlate with the values ​​that can be obtained from experiments. In particular, they </font></font><code>nop</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fall into this counter, although it is only a fact that they are not needed at all at the Reservation Station. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2. </font></font><code>uops_retired.retire_slots</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- the total number of retired microoperations taking into account micro / macro-fusion </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3. </font></font><code>uops_retired.stall_cycles</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- the number of ticks for which there was not a single retired microoperation </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+4. </font></font><code>resource_stalls.any</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- the number of ticks of idle conveyor due to the inaccessibility of any of the resources Back End </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the Intel Software Optimization Manual / B .4.1 there is a content diagram that characterizes the events described above: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/wq/j9/y3/wqj9y3jj7aeisnmdjxxxjwsl_jk.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+5. </font></font><code>idq.all_dsb_cycles_4_uops</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- the number of clock cycles for which 4 (or more) instructions were delivered from µop cache.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The fact that this metric takes into account the delivery of more than 4 microoperations per cycle is not described in the Intel documentation, but it agrees very well with the experiments. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+6. </font></font><code>idq.all_dsb_cycles_any_uops</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- the number of measures for which at least one micro-operation was delivered. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+7. </font></font><code>idq.dsb_cycles</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- The total number of measures at which delivery was from µop cache </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+8. </font></font><code>idq_uops_not_delivered.cycles_le_N_uop_deliv.core</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- The number of measures for which Renamer took one </font></font><code>N</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">or less microoperations and </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">there was no downtime on the Back End side</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , </font></font><code>N</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- 1, 2, 3. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We take for research </font></font><code>iteration_count = 1 &lt;&lt; 31</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. We begin the analysis of what is happening in the CPU by examining the number of micro-operations and, first, by measuring the average retirement bandwidth, i.e. </font></font><code>uops_retired.retire_slots/uops_retired.total_cycle</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/xi/b2/0s/xib20shepbr334i1xmhka10rjeg.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What immediately catches your eye is the subsidence of the retirement throughput at a cycle size of 7 micro-operations. In order to understand what’s the matter, let’s take a look at how the average delivery speed from µop cache - changes </font></font><code>idq.all_dsb_cycles_any_uops / idq.dsb_cycles</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/xm/5s/su/xm5ssuzamxr4th-xs7e0ixrisfm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+and how are the total number of measures and measures for which µop cache delivered to IDQ related: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/it/w5/va/itw5vasl9ogpslneyoclxzasu4k.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thus, we can see that with a cycle of 6 micro operations we get an effective µop cache bandwidth utilization - 6 micro operations per cycle. Due to the fact that Renamer cannot pick up as much as the µop cache delivers, some of the µop cache cycles do not deliver anything, which is clearly visible in the previous graph.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+With a cycle of 7 microoperations, we get a sharp drop in the throughput of the µop cache - 3.5 microoperations per cycle. At the same time, as can be seen from the previous graph, µop cache is constantly in operation. Thus, with a cycle of 7 microoperations, we get inefficient utilization of the bandwidth µop cache. The fact is that, as noted earlier, µop cache per cycle can deliver microoperations from only one line. In case of microoperations 7 - the first 6 fall in one line, and the remaining 7th - in another. In this way, we get 7 micro-operations per 2 cycles, or 3.5 micro-operations per cycle. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now let's look at how Renamer takes micro-operations from IDQ. For this we need </font></font><code>idq_uops_not_delivered.core</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>idq_uops_not_delivered.cycles_le_N_uop_deliv.core</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/kv/mg/qv/kvmgqvwgra-j4qgpxia46mwlsh4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You may notice that with 7 microoperations, only 3 microoperations at a time take half the Renamer cycles. From here we get retirement throughput of an average of 3.5 micro-operations per cycle. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Another interesting point related to this example can be seen if we consider the </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">effective</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> throughput of retirement. Those. not considering </font></font><code>uops_retired.stall_cycles</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/uo/hy/gt/uohygtod0xknhsvolqjnig7tfos.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It can be noted that with 7 microoperations, every 7 measures retirement of 4 microoperations is performed, and every 8th measure is idle with no retired microoperations (retirement stall). </font><font style="vertical-align: inherit;">After conducting a series of experiments, it was possible to find that such behavior was always observed during 7 microoperations, regardless of their layout 1-6, 6-1, 2-5, 5-2, 3-4, 4-3. </font><font style="vertical-align: inherit;">I don’t know why this is exactly the case, and not, for example, retirement of 3 microoperations is performed in one clock cycle, and 4 in the next. </font><font style="vertical-align: inherit;">Agner Fog mentioned that branch transitions can only use part of the retirement station slots. </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Maybe</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> this restriction is the reason for this retirement behavior.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Example</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In order to understand whether this all has an effect in practice, consider the following slightly more practical example than with </font></font><code>nop</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">s: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Two arrays are given </font></font><code>unsigned</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">It is necessary to accumulate the sum of arithmetic means for each index and write it to the third array. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+An example implementation might look like this:</font></font><br>
+<br>
+<pre><code class="cpp hljs">
+<span class="hljs-keyword">static</span> <span class="hljs-keyword">unsigned</span> arr1[] = { ... };<font></font>
+<font></font>
+<span class="hljs-keyword">static</span> <span class="hljs-keyword">unsigned</span> arr2[] = { ... };<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">void</span> <span class="hljs-title">arithmetic_mean</span><span class="hljs-params">(<span class="hljs-keyword">unsigned</span> *arr1, <span class="hljs-keyword">unsigned</span> *arr2, <span class="hljs-keyword">unsigned</span> *out, <span class="hljs-keyword">size_t</span> sz)</span></span>{
+    <span class="hljs-keyword">unsigned</span> sum = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">size_t</span> idx = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">while</span>(idx &lt; sz){<font></font>
+        sum += (arr1[idx] + arr2[idx]) &gt;&gt; <span class="hljs-number">1</span>;<font></font>
+        out[idx] = sum;<font></font>
+        idx++;<font></font>
+    }<font></font>
+    __asm__ __volatile__(<span class="hljs-string">""</span> ::: <span class="hljs-string">"memory"</span>);<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">main</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span></span>{
+    <span class="hljs-keyword">unsigned</span> out[<span class="hljs-keyword">sizeof</span> arr1 / <span class="hljs-keyword">sizeof</span>(<span class="hljs-keyword">unsigned</span>)];
+    <span class="hljs-keyword">for</span>(<span class="hljs-keyword">size_t</span> i = <span class="hljs-number">0</span>; i &lt; <span class="hljs-number">4096</span> * <span class="hljs-number">4096</span>; i++){<font></font>
+        arithmetic_mean(arr1, arr2, out, <span class="hljs-keyword">sizeof</span> arr1 / <span class="hljs-keyword">sizeof</span>(<span class="hljs-keyword">unsigned</span>));<font></font>
+    }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Compile with gcc flags </font></font><br>
+<br>
+<pre><code class="plaintext hljs">-Werror<font></font>
+-Wextra<font></font>
+-Wall<font></font>
+-pedantic<font></font>
+-Wno-stack-protector<font></font>
+-g3<font></font>
+-O3<font></font>
+-Wno-unused-result<font></font>
+-Wno-unused-parameter</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is quite obvious that the function </font></font><code>arithmetic_mean</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">will not be present in the code and will be inserted directly into </font></font><code>main</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">(gdb) disas main<font></font>
+Dump of assembler code for function main:<font></font>
+   #...<font></font>
+   0x00000000000005dc &lt;+60&gt;:    nop    DWORD PTR [rax+0x0]<font></font>
+   0x00000000000005e0 &lt;+64&gt;:    mov    edx,DWORD PTR [rdi+rax*4]<font></font>
+   0x00000000000005e3 &lt;+67&gt;:    add    edx,DWORD PTR [r8+rax*4]<font></font>
+   0x00000000000005e7 &lt;+71&gt;:    shr    edx,1<font></font>
+   0x00000000000005e9 &lt;+73&gt;:    add    ecx,edx<font></font>
+   0x00000000000005eb &lt;+75&gt;:    mov    DWORD PTR [rsi+rax*4],ecx<font></font>
+   0x00000000000005ee &lt;+78&gt;:    add    rax,0x1<font></font>
+   0x00000000000005f2 &lt;+82&gt;:    cmp    rax,0x80<font></font>
+   0x00000000000005f8 &lt;+88&gt;:    jne    0x5e0 &lt;main+64&gt;<font></font>
+   0x00000000000005fa &lt;+90&gt;:    sub    r9,0x1<font></font>
+   0x00000000000005fe &lt;+94&gt;:    jne    0x5d8 &lt;main+56&gt;<font></font>
+   #...<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Note that the compiler aligned the loop code to 32 bytes ( </font></font><code>nop DWORD PTR [rax+0x0]</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">), which is exactly what we need. </font><font style="vertical-align: inherit;">Having made sure that there is no </font></font><code>resource_stalls.any</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Back End (all measurements are performed taking into account the heated L1d cache), we can begin to consider the counters associated with the delivery to IDQ:</font></font><br>
+<br>
+<pre><code class="plaintext hljs"> Performance counter stats for './test_decoded_icache':<font></font>
+<font></font>
+     2 273 343 251      idq.all_dsb_cycles_4_uops                                     (15,94%)<font></font>
+     4 458 322 025      idq.all_dsb_cycles_any_uops                                     (16,26%)<font></font>
+    15 473 065 238      idq.dsb_uops                                                  (16,59%)<font></font>
+     4 358 690 532      idq.dsb_cycles                                                (16,91%)<font></font>
+     2 528 373 243      idq_uops_not_delivered.core                                     (16,93%)<font></font>
+        73 728 040      idq_uops_not_delivered.cycles_0_uops_deliv.core                                     (16,93%)<font></font>
+       107 262 304      idq_uops_not_delivered.cycles_le_1_uop_deliv.core                                     (16,93%)<font></font>
+       108 454 043      idq_uops_not_delivered.cycles_le_2_uop_deliv.core                                     (16,65%)<font></font>
+     2 248 557 762      idq_uops_not_delivered.cycles_le_3_uop_deliv.core                                     (16,32%)<font></font>
+     2 385 493 805      idq_uops_not_delivered.cycles_fe_was_ok                                     (16,00%)<font></font>
+    15 147 004 678     uops_retired.retire_slots<font></font>
+    4 724 790 623      uops_retired.total_cycles<font></font>
+       <font></font>
+     1,228684264 seconds time elapsed<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Note that retirement badwidth in this case = 15147004678/4724790623 = 3.20585733562, and also that only 3 microoperations take half the clocks of Renamer. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now add the manual loop promotion to the implementation:</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">void</span> <span class="hljs-title">arithmetic_mean</span><span class="hljs-params">(<span class="hljs-keyword">unsigned</span> *arr1, <span class="hljs-keyword">unsigned</span> *arr2, <span class="hljs-keyword">unsigned</span> *out, <span class="hljs-keyword">size_t</span> sz)</span></span>{
+    <span class="hljs-keyword">unsigned</span> sum = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">size_t</span> idx = <span class="hljs-number">0</span>;
+    <span class="hljs-keyword">if</span>(sz &amp; <span class="hljs-number">2</span>){<font></font>
+        sum += (arr1[idx] + arr2[idx]) &gt;&gt; <span class="hljs-number">1</span>;<font></font>
+        out[idx] = sum;<font></font>
+        idx++;<font></font>
+    }<font></font>
+    <span class="hljs-keyword">while</span>(idx &lt; sz){<font></font>
+        sum += (arr1[idx] + arr2[idx]) &gt;&gt; <span class="hljs-number">1</span>;<font></font>
+        out[idx] = sum;<font></font>
+        idx++;<font></font>
+        sum += (arr1[idx] + arr2[idx]) &gt;&gt; <span class="hljs-number">1</span>;<font></font>
+        out[idx] = sum;<font></font>
+        idx++;  <span class="hljs-comment">//   idx++     idx+=2</span><font></font>
+    }<font></font>
+    __asm__ __volatile__(<span class="hljs-string">""</span> ::: <span class="hljs-string">"memory"</span>);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The resulting perf counters look like:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">Performance counter stats for './test_decoded_icache':<font></font>
+<font></font>
+     2 152 818 549      idq.all_dsb_cycles_4_uops                                     (14,79%)<font></font>
+     3 207 203 856      idq.all_dsb_cycles_any_uops                                     (15,25%)<font></font>
+    12 855 932 240      idq.dsb_uops                                                  (15,70%)<font></font>
+     3 184 814 613      idq.dsb_cycles                                                (16,15%)<font></font>
+        24 946 367      idq_uops_not_delivered.core                                     (16,24%)<font></font>
+         3 011 119      idq_uops_not_delivered.cycles_0_uops_deliv.core                                     (16,24%)<font></font>
+         5 239 222      idq_uops_not_delivered.cycles_le_1_uop_deliv.core                                     (16,24%)<font></font>
+         7 373 563      idq_uops_not_delivered.cycles_le_2_uop_deliv.core                                     (16,24%)<font></font>
+         7 837 764      idq_uops_not_delivered.cycles_le_3_uop_deliv.core                                     (16,24%)<font></font>
+     3 418 529 799      idq_uops_not_delivered.cycles_fe_was_ok                                     (16,24%)<font></font>
+     3 444 833 440      uops_retired.total_cycles                                     (18,18%)<font></font>
+    13 037 919 196      uops_retired.retire_slots                                     (18,17%)<font></font>
+<font></font>
+    0,871040207 seconds time elapsed</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this case, we have retirement bandwidth = 13037919196/3444833440 = 3.78477491672, as well as efficient utilization of Renamer bandwidth. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thus, we not only got rid of one branching and one increment operation in a loop, but also increased retirement bandwidth using efficient utilization of the throughput of the microoperation cache, which gave a total 28% increase in performance. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Note that only a reduction in one branch and increment operation gives an average performance increase of 9%.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Small remark</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On the CPU that was used to perform these experiments, LSD is turned off. </font><font style="vertical-align: inherit;">It seems that LSD could handle such a situation. </font><font style="vertical-align: inherit;">For CPUs with LSD enabled, such cases will need to be investigated separately.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en497278/index.html">Flutter. Asynchrony and parallelism</a></li>
+<li><a href="../en497280/index.html">How I stopped being afraid and fell in love with cholesterol</a></li>
+<li><a href="../en497282/index.html">Clean up the code in Angular. Cooking ESLint, codelyzer, stylelint, husky, lint-staged and Prettier</a></li>
+<li><a href="../en497286/index.html">Ludum Dare: checklist a week before the start</a></li>
+<li><a href="../en497288/index.html">Decorative ceiling light Feron AL5000</a></li>
+<li><a href="../en497292/index.html">Technology Stack Shiro Games</a></li>
+<li><a href="../en497296/index.html">Popular errors in English among IT professionals. Part 2: Pronunciation</a></li>
+<li><a href="../en497302/index.html">Autonomous navigation of a mobile robot</a></li>
+<li><a href="../en497304/index.html">Intercepter-NG 2.5 released for Android</a></li>
+<li><a href="../en497306/index.html">DLL spoofing (DLL hijacking)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

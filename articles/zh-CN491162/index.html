@@ -1,0 +1,365 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💗 🤐 🛕 PostgreSQL Antipatterns：关于按名称迭代优化或“来回优化”的故事 🤝 ❤️ 🤾🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="全国各地销售办事处的成千上万经理每天在我们的CRM系统中 记录成千上万的联系 -与潜在客户进行交流或已经与我们合作的事实。对于此客户，您必须首先找到，并且最好尽快找到。这种情况最经常发生在名字上。
+ 
+ 因此，毫不奇怪，再次在负载最重的数据库之一（我们自己的公司VLSI帐户）上分析“繁重”请求时，我...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns：关于按名称迭代优化或“来回优化”的故事</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/491162/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">全国各地销售办事处的成千上万经理</font><b><font style="vertical-align: inherit;">每天</font></b><font style="vertical-align: inherit;">在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们的CRM系统中</font></font></a> <font style="vertical-align: inherit;"><font style="vertical-align: inherit;">记录</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">成千上万的联系</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -与潜在客户进行交流或已经与我们合作的事实。对于此客户，您必须首先找到，并且最好尽快找到。这种情况最经常发生在名字上。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，毫不奇怪，再次在负载最重的数据库之一（我们自己的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">公司VLSI帐户）上</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分析“繁重”请求时</font><font style="vertical-align: inherit;">，我发现“最顶部”是</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">按名称快速搜索</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">公司名片</font><font style="vertical-align: inherit;">的</font><b><font style="vertical-align: inherit;">请求</font></b><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+此外，进一步的调查显示了一个有趣的例子，即</font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">优化然后降低性能</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 几支团队在随后的改进中提出了要求，每个团队的行为完全出于善意。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0：用户想要什么</font></font></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/du/k9/mg/duk9mgzeofw0ka5_lrg8lewch7k.png"></div><font color="#c0c0c0"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">来自此处的</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> KDPV </font><font style="vertical-align: inherit;">]</font></font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+用户说“快速”按名称搜索时通常是什么意思？</font><font style="vertical-align: inherit;">几乎从来没有发现过对这种类型的子字符串进行“诚实”的搜索</font></font><code>... LIKE '%%'</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-因为这样做不仅得到</font><font style="vertical-align: inherit;">and </font><font style="vertical-align: inherit;">，</font><font style="vertical-align: inherit;">甚至</font><font style="vertical-align: inherit;">获得结果</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">
+用户暗示在家庭一级您可以</font><font style="vertical-align: inherit;">在标题中</font><b><font style="vertical-align: inherit;">单词的开头</font></b><font style="vertical-align: inherit;">为他提供</font><b><font style="vertical-align: inherit;">搜索，</font></b><font style="vertical-align: inherit;">并显示</font><b><font style="vertical-align: inherit;">与</font></b><font style="vertical-align: inherit;">输入</font><font style="vertical-align: inherit;">内容更相关的内容</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">并</font><b><font style="vertical-align: inherit;">几乎可以立即完成</font></b><font style="vertical-align: inherit;"> -使用线间输入。</font></font><code>'<u></u>'</code><font style="vertical-align: inherit;"></font><code>' <u></u>'</code><font style="vertical-align: inherit;"></font><code>'<u></u>'</code><font style="vertical-align: inherit;"></font><code>'  <u></u>'</code><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1：限制任务</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+更重要的是，一个人不会专门输入，</font></font><code>' '</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">因此您必须搜索每个单词的前缀。</font><font style="vertical-align: inherit;">不，相对于故意“错过”前一个单词，用户响应最后一个单词的快速提示要容易得多-看看任何搜索引擎的工作原理。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常，</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">正确</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">制定任务要求是解决方案的一半以上。</font><font style="vertical-align: inherit;">有时，仔细分析用例会</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">严重影响结果</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+抽象开发者做什么？</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.0：外部搜索引擎</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+哦，搜索很困难，我根本什么都不想做-让我们把它交给开发人员吧！</font><font style="vertical-align: inherit;">让他们向我们部署一个相对于数据库的外部搜索引擎：Sphinx，ElasticSearch，... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在同步和更改速度方面，这是</font><font style="vertical-align: inherit;">一个</font><font style="vertical-align: inherit;">尽管</font><font style="vertical-align: inherit;">可行</font><font style="vertical-align: inherit;">但很耗时的选择。</font><font style="vertical-align: inherit;">但在我们的情况下不是，因为仅在每个客户的帐户数据框架内进行搜索。</font><font style="vertical-align: inherit;">而且数据具有很大的可变性-如果经理现在已经插入了卡</font></font><code>' '</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，则5-10秒后，他已经可以记住自己忘记在那儿指明电子邮件并想查找并更正它。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，让我们</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“直接在数据库中搜索”</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">幸运的是，PostgreSQL允许我们执行此操作，而不仅仅是一个选项-我们将考虑它们。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.1：“诚实”子字符串</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们坚持使用“子字符串”一词。</font><font style="vertical-align: inherit;">但是正是通过子字符串（甚至是正则表达式！）进行索引搜索的时候，还有一个出色的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_trgm模块</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">！</font><font style="vertical-align: inherit;">只有这样，才有必要正确排序。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了简化模型，让我们尝试一下：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> firms(
+  <span class="hljs-keyword">id</span>
+    <span class="hljs-built_in">serial</span>
+      PRIMARY <span class="hljs-keyword">KEY</span>
+, <span class="hljs-keyword">name</span>
+    <span class="hljs-built_in">text</span>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们在其中填写780万条真实组织和索引的记录：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> EXTENSION pg_trgm;
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> firms <span class="hljs-keyword">USING</span> gin(<span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) gin_trgm_ops);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们寻找行间搜索的前10个条目：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) ~ (<span class="hljs-string">'(^|\s)'</span> || <span class="hljs-string">''</span>)
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) ~ (<span class="hljs-string">'^'</span> || <span class="hljs-string">''</span>) <span class="hljs-keyword">DESC</span> <span class="hljs-comment">--  " "</span>
+, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-comment">--   </span>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;
+</code></pre><br>
+<img src="https://habrastorage.org/webt/0m/pk/su/0mpksuspk5xdasdj7mtg5ch4jvw.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[看看explain.tensor.ru]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+好吧，这是... 26 </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">毫秒，31MB的</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">读取数据和超过1.7K过滤的记录-可供10个人使用。</font><font style="vertical-align: inherit;">开销太高了，是否有可能变得更有效率？</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.2：文字搜索？</font><font style="vertical-align: inherit;">是FTS！</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+确实，PostgreSQL提供了一种非常强大的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">全文搜索</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（全文搜索）机制，其中包括前缀搜索的可能性。</font><font style="vertical-align: inherit;">一个很好的选择，甚至不需要安装扩展！</font><font style="vertical-align: inherit;">我们试试吧：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> firms <span class="hljs-keyword">USING</span> gin(to_tsvector(<span class="hljs-string">'simple'</span>::regconfig, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)));</code></pre><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  to_tsvector(<span class="hljs-string">'simple'</span>::regconfig, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)) @@ to_tsquery(<span class="hljs-string">'simple'</span>, <span class="hljs-string">':*'</span>)
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) ~ (<span class="hljs-string">'^'</span> || <span class="hljs-string">''</span>) <span class="hljs-keyword">DESC</span>
+, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/wd/ln/tq/wdlntqgqo_zvb4sbhcq-wln_jrw.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[请看explorer.tensor.ru]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+在这里，查询执行的并行化对我们有所帮助，将时间减少了一半至</font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">11ms</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">是的，而且我们不得不读取1.5倍的数据，只有</font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">20MB</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">而且，这里越小越好，因为我们减去的数量越大，缓存未命中的机会就越高，并且从磁盘读取的每个额外数据页都可能成为请求的“刹车”。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.3：还喜欢吗？</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+先前的请求对每个人都有利，但是只有每天拉出十万次，才会运行2 </font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TB的</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">读取数据。</font><font style="vertical-align: inherit;">充其量-从内存中获取，但是如果您不走运，则从磁盘获取。</font><font style="vertical-align: inherit;">因此，让我们尝试使其更小。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+回想一下，用户希望首先看到</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“以...开头”</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">因此，这纯粹是</font><font style="vertical-align: inherit;">带有</font><font style="vertical-align: inherit;">！</font><font style="vertical-align: inherit;">的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前缀搜索</font></font></a><font style="vertical-align: inherit;"></font><code>text_pattern_ops</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">并且只有当我们“不够”最多10条所需记录时，我们才必须使用FTS搜索来读取它们：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> firms(<span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) text_pattern_ops);</code></pre><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">LIKE</span> (<span class="hljs-string">''</span> || <span class="hljs-string">'%'</span>)
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/_7/e_/jx/_7e_jxpnkc7n97e9rj2rbbk2ukq.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[查看</font></font></a><font style="vertical-align: inherit;"><i><b><font style="vertical-align: inherit;">explain.tensor.ru</font></b></i><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"> ]</font></a></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+出色的性能-仅</font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.05ms，</font></font></b></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">读取的大小</font><i><b><font style="vertical-align: inherit;">超过100KB</font></b></i><font style="vertical-align: inherit;">！</font><font style="vertical-align: inherit;">只有我们忘记了</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">按名称排序，</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这样用户才不会迷失于结果中：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">LIKE</span> (<span class="hljs-string">''</span> || <span class="hljs-string">'%'</span>)
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/ku/d4/r1/kud4r1oipobzbsljhvbavzd2ypa.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[看explorer.tensor.ru]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+哦，事情不再那么漂亮了-似乎有一个索引，但是排序却比它快了……当然，它比以前的版本有效很多倍，但是...</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.4：“使用文件修改”</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是有一个索引可以让您按范围进行搜索，并且使用sorting是正常的- </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">正常的btree</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">！</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> firms(<span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>));</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+只需要一个请求就可以“手动组装”：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) &gt;= <span class="hljs-string">''</span> <span class="hljs-keyword">AND</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) &lt;= (<span class="hljs-string">''</span> || <span class="hljs-keyword">chr</span>(<span class="hljs-number">65535</span>)) <span class="hljs-comment">--  UTF8,   - chr(255)</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+   <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/eh/o3/-i/eho3-irvjqbcpgpmmp7fuheb9nm.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[查看explain.tensor.ru]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+太好了–排序工作和资源消耗都保持“微观”，</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">比“纯” FTS效率高数千倍</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">！</font><font style="vertical-align: inherit;">它仍然可以在单个请求中收集：</font></font><br>
+<br>
+<pre><code class="sql hljs">(
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    firms<font></font>
+  <span class="hljs-keyword">WHERE</span>
+    <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) &gt;= <span class="hljs-string">''</span> <span class="hljs-keyword">AND</span>
+    <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) &lt;= (<span class="hljs-string">''</span> || <span class="hljs-keyword">chr</span>(<span class="hljs-number">65535</span>)) <span class="hljs-comment">--  UTF8,    - chr(255)</span>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+     <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+  <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span><font></font>
+)<font></font>
+<span class="hljs-keyword">UNION</span> <span class="hljs-keyword">ALL</span><font></font>
+(<font></font>
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    firms<font></font>
+  <span class="hljs-keyword">WHERE</span>
+    to_tsvector(<span class="hljs-string">'simple'</span>::regconfig, <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)) @@ to_tsquery(<span class="hljs-string">'simple'</span>, <span class="hljs-string">':*'</span>) <span class="hljs-keyword">AND</span>
+    <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">NOT</span> <span class="hljs-keyword">LIKE</span> (<span class="hljs-string">''</span> || <span class="hljs-string">'%'</span>) <span class="hljs-comment">-- " "    </span>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+    <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) ~ (<span class="hljs-string">'^'</span> || <span class="hljs-string">''</span>) <span class="hljs-keyword">DESC</span> <span class="hljs-comment">--    ,     btree-</span>
+  , <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>)
+  <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span><font></font>
+)<font></font>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我注意到，</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">只有</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在第一个子查询</font><b><font style="vertical-align: inherit;">返回</font></b></font><code>LIMIT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的行数</font><b><font style="vertical-align: inherit;">少于</font></b><font style="vertical-align: inherit;"> last </font><b><font style="vertical-align: inherit;">期望</font></b><font style="vertical-align: inherit;">的行数时，</font><b><font style="vertical-align: inherit;">才</font></b><font style="vertical-align: inherit;">执行第二个子查询</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">已经写过</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">关于这种查询优化方法的文章</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，是的，我们现在同时在表上有btree和gin，但是从统计上来看，</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">只有不到10％的请求到达了第二个块</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">就是说，由于这项任务的众所周知的典型限制，我们能够将服务器总资源消耗减少近一千倍！</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.5 *：省去文件</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上面</font></font><code>LIKE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们被禁止使用错误的排序。</font><font style="vertical-align: inherit;">但是可以通过指定USING语句将其“设置在真实路径上”：</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">默认是隐含的</font></font><code>ASC</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">另外，您可以在句子中指定特定排序运算符的名称</font></font><code>USING</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">排序运算符必须是小于或大于某个B树运算符族的成员。</font></font><code>ASC</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通常相当于</font></font><code>USING &lt;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><code>DESC</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一般等价物</font></font><code>USING &gt;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在我们的例子中，“少”是</font></font><code>~&lt;~</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  firms<font></font>
+<span class="hljs-keyword">WHERE</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">LIKE</span> (<span class="hljs-string">''</span> || <span class="hljs-string">'%'</span>)
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-keyword">lower</span>(<span class="hljs-keyword">name</span>) <span class="hljs-keyword">USING</span> ~&lt;~
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/s8/6r/4u/s86r4ujfiklgl9rqwn0fl7_g44i.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[看explain.tensor.ru]</font></font></a><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2：如何“发出请求”</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，我们将请求保留为“坚持”半年或一年，并且令人惊讶的是，我们再次发现它处于“顶部”，该指标表明每日总“抽出” </font><b><font style="vertical-align: inherit;">5.5TB</font></b><font style="vertical-align: inherit;">的内存（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">共享命中的缓冲区</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">），</font><font style="vertical-align: inherit;">即甚至超过了原来的水平。</font><font style="vertical-align: inherit;">
+不，当然，我们的业务在增长，工作量也在增加，但幅度并没有太大！</font><font style="vertical-align: inherit;">所以这里有些脏-让我们弄清楚。</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.1：分页的诞生</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在某个时候，另一个开发团队希望能够通过快速下标搜索“跳入”注册表，并获得相同但扩展的结果。</font><font style="vertical-align: inherit;">还有没有页面导航的注册表？</font><font style="vertical-align: inherit;">让我们拧紧它！</font></font><br>
+<br>
+<pre><code class="sql hljs">( ... LIMIT &lt;N&gt; + 10)<font></font>
+UNION ALL<font></font>
+( ... LIMIT &lt;N&gt; + 10)<font></font>
+LIMIT 10 OFFSET &lt;N&gt;;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，开发人员可以不费力地显示带有“ type-page”加载的搜索结果注册表。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当然，实际上，</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对于每个下一页数据，都将读取越来越多的数据</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（在以前的所有时间中，我们都将其丢弃，再加上所需的“尾部”）-也就是说，这是明确的反模式。</font><font style="vertical-align: inherit;">并且从下一个迭代开始，从存储在界面中的键开始搜索会更正确，但是大约是另一次。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.2：想要异国情调</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在某个时候，开发人员希望</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">来自另一个表的</font><b><font style="vertical-align: inherit;">数据</font></b><font style="vertical-align: inherit;">来</font><b><font style="vertical-align: inherit;">使结果选择多样化</font></b><font style="vertical-align: inherit;">，为此，先前的整个请求都发送给了CTE：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> q <span class="hljs-keyword">AS</span> (<font></font>
+  ...<font></font>
+  <span class="hljs-keyword">LIMIT</span> &lt;N&gt; + <span class="hljs-number">10</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+, (<span class="hljs-keyword">SELECT</span> ...) sub_query <span class="hljs-comment">-- -    </span>
+<span class="hljs-keyword">FROM</span><font></font>
+  q<font></font>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span> <span class="hljs-keyword">OFFSET</span> &lt;N&gt;;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+甚至如此-不错，因为子查询仅针对10条返回的记录进行计算（如果不是）...</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.3：DISTINCT毫无意义且无情</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在这种演变过程中的某个地方，第二个子查询</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">失去</font></font><code>NOT LIKE</code><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">了</font><b><font style="vertical-align: inherit;">条件</font></b><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">很明显，此后我</font></font><code>UNION ALL</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">开始</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">两次</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">返回</font><b><font style="vertical-align: inherit;">一些记录</font></b><font style="vertical-align: inherit;"> -首先在该行的开头找到，然后再次返回-在该行的第一个单词的开头。</font><font style="vertical-align: inherit;">在限制中，第二个子查询的所有记录都可以与第一个子查询的记录重合。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+开发人员做什么而不是寻找原因？..没问题！</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">原始样本</font><b><font style="vertical-align: inherit;">大小的两倍</font></b></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">放置DISTINCT，</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">以便我们仅获得每一行的单个实例</font></font></li>
+</ul><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> q <span class="hljs-keyword">AS</span> (<font></font>
+  ( ... <span class="hljs-keyword">LIMIT</span> &lt;<span class="hljs-number">2</span> * N&gt; + <span class="hljs-number">10</span>)
+  <span class="hljs-keyword">UNION</span> <span class="hljs-keyword">ALL</span>
+  ( ... <span class="hljs-keyword">LIMIT</span> &lt;<span class="hljs-number">2</span> * N&gt; + <span class="hljs-number">10</span>)
+  <span class="hljs-keyword">LIMIT</span> &lt;<span class="hljs-number">2</span> * N&gt; + <span class="hljs-number">10</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">DISTINCT</span><font></font>
+  *<font></font>
+, (<span class="hljs-keyword">SELECT</span> ...) sub_query
+<span class="hljs-keyword">FROM</span><font></font>
+  q<font></font>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span> <span class="hljs-keyword">OFFSET</span> &lt;N&gt;;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+也就是说，很明显，最后的结果是完全相同的，但是“跳到”第二个CTE子查询的机会变得更高了，没有这个，</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">显然阅读更多</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但这不是最可悲的事情。</font><font style="vertical-align: inherit;">由于开发人员要求我不选择</font></font><b><code>DISTINCT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">特定记录，而是立即</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">选择</font><font style="vertical-align: inherit;">记录</font><b><font style="vertical-align: inherit;">的所有字段</font></b><font style="vertical-align: inherit;">，因此sub_query字段-子查询的结果-自动到达该位置。</font><font style="vertical-align: inherit;">现在，为了执行</font></font><code>DISTINCT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，数据库必须执行的</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">不是10个子查询，而是全部&lt;2 * N&gt; + 10</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">！</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.4：合作高于一切！</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，开发人员幸免于难-他们没有打扰，因为在注册表中，他们被``修补''到了重要的N值，而接收每个下一个``页面''的速度却一直在减慢。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+直到另一个部门的开发人员来到他们那里，并且不想使用这种便捷的方法</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">进行迭代搜索</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -也就是说，我们从某个样本中抽取了一块，通过附加条件过滤，得出结果，然后再下一块（在我们的情况下是通过增加N），依此类推，直到填满整个屏幕为止。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常，在捕获的样本中</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">N的值几乎达到17K</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，并且在短短24小时内至少有4K的请求是在</font><b><font style="vertical-align: inherit;">``</font></b><font style="vertical-align: inherit;">链中''执行的。</font><font style="vertical-align: inherit;">他们中的最后一个已经大胆扫描</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">每次迭代1GB内存</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ...</font></font><br>
+<br>
+<h2></h2><br>
+<img src="https://habrastorage.org/webt/zt/yx/ss/ztyxssr661ga_wndmpmqmvgtrq0.png"></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN491138/index.html">卫星与反塔融合</a></li>
+<li><a href="../zh-CN491146/index.html">针对开发人员的UML</a></li>
+<li><a href="../zh-CN491150/index.html">我是如何欺骗诈骗者的，或者仅是网上诱骗面板的内部的黑客</a></li>
+<li><a href="../zh-CN491154/index.html">课程搜寻：如何建立学习路径</a></li>
+<li><a href="../zh-CN491156/index.html">可测量的共情：预测脑MRI的同情</a></li>
+<li><a href="../zh-CN491164/index.html">如何用程序员写文凭。完整指南</a></li>
+<li><a href="../zh-CN491170/index.html">Amplifer如何使用Logux-客户端和服务器之间进行通信的工具</a></li>
+<li><a href="../zh-CN491172/index.html">前端开发人员何时应从React切换到Vue，以及何时使开发复杂化</a></li>
+<li><a href="../zh-CN491174/index.html">不要写同一件事：重复使用的React组件将如何帮助前端开发人员更快地创建应用程序</a></li>
+<li><a href="../zh-CN491176/index.html">出售it产品的5个标志</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

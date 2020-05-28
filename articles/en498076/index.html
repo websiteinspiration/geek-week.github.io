@@ -1,0 +1,291 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✋🏼 📑 📽️ Our Cassandra migration experience between Kubernetes clusters without data loss 🔁 💃🏾 😹</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="For the past ~ six months, we have used the Rook operator to work with Cassandra in Kubernetes . However, when we needed to perform a very trivial, it...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Our Cassandra migration experience between Kubernetes clusters without data loss</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/498076/"><img src="https://habrastorage.org/webt/bt/dz/eh/btdzeh5vf-wcqspevi_adr6exds.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For the past ~ six months, we have used the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rook operator</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to work with Cassandra in Kubernetes </font><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">However, when we needed to perform a very trivial, it would seem, operation: change the parameters in the Cassandra config, it turned out that the operator does not provide sufficient flexibility. </font><font style="vertical-align: inherit;">To make changes, it was necessary to clone the repository, make changes to the sources and rebuild the operator (the config is built into the operator itself, so Go knowledge is still useful). </font><font style="vertical-align: inherit;">All this takes a lot of time. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">already did a</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> review of existing operators </font><font style="vertical-align: inherit;">, and this time we stopped at </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CassKop from Orange</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which supports the necessary capabilities, in particular, custom configs and monitoring out of the box.</font></font><a name="habracut"></a><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Task</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the real story, which will be discussed later, it was decided to combine the change of operator with the urgent need to transfer the entire client infrastructure to the new cluster. </font><font style="vertical-align: inherit;">After the migration of the main workloads from important applications, only Cassandra remained, the data loss for which, of course, was unacceptable. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Requirements for its migration:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> The maximum idle time is 2-3 minutes to actually carry out this transfer at the same time as the application itself is rolled over to a new cluster;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Transfer all data without loss and headache (i.e. without any additional manipulations).</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+How to carry out such an operation? By analogy with </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RabbitMQ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MongoDB</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , we decided to launch a new Cassandra installation in a new Kubernetes cluster, then merge the two Cassandra in different clusters and transfer the data, ending the whole process by simply disabling the original installation.</font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, it was complicated by the fact that the networks inside Kubernetes intersect, so it was not so easy to configure the connection. </font><font style="vertical-align: inherit;">It was required to register routes for each pod on each node, which is very time-consuming and not reliable at all. </font><font style="vertical-align: inherit;">The fact is that communication over IP pods only works with masters, and Cassandra is running on dedicated nodes. </font><font style="vertical-align: inherit;">Thus, you must first configure the route to the master and already on the master - to another cluster. </font><font style="vertical-align: inherit;">In addition to this, restarting the pod entails a change in IP, and this is another problem ... Why? </font><font style="vertical-align: inherit;">Read about it later in the article. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the subsequent practical part of the article, three notation for Cassandra clusters will be used:</font></font><br>
+<br>
+<ul>
+<li> <i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-new</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - the new installation that we will launch in the new Kubernetes cluster;</font></font></li>
+<li> <i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - an old installation with which applications are currently working;</font></font></li>
+<li> <i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> is a temporary installation that we run next to Cassandra-current and use it only for the migration process itself.</font></font></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How to be?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> uses localstorage, a simple migration of its data to a new cluster - this could be, for example, in the case of vSphere disks ... - is impossible. </font><font style="vertical-align: inherit;">To solve this problem, we will create a temporary cluster, using it as a kind of buffer for migration. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The general sequence of actions is reduced to the following steps:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Raise </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-new with a</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> new operator in a new cluster.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scale to 0 </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-new</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> cluster </font><font style="vertical-align: inherit;">.</font></font></li>
+<li>  ,  PVC,    .</li>
+<li>  <i>Cassandra-temporary</i>       <i>Cassandra-current</i> ,      <i>Cassandra-new</i>.</li>
+<li>   <i>Cassandra-temporary</i>  0 (     )    <i>Cassandra-temporary</i> ,  <i>Cassandra-temporary</i>   <i>Cassandra-current</i>.      <b></b> Cassandra  <b></b> <i>-</i> (       Cassandra     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="> </a>).</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Transfer data between </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> data centers </font><font style="vertical-align: inherit;">.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scale the </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> clusters </font><font style="vertical-align: inherit;">to 0 and run </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-new</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in the new cluster, not forgetting to throw the disks. </font><font style="vertical-align: inherit;">In parallel, we roll applications to a new cluster.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result of such manipulations, downtime will be minimal.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In detail</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There shouldn’t be any problems with the first 3 steps - everything is done quickly and easily. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At this point, the </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> cluster </font><font style="vertical-align: inherit;">will look something like this:</font></font><br>
+<br>
+<pre><code class="bash hljs">Datacenter: x1<font></font>
+==============<font></font>
+Status=Up/Down<font></font>
+|/ State=Normal/Leaving/Joining/Moving<font></font>
+--  Address     Load       Tokens       Owns    Host ID                               Rack<font></font>
+UN  10.244.6.5  790.7 GiB  256          ?       13cd0c7a-4f91-40d0-ac0e-e7c4a9ad584c  rack1<font></font>
+UN  10.244.7.5  770.9 GiB  256          ?       8527813a-e8df-4260-b89d-ceb317ef56ef  rack1<font></font>
+UN  10.244.5.5  825.07 GiB  256          ?       400172bf-6f7c-4709-81c6-980cb7c6db5c  rack1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To verify that everything works as expected, create a keyspace in </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">This is done before the launch of </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<pre><code class="plaintext hljs">create keyspace example with replication ={'class' : 'NetworkTopologyStrategy', 'x1':2};</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Next, create a table and fill it with data:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">use</span> example;
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> example(<span class="hljs-keyword">id</span> <span class="hljs-built_in">int</span> PRIMARY <span class="hljs-keyword">KEY</span>, <span class="hljs-keyword">name</span> <span class="hljs-built_in">text</span>, phone varint);
+<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> example(<span class="hljs-keyword">id</span>, <span class="hljs-keyword">name</span>, phone) <span class="hljs-keyword">VALUES</span>(<span class="hljs-number">1</span>,<span class="hljs-string">'Masha'</span>, <span class="hljs-number">983123123</span>);
+<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> example(<span class="hljs-keyword">id</span>, <span class="hljs-keyword">name</span>, phone) <span class="hljs-keyword">VALUES</span>(<span class="hljs-number">2</span>,<span class="hljs-string">'Sergey'</span>, <span class="hljs-number">912121231</span>);
+<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> example(<span class="hljs-keyword">id</span>, <span class="hljs-keyword">name</span>, phone) <span class="hljs-keyword">VALUES</span>(<span class="hljs-number">3</span>,<span class="hljs-string">'Andrey'</span>, <span class="hljs-number">914151617</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Run </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , remembering that before that, in the new cluster, we already started </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-new</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (step # 1) and now it is turned off (step # 2). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Notes:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">When we start </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , we must specify the same (with </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) name of the cluster. </font><font style="vertical-align: inherit;">This can be done through a variable </font></font><code>CASSANDRA_CLUSTER_NAME</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In order for </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to see the current cluster, you need to set the seeds. </font><font style="vertical-align: inherit;">This is done through a variable </font></font><code>CASSANDRA_SEEDS</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">or through a config.</font></font></li>
+</ol><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Attention! </font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Before you begin moving data, you must ensure that the read and write consistency types are set to </font></font><code>LOCAL_ONE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">or </font></font><code>LOCAL_QUORUM</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> starts </font><font style="vertical-align: inherit;">, the cluster should look like this (note the appearance of a second data center with 3 nodes):</font></font><br>
+<br>
+<pre><code class="plaintext hljs">Datacenter: x1<font></font>
+==============<font></font>
+Status=Up/Down<font></font>
+|/ State=Normal/Leaving/Joining/Moving<font></font>
+--  Address     Load       Tokens       Owns    Host ID                               Rack<font></font>
+UN  10.244.6.5  790.7 GiB  256          ?       13cd0c7a-4f91-40d0-ac0e-e7c4a9ad584c  rack1<font></font>
+UN  10.244.7.5  770.9 GiB  256          ?       8527813a-e8df-4260-b89d-ceb317ef56ef  rack1<font></font>
+UN  10.244.5.5  825.07 GiB  256          ?       400172bf-6f7c-4709-81c6-980cb7c6db5c  rack1<font></font>
+<font></font>
+Datacenter: x2<font></font>
+===============<font></font>
+Status=Up/Down<font></font>
+|/ State=Normal/Leaving/Joining/Moving<font></font>
+--  Address       Load       Tokens       Owns (effective)  Host ID                               Rack<font></font>
+UN  10.244.16.96  267.07 KiB  256          64.4%             3619841e-64a0-417d-a497-541ec602a996  rack1<font></font>
+UN  10.244.18.67  248.29 KiB  256          65.8%             07a2f571-400c-4728-b6f7-c95c26fe5b11  rack1<font></font>
+UN  10.244.16.95  265.85 KiB  256          69.8%             2f4738a2-68d6-4f9e-bf8f-2e1cfc07f791  rack1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now you can carry out the transfer. </font><font style="vertical-align: inherit;">To do this, first transfer the test keyspace - make sure that everything is fine:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">ALTER KEYSPACE example WITH replication = {'class': 'NetworkTopologyStrategy', x1: 2, x2: 2};</code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After that, in each </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> pod, </font><font style="vertical-align: inherit;">execute the command:</font></font><br>
+<br>
+<pre><code class="bash hljs">nodetool rebuild -ks example x1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's go to any pod of </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and check that the data has been transferred. </font><font style="vertical-align: inherit;">You can also add 1 more entry to </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to verify that new data has begun to replicate:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> example;<font></font>
+<font></font>
+ id | name   | phone<font></font>
+<span class="hljs-comment">----+--------+-----------</span><font></font>
+  1 |  Masha | 983123123<font></font>
+  2 | Sergey | 912121231<font></font>
+  3 | Andrey | 914151617<font></font>
+<font></font>
+(3 rows)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After that, you can do </font></font><code>ALTER</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">all keyspaces in </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and execute </font></font><code>nodetool rebuild</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lack of space and memory</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At this stage, it’s useful to remember that when rebuild is running, temporary files are created that are equivalent in size to the size of keyspace! </font><font style="vertical-align: inherit;">We encountered a problem that the largest keyspace was 350 GB, and there was less free disk space. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It was not possible to expand the disk, because localstorage is used. </font><font style="vertical-align: inherit;">The following command came to the rescue (executed in each pod of </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ):</font></font><br>
+<br>
+<pre><code class="bash hljs">nodetool clearsnapshot</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So the place was freed up: in our case, 500 GB of free disk space was obtained instead of previously available 200 GB. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, despite the fact that there was enough space, the rebuild operation constantly caused the restart of </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> pods </font><font style="vertical-align: inherit;">with an error:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">failed; error='Cannot allocate memory' (errno=12)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We decided it by creating DaemonSet, which rolls out only to nodes with </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and performs:</font></font><br>
+<br>
+<pre><code class="bash hljs">sysctl -w vm.max_map_count=262144</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Finally, all the data has been migrated!</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cluster switching</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It only remained to switch the Cassandra, which was carried out in 5 stages:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scale </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-temporary</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-current</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (do not forget that the operator still works here!) To 0.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Switch disks (it comes down to setting PV for </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-new</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We start </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-new</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , tracking that the necessary disks are connected.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We do </font></font><code>ALTER</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">all the tables to remove the old cluster:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">ALTER KEYSPACE example WITH replication = {'class': 'NetworkTopologyStrategy', 'x2': 2};</code></pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Delete all nodes of the old cluster. </font><font style="vertical-align: inherit;">To do this, just run this command in one of its pods:</font></font><br>
+<br>
+<pre><code class="bash hljs">nodetool removenode 3619841e-64a0-417d-a497-541ec602a996</code></pre></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The total downtime of Cassandra was about 3 minutes - this is the time the containers stopped and started, since the disks were prepared in advance.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Final touch with Prometheus</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, this did not end there. </font><font style="vertical-align: inherit;">There is </font><font style="vertical-align: inherit;">a built-in exporter </font><font style="vertical-align: inherit;">with </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra-new </font></font></i><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(see the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">documentation of the new operator</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> )</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - we, of course, used it. </font><font style="vertical-align: inherit;">About 1 hour after the launch, alerts about the inaccessibility of Prometheus began to come. </font><font style="vertical-align: inherit;">After checking the load, we saw that the memory consumption on nodes with Prometheus has increased. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Further study of the issue showed that the number of collected metrics increased by 2.5 times (!). </font><font style="vertical-align: inherit;">The fault was Cassandra, with which just over 500 thousand metrics were collected. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We performed an audit of metrics and disabled those that we did not consider necessary - through ConfigMap (in it, by the way, the exporter is configured). </font><font style="vertical-align: inherit;">The result is 120 thousand metrics and a significantly reduced load on Prometheus (despite the fact that important metrics remain).</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusion</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So we managed to transfer Cassandra to another cluster, practically without affecting the functioning of the production installation of Cassandra and without interfering with the work of client applications. </font><font style="vertical-align: inherit;">Along the way, we came to the conclusion that using the same pod network is not a good idea (now we are more attentive to the initial planning for installing the cluster). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Finally: why didn’t we use the tool </font></font><code>nodetool snapshot</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mentioned in the previous article? </font><font style="vertical-align: inherit;">The fact is that this command creates a keyspace snapshot in the state it was in before the command was run. </font><font style="vertical-align: inherit;">Besides:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> it takes much more time to take a picture and transfer it;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> everything that is written at this time in Cassandra will be lost;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> simple in our case would be about an hour - instead of 3 minutes, which turned out to be successfully combined with the deployment of the application to a new cluster.</font></font></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PS</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Read also in our blog:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cassandra Migration to Kubernetes: Features and Solutions</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">One story with the Redis operator in K8s and a mini-overview of utilities for analyzing data from this database</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unobstructed MongoDB migration to Kubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unobstructed RabbitMQ migration to Kubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Databases and Kubernetes (review and video report)</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ."</font></font></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en498064/index.html">Classic Market Emulator</a></li>
+<li><a href="../en498066/index.html">How SFP, SFP + and XFP make our life easier</a></li>
+<li><a href="../en498070/index.html">Hive - fast local base for Flutter, Dart</a></li>
+<li><a href="../en498072/index.html">Raster Effect for Atari 65XE</a></li>
+<li><a href="../en498074/index.html">Bookmark this article if you're new to Python (especially if you're learning Python yourself)</a></li>
+<li><a href="../en498080/index.html">Migration experience to SAP HANA 2.0 in large retail, automated testing project for Sberbank and other cases</a></li>
+<li><a href="../en498084/index.html">Sales are dead. What to do next?</a></li>
+<li><a href="../en498086/index.html">Let a hundred reusable missiles bloom</a></li>
+<li><a href="../en498088/index.html">How Avito Researchers Work</a></li>
+<li><a href="../en498090/index.html">Sand dunes can "communicate" with each other</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

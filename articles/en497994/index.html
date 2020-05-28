@@ -1,0 +1,407 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏾‍✈️ 👦🏽 🚖 Language mechanics escape analysis 👨🏾‍🔬 🥁 💵</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Prelude
+ This is the second of four articles in a series that will provide insight into the mechanics and design of pointers, stacks, heaps, escape an...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Language mechanics escape analysis</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/497994/"><h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Prelude</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is the second of four articles in a series that will provide insight into the mechanics and design of pointers, stacks, heaps, escape analysis, and Go / Value semantics. </font><font style="vertical-align: inherit;">This post is about heaps and escape analysis. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Table of Contents:</font></font><br>
+<br>
+<ol>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Language Mechanics On Stacks And Pointers</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ( </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">translation</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> )</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Language Mechanics On Escape Analysis</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Language Mechanics On Memory Profiling</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Design Philosophy On Data And Semantics</font></font></a></li>
+</ol><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Introduction</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the first post in this series, I talked about the basics of pointer mechanics using an example in which the value is distributed across the stack between goroutines. I did not show you what happens when you split the value on the stack. To understand this, you need to find out about another area of ​​memory where the values ​​may be: about the “heap”. With this knowledge, you can begin to study “escape analysis”.</font></font><a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Escape analysis is a process that the compiler uses to determine the placement of values ​​created by your program. </font><font style="vertical-align: inherit;">In particular, the compiler performs static code analysis to determine if the value can be placed on the stack frame for the function that builds it, or if the value should be "escaped" into the heap. </font><font style="vertical-align: inherit;">There is not a single keyword or function in Go that you could use to tell the compiler which decision to make. </font><font style="vertical-align: inherit;">Only the way you write your code conditionally allows you to influence this decision.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Heaps</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A heap is a second area of ​​memory, in addition to the stack, used to store values. The heap is not self-cleaning like stacks, so using this memory is more expensive. First of all, the costs are associated with the garbage collector (GC), which should keep this area clean. When the GC starts, it will use 25% of your processor’s available power. In addition, it can potentially create microseconds of “stop the world” delays. The advantage of having a GC is that you don't have to worry about managing heap memory that has historically been complex and error prone.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Values ​​in the heap provoke memory allocations in Go. </font><font style="vertical-align: inherit;">These allocations put pressure on the GC because every value in the heap that the pointer no longer refers to must be deleted. </font><font style="vertical-align: inherit;">The more values ​​you need to check and delete, the more work the GC must do at each start. </font><font style="vertical-align: inherit;">Therefore, the stimulation algorithm is constantly working to balance heap size and execution speed.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Stack sharing</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In Go, no goroutines are allowed to have a pointer pointing to a memory on the stack of another goroutine. </font><font style="vertical-align: inherit;">This is due to the fact that the stack memory for goroutines can be replaced with a new memory block, when the stack should increase or decrease. </font><font style="vertical-align: inherit;">If at run time you had to track the stack pointers in another goroutine, you would have to manage too much, and the “stop the world” delay when updating pointers to these stacks would be staggering. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here is an example of a stack that is replaced several times due to growth. </font><font style="vertical-align: inherit;">Look at the output in lines 2 and 6. You'll see twice the address changes of the string value inside the main stack frame. </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">play.golang.org/p/pxn5u4EBSI</font></font></a> <br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Escape mechanics</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Each time a value is shared outside the region of the stack frame of a function, it is placed (or allocated) in a heap. The task of escape analysis algorithms is to find such situations and maintain the integrity level in the program. Integrity is to ensure that access to any value is always accurate, consistent and efficient. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Take a look at this example to learn the basic mechanisms of escape analysis. </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">play.golang.org/p/Y_VZxYteKO</font></font></a> <br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Listing 1</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">01</span> <span class="hljs-keyword">package</span> main
+<span class="hljs-number">02</span>
+<span class="hljs-number">03</span> <span class="hljs-keyword">type</span> user <span class="hljs-keyword">struct</span> {
+<span class="hljs-number">04</span>     name  <span class="hljs-keyword">string</span>
+<span class="hljs-number">05</span>     email <span class="hljs-keyword">string</span>
+<span class="hljs-number">06</span> }
+<span class="hljs-number">07</span>
+<span class="hljs-number">08</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">main</span><span class="hljs-params">()</span></span> {
+<span class="hljs-number">09</span>     u1 := createUserV1()
+<span class="hljs-number">10</span>     u2 := createUserV2()
+<span class="hljs-number">11</span>
+<span class="hljs-number">12</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"u1"</span>, &amp;u1, <span class="hljs-string">"u2"</span>, &amp;u2)
+<span class="hljs-number">13</span> }
+<span class="hljs-number">14</span>
+<span class="hljs-number">15</span> <span class="hljs-comment">//go:noinline</span>
+<span class="hljs-number">16</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV1</span><span class="hljs-params">()</span> <span class="hljs-title">user</span></span> {
+<span class="hljs-number">17</span>     u := user{
+<span class="hljs-number">18</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">19</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">20</span>     }
+<span class="hljs-number">21</span>
+<span class="hljs-number">22</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V1"</span>, &amp;u)
+<span class="hljs-number">23</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">24</span> }
+<span class="hljs-number">25</span>
+<span class="hljs-number">26</span> <span class="hljs-comment">//go:noinline</span>
+<span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, &amp;u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I use the go: noinline directive so that the compiler does not embed code for these functions directly in main. Embedding will remove function calls and complicate this example. I will talk about the side effects of embedding in the next post.</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Listing 1 shows a program with two different functions that create a value of type user and return it back to the caller. The first version of the function uses the semantics of the value when returning. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 2</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">16</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV1</span><span class="hljs-params">()</span> <span class="hljs-title">user</span></span> {
+<span class="hljs-number">17</span>     u := user{
+<span class="hljs-number">18</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">19</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">20</span>     }
+<span class="hljs-number">21</span>
+<span class="hljs-number">22</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V1"</span>, &amp;u)
+<span class="hljs-number">23</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">24</span> }</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I said that the function uses the semantics of values ​​when returning, because a value of type user created by this function is copied and passed to the call stack. This means that the calling function receives a copy of the value itself.</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+You can see the creation of a value of type user, executed on lines 17 through 20. Then, on line 23, a copy of the value is passed to the call stack and returned to the caller. After returning the function, the stack looks as follows. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Image 1 </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/hs/me/pj/hsmepjswe1d_ggonuc8jkwscyk8.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In Figure 1, you can see that a value of type user exists in both frames after calling createUserV1. In the second version of the function, pointer semantics are used to return. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 3</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, &amp;u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I said that a function uses pointer semantics when returning, because a value of type user created by this function is shared by the call stack. This means that the calling function receives a copy of the address where the values ​​are located.</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+You can see the same structural literal that is used in lines 28 through 31 to create a value of type user, but on line 34 the return from the function is different. Instead of passing a copy of the value back to the call stack, a copy of the address for the value is passed. Based on this, you might think that after the call the stack looks like this. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Image 2</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mu/ld/nh/muldnhq-xncjaz97pv-647tybme.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If what you see in Figure 2 is really happening, you will have an integrity problem. </font><font style="vertical-align: inherit;">A pointer points down to a stack of calls to memory that is no longer valid. </font><font style="vertical-align: inherit;">The next time the function is called, the indicated memory will be reformatted and reinitialized. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is where escape analysis begins to maintain integrity. </font><font style="vertical-align: inherit;">In this case, the compiler will determine that it is unsafe to create a value of type user inside the createUserV2 stack frame, so instead it will create a value on the heap. </font><font style="vertical-align: inherit;">This will happen immediately during construction on line 28.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Readability</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As you learned from a previous post, a function has direct access to memory inside its frame through the frame pointer, but access to memory outside the frame requires indirect access. This means that access to values ​​that fall into the heap must also be done indirectly through a pointer. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Remember what the createUserV2 code looks like. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 4</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, &amp;u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The syntax hides what really happens in this code. The variable u declared on line 28 represents a value of type user. The construction in Go does not tell you exactly where the value is stored in memory, so before the return statement on line 34 you do not know that the value will be heaped. This means that although u represents a value of type user, access to this value must be through a pointer. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can visualize a stack that looks like this after a function call. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Image 3</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/5u/ya/sv/5uyasv63ozdef8jclixqpv4anx4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The u variable in the stack frame for createUserV2 represents the value on the heap, not on the stack. </font><font style="vertical-align: inherit;">This means that using u to access a value requires access to a pointer, not the direct access suggested by the syntax. </font><font style="vertical-align: inherit;">You might think, why not immediately make a pointer, since accessing the value that it represents still requires the use of a pointer? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 5</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := &amp;user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If you do so, then you will lose readability, which you could not lose in your code. </font><font style="vertical-align: inherit;">Move away from the function body for a second and just focus on return. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 6</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What is this return talking about? </font><font style="vertical-align: inherit;">All he says is that a copy of u is pushed onto the call stack. </font><font style="vertical-align: inherit;">In the meantime, what does return tell you when you use the &amp; operator? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 7</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thanks to the &amp; return operator, it now tells you that you are sharing the call stack and therefore go out into the heap. Remember that pointers are intended to be used together and while reading the code they replace the &amp; operator with the phrase “sharing”. It is very powerful in terms of readability. This is something that I would not want to lose. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here is another example where constructing values ​​using pointer semantics degrades readability. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 8</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">01</span> <span class="hljs-keyword">var</span> u *user
+<span class="hljs-number">02</span> err := json.Unmarshal([]<span class="hljs-keyword">byte</span>(r), &amp;u)
+<span class="hljs-number">03</span> <span class="hljs-keyword">return</span> u, err</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In order for this code to work, when you call json.Unmarshal on line 02, you must pass a pointer to a pointer variable. A json.Unmarshal call will create a value of type user and assign its address to a pointer variable. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">play.golang.org/p/koI8EjpeIx</font></font></a> </i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+What this code says: </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+01: Create a pointer of type user with a null value. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+02: Share u variable with json.Unmarshal function. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+03: Return a copy of the variable u to the caller. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is not entirely obvious that a value of type user created by the json.Unmarshal function is passed to the caller. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+How does readability change when using semantics of values ​​during variable declaration? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 9</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">01</span> <span class="hljs-keyword">var</span> u user
+<span class="hljs-number">02</span> err := json.Unmarshal([]<span class="hljs-keyword">byte</span>(r), &amp;u)
+<span class="hljs-number">03</span> <span class="hljs-keyword">return</span> &amp;u, err</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What this code says: </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+01: Create a value of type user with a null value. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+02: Share u variable with json.Unmarshal function. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+03: Share the variable u with the caller. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Everything is very clear. </font><font style="vertical-align: inherit;">Line 02 splits the value of type user down the call stack in json.Unmarshal, and line 03 splits the value of the stack of calls back to the caller. </font><font style="vertical-align: inherit;">This share will cause the value to move to the heap. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Use the semantics of values ​​when creating values ​​and take advantage of the readability of the &amp; operator to clarify how values ​​are separated.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Compiler reporting</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To see the decisions made by the compiler, you can ask the compiler to provide a report. </font><font style="vertical-align: inherit;">All you have to do is use the -gcflags switch with the -m option when calling go build. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In fact, you can use 4 levels of -m, but after 2 levels of information it becomes too much. </font><font style="vertical-align: inherit;">I will use 2 levels -m. </font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 10</font></font><br>
+<br>
+<pre><code class="bash hljs">$ go build -gcflags <span class="hljs-string">"-m -m"</span><font></font>
+./main.go:16: cannot inline createUserV1: marked go:noinline<font></font>
+./main.go:27: cannot inline createUserV2: marked go:noinline<font></font>
+./main.go:8: cannot inline main: non-leaf <span class="hljs-keyword">function</span><font></font>
+./main.go:22: createUserV1 &amp;u does not escape<font></font>
+./main.go:34: &amp;u escapes to heap<font></font>
+./main.go:34:     from ~r0 (<span class="hljs-built_in">return</span>) at ./main.go:34<font></font>
+./main.go:31: moved to heap: u<font></font>
+./main.go:33: createUserV2 &amp;u does not escape<font></font>
+./main.go:12: main &amp;u1 does not escape<font></font>
+./main.go:12: main &amp;u2 does not escape</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can see that the compiler is reporting decisions to dump the value into the heap. </font><font style="vertical-align: inherit;">What does the compiler say? </font><font style="vertical-align: inherit;">First, look again at the createUserV1 and createUserV2 functions to refresh them in memory. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 13</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">16</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV1</span><span class="hljs-params">()</span> <span class="hljs-title">user</span></span> {
+<span class="hljs-number">17</span>     u := user{
+<span class="hljs-number">18</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">19</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">20</span>     }
+<span class="hljs-number">21</span>
+<span class="hljs-number">22</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V1"</span>, &amp;u)
+<span class="hljs-number">23</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">24</span> }<font></font>
+<font></font>
+<span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, &amp;u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's start with this line in the report. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 14</font></font><br>
+<br>
+<pre><code class="bash hljs">./main.go:22: createUserV1 &amp;u does not escape</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This suggests that the call to the println function inside the createUserV1 function does not cause the user type to be dumped into the heap. This case had to be checked because it is used in conjunction with the println function. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Next, look at these lines in the report. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 15</font></font><br>
+<br>
+<pre><code class="bash hljs">./main.go:34: &amp;u escapes to heap<font></font>
+./main.go:34:     from ~r0 (<span class="hljs-built_in">return</span>) at ./main.go:34<font></font>
+./main.go:31: moved to heap: u<font></font>
+./main.go:33: createUserV2 &amp;u does not escape</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+These lines say that the value of the user type associated with the variable u, which has the named user type and is created on line 31, is dumped into the heap due to the return on line 34. The last line says the same as before, println call on the line 33 does not reset the user type. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Reading these reports can be confusing and may vary slightly depending on whether the type of the variable in question is based on a named or literal type. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Modify the u variable to be the literal type * user instead of the named type user, as it was before. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 16</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := &amp;user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Run the report again. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Listing 17</font></font><br>
+<br>
+<pre><code class="bash hljs">./main.go:30: &amp;user literal escapes to heap<font></font>
+./main.go:30:     from u (assigned) at ./main.go:28<font></font>
+./main.go:30:     from ~r0 (<span class="hljs-built_in">return</span>) at ./main.go:34</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now the report says that the value of the user type referenced by the variable u, which has the literal type * user and created on line 28, is dumped into the heap due to the return on line 34.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusion</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Creating a value does not determine where it is located. </font><font style="vertical-align: inherit;">Only how the value is split will determine what the compiler will do with this value. </font><font style="vertical-align: inherit;">Each time you share a value in the call stack, it is dumped into the heap. </font><font style="vertical-align: inherit;">There are other reasons why a value might escape from the stack. </font><font style="vertical-align: inherit;">I will talk about them in the next post.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The purpose of these posts is to provide guidance on choosing to use value semantics or pointer semantics for any given type. </font><font style="vertical-align: inherit;">Each semantics is paired with profit and value. </font><font style="vertical-align: inherit;">The semantics of the values ​​store the values ​​on the stack, which reduces the load on the GC. </font><font style="vertical-align: inherit;">However, there are different copies of the same value that must be stored, tracked and maintained. </font><font style="vertical-align: inherit;">Pointer semantics puts values ​​in a heap, which can put pressure on the GC. </font><font style="vertical-align: inherit;">However, they are effective because there is only one value that needs to be stored, tracked and maintained. </font><font style="vertical-align: inherit;">The key point is the use of each semantics correctly, consistently and balanced.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en497982/index.html">Functional and process approach to management. How and what to manage?</a></li>
+<li><a href="../en497984/index.html">Migrating from reCAPTCHA to hCaptcha in Cloudflare</a></li>
+<li><a href="../en497986/index.html">Monitoring all memory used by a webpage: performance.measureMemory ()</a></li>
+<li><a href="../en497988/index.html">React Application Performance Profiling</a></li>
+<li><a href="../en497990/index.html">PostgreSQL: Development of extensions (functions) in C language</a></li>
+<li><a href="../en497996/index.html">You do not want to strengthen immunity. Or the extremes of the human body</a></li>
+<li><a href="../en498000/index.html">Things I would like to know before developing my own game</a></li>
+<li><a href="../en498002/index.html">Pocket Guide to the Z3</a></li>
+<li><a href="../en498004/index.html">Workstation in a docker container</a></li>
+<li><a href="../en498006/index.html">Choosing a Patent Attorney</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

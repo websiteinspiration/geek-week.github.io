@@ -1,0 +1,418 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏻‍🎓 😞 👨🏻‍🔧 语言力学逃逸分析 😱 🤧 🙏🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="序幕
+ 这是该系列文章中的第二篇，共四篇，将深入介绍指针，堆栈，堆，转义分析和Go /指针语义的机制和设计。这篇文章是关于堆和转义分析的。
+ 
+ 目录：
+ 
+ 
+
+1. 堆栈和指针上的语言力学（翻译）
+2. 转义分析的语言力学
+3. 记忆剖析的语言机制
+4. 数据与语义设计哲学
+ 介绍
+ 在本系列的...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>语言力学逃逸分析</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/497994/"><h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">序幕</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是该系列文章中的第二篇，共四篇，将深入介绍指针，堆栈，堆，转义分析和Go /指针语义的机制和设计。</font><font style="vertical-align: inherit;">这篇文章是关于堆和转义分析的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+目录：</font></font><br>
+<br>
+<ol>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">堆栈和指针上的语言力学</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">翻译</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">转义分析的语言力学</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">记忆剖析的语言机制</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数据与语义设计哲学</font></font></a></li>
+</ol><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">介绍</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在本系列的第一篇文章中，我使用一个示例讨论了指针机制的基础，在该示例中，值在goroutines之间的堆栈中分布。我没有告诉您拆分堆栈上的值时会发生什么。要理解这一点，您需要找出可能值所在的另一个内存区域：关于``堆''的信息。有了这些知识，您就可以开始研究“转义分析”。</font></font><a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+转义分析是编译器用来确定程序创建的值的位置的过程。</font><font style="vertical-align: inherit;">特别是，编译器执行静态代码分析，以确定是否可以将值放置在构建它的函数的堆栈框架上，或者是否应该将该值“转义”到堆中。</font><font style="vertical-align: inherit;">Go中没有一个关键字或函数可以用来告诉编译器做出哪个决定。</font><font style="vertical-align: inherit;">只有有条件地编写代码的方式才能影响此决策。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">堆</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+堆是除堆栈之外用于存储值的第二个内存区域。堆不会像堆栈那样自清理，因此使用此内存会更昂贵。首先，成本与垃圾收集器（GC）有关，垃圾收集器（GC）应保持该区域清洁。 GC启动时，它将使用处理器可用功率的25％。此外，它可能会造成微秒级的“停止世界”延迟。使用GC的优点是，您不必担心过去一直很复杂且容易出错的堆内存管理。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+堆中的值会激发Go中的内存分配。</font><font style="vertical-align: inherit;">这些分配给GC带来了压力，因为必须删除指针不再引用的堆中的每个值。</font><font style="vertical-align: inherit;">您需要检查和删除的值越多，GC在每次启动时必须完成的工作越多。</font><font style="vertical-align: inherit;">因此，刺激算法一直在努力平衡堆大小和执行速度。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">堆栈共享</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在Go中，不允许goroutines具有指向另一个goroutine堆栈上的内存的指针。</font><font style="vertical-align: inherit;">这是由于以下事实：当堆栈应增加或减少时，goroutine的堆栈存储器可以替换为新的存储块。</font><font style="vertical-align: inherit;">如果在运行时必须在另一个goroutine中跟踪堆栈指针，则您将不得不进行过多的管理，并且在更新指向这些堆栈的指针时的“停止世界”延迟将是惊人的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是一个由于增长而被替换多次的堆栈示例。</font><font style="vertical-align: inherit;">查看第2行和第6行中的输出。您将在主堆栈帧内看到两次字符串值的地址更改。</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">play.golang.org/p/pxn5u4EBSI</font></font></a> <br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">逃生力学</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+每次在函数的堆栈框架区域之外共享值时，会将其放置（或分配）到堆中。逃逸分析算法的任务是查找此类情况并维持程序中的完整性级别。诚信是为了确保获得任何价值始终是准确，一致和高效的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+看一下这个例子，学习逃生分析的基本机制。</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">play.golang.org/p/Y_VZxYteKO</font></font></a> <br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+清单1</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">01</span> <span class="hljs-keyword">package</span> main
+<span class="hljs-number">02</span>
+<span class="hljs-number">03</span> <span class="hljs-keyword">type</span> user <span class="hljs-keyword">struct</span> {
+<span class="hljs-number">04</span>     name  <span class="hljs-keyword">string</span>
+<span class="hljs-number">05</span>     email <span class="hljs-keyword">string</span>
+<span class="hljs-number">06</span> }
+<span class="hljs-number">07</span>
+<span class="hljs-number">08</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">main</span><span class="hljs-params">()</span></span> {
+<span class="hljs-number">09</span>     u1 := createUserV1()
+<span class="hljs-number">10</span>     u2 := createUserV2()
+<span class="hljs-number">11</span>
+<span class="hljs-number">12</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"u1"</span>, &amp;u1, <span class="hljs-string">"u2"</span>, &amp;u2)
+<span class="hljs-number">13</span> }
+<span class="hljs-number">14</span>
+<span class="hljs-number">15</span> <span class="hljs-comment">//go:noinline</span>
+<span class="hljs-number">16</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV1</span><span class="hljs-params">()</span> <span class="hljs-title">user</span></span> {
+<span class="hljs-number">17</span>     u := user{
+<span class="hljs-number">18</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">19</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">20</span>     }
+<span class="hljs-number">21</span>
+<span class="hljs-number">22</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V1"</span>, &amp;u)
+<span class="hljs-number">23</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">24</span> }
+<span class="hljs-number">25</span>
+<span class="hljs-number">26</span> <span class="hljs-comment">//go:noinline</span>
+<span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, &amp;u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我使用go：noinline指令，以便编译器不会直接在main中嵌入这些函数的代码。嵌入将删除函数调用并使此示例复杂化。我将在下一篇文章中讨论嵌入的副作用。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+清单1显示了一个具有两个不同功能的程序，这些程序创建一个类型为user的值并将其返回给调用者。函数的第一个版本在返回时使用值的语义。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单2</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">16</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV1</span><span class="hljs-params">()</span> <span class="hljs-title">user</span></span> {
+<span class="hljs-number">17</span>     u := user{
+<span class="hljs-number">18</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">19</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">20</span>     }
+<span class="hljs-number">21</span>
+<span class="hljs-number">22</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V1"</span>, &amp;u)
+<span class="hljs-number">23</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">24</span> }</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我说过该函数在返回时使用值的语义，因为此函数创建的类型为user的值被复制并传递给调用堆栈。这意味着调用函数将接收值本身的副本。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+您可以看到在第17至20行执行的类型为user的值的创建。然后，在第23行，该值的副本传递到调用堆栈并返回给调用者。返回函数后，堆栈如下所示。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+图1 </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/hs/me/pj/hsmepjswe1d_ggonuc8jkwscyk8.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在图1中，您可以看到在调用createUserV1之后，两个帧中都存在一个类型为user的值。在该函数的第二个版本中，指针语义用于返回。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单3</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, &amp;u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我说过，函数在返回时会使用指针语义，因为此函数创建的user类型的值由调用堆栈共享。这意味着调用函数接收值所在的地址的副本。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+您可以看到在第28至31行中使用相同的结构文字来创建类型为user的值，但在第34行中，函数的返回结果不同。而不是将值的副本传递回调用堆栈，而是传递值的地址的副本。基于此，您可能认为调用之后的堆栈看起来像这样。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+图片2</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mu/ld/nh/muldnhq-xncjaz97pv-647tybme.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果您在图2中看到的确实发生了，那么您将遇到完整性问题。</font><font style="vertical-align: inherit;">指针指向不再有效的对内存的调用堆栈。</font><font style="vertical-align: inherit;">下次调用该函数时，所指定的存储器将被重新格式化并重新初始化。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是逃生分析开始保持完整性的地方。</font><font style="vertical-align: inherit;">在这种情况下，编译器将确定在createUserV2堆栈框架内创建类型为user的值是不安全的，因此它将在堆上创建一个值。</font><font style="vertical-align: inherit;">这将在28号线的施工过程中立即发生。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">可读性</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从上一篇文章中学到的，函数可以通过框架指针直接访问其框架内的内存，但是访问框架外部的内存则需要间接访问。这意味着必须通过指针间接访问落入堆中的值。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+记住createUserV2代码的样子。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单4</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, &amp;u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+该语法隐藏了此代码中实际发生的情况。在第28行声明的变量u表示类型为user的值。 Go中的构造无法准确告诉您该值在内存中的存储位置，因此在第34行的return语句之前，您不知道该值将被堆放。这意味着尽管u表示类型为user的值，但必须通过指针访问该值。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以在函数调用后可视化如下所示的堆栈。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+图片3</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/5u/ya/sv/5uyasv63ozdef8jclixqpv4anx4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+createUserV2的堆栈帧中的u变量表示堆上的值，而不是堆栈上的值。</font><font style="vertical-align: inherit;">这意味着使用u访问值需要访问指针，而不是语法建议的直接访问。</font><font style="vertical-align: inherit;">您可能会想，为什么不立即创建一个指针，因为访问它表示的值仍然需要使用指针？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单5</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := &amp;user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果这样做，您将失去可读性，而这在您的代码中是不会丢失的。</font><font style="vertical-align: inherit;">离开函数主体一秒钟，然后专注于返回。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单6</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是什么回事呢？</font><font style="vertical-align: inherit;">他所说的只是将u的副本推送到调用堆栈中。</font><font style="vertical-align: inherit;">同时，使用＆运算符时返回的内容告诉您什么？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单7</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+感谢＆return运算符，它现在告诉您您正在共享调用堆栈，因此进入了堆。请记住，指针旨在一起使用，在阅读代码时，它们将＆运算符替换为短语“ sharing”。就可读性而言，它非常强大。这是我不想失去的东西。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是另一个使用指针语义构造值会降低可读性的示例。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单8</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">01</span> <span class="hljs-keyword">var</span> u *user
+<span class="hljs-number">02</span> err := json.Unmarshal([]<span class="hljs-keyword">byte</span>(r), &amp;u)
+<span class="hljs-number">03</span> <span class="hljs-keyword">return</span> u, err</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为了使此代码正常工作，在第02行调用json.Unmarshal时，必须将指针传递给指针变量。 json.Unmarshal调用将创建类型为user的值，并将其地址分配给指针变量。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">play.golang.org/p/koI8EjpeIx</font></font></a> </i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+这段代码说：</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+01：创建一个值为null的user类型的指针。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+02：与json.Unmarshal函数共享u变量。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+03：将变量u的副本返回给调用方。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由json.Unmarshal函数创建的类型为user的值传递给调用者并不完全明显。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在变量声明期间使用值的语义时，可读性如何变化？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单9</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">01</span> <span class="hljs-keyword">var</span> u user
+<span class="hljs-number">02</span> err := json.Unmarshal([]<span class="hljs-keyword">byte</span>(r), &amp;u)
+<span class="hljs-number">03</span> <span class="hljs-keyword">return</span> &amp;u, err</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这段代码说的是：</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+01：使用空值创建类型为user的值。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+02：与json.Unmarshal函数共享u变量。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+03：与调用方共享变量u。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一切都非常清楚。</font><font style="vertical-align: inherit;">第02行在json.Unmarshal的调用堆栈中拆分user类型的值，第03行将调用堆栈的值拆分回调用方。</font><font style="vertical-align: inherit;">此共享将导致该值移动到堆。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在创建值时使用值的语义，并利用＆运算符的可读性来阐明如何分隔值。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">编译器报告</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要查看编​​译器做出的决定，可以要求编译器提供报告。</font><font style="vertical-align: inherit;">您要做的就是在调用go build时将-gcflags开关与-m选项一起使用。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实际上，您可以使用4个级别的-m，但是在2个级别的信息之后，它变得太多了。</font><font style="vertical-align: inherit;">我将使用2级-m。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单10</font></font><br>
+<br>
+<pre><code class="bash hljs">$ go build -gcflags <span class="hljs-string">"-m -m"</span><font></font>
+./main.go:16: cannot inline createUserV1: marked go:noinline<font></font>
+./main.go:27: cannot inline createUserV2: marked go:noinline<font></font>
+./main.go:8: cannot inline main: non-leaf <span class="hljs-keyword">function</span><font></font>
+./main.go:22: createUserV1 &amp;u does not escape<font></font>
+./main.go:34: &amp;u escapes to heap<font></font>
+./main.go:34:     from ~r0 (<span class="hljs-built_in">return</span>) at ./main.go:34<font></font>
+./main.go:31: moved to heap: u<font></font>
+./main.go:33: createUserV2 &amp;u does not escape<font></font>
+./main.go:12: main &amp;u1 does not escape<font></font>
+./main.go:12: main &amp;u2 does not escape</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以看到编译器正在报告将值转储到堆的决策。</font><font style="vertical-align: inherit;">编译器怎么说？</font><font style="vertical-align: inherit;">首先，再次查看createUserV1和createUserV2函数以刷新它们在内存中。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单13</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">16</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV1</span><span class="hljs-params">()</span> <span class="hljs-title">user</span></span> {
+<span class="hljs-number">17</span>     u := user{
+<span class="hljs-number">18</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">19</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">20</span>     }
+<span class="hljs-number">21</span>
+<span class="hljs-number">22</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V1"</span>, &amp;u)
+<span class="hljs-number">23</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">24</span> }<font></font>
+<font></font>
+<span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, &amp;u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> &amp;u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们从报告中的这一行开始。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单14</font></font><br>
+<br>
+<pre><code class="bash hljs">./main.go:22: createUserV1 &amp;u does not escape</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这表明对createUserV1函数内部的println函数的调用不会导致用户类型转储到堆中。这种情况必须检查，因为它与println函数一起使用。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接下来，在报告中查看这些行。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单15</font></font><br>
+<br>
+<pre><code class="bash hljs">./main.go:34: &amp;u escapes to heap<font></font>
+./main.go:34:     from ~r0 (<span class="hljs-built_in">return</span>) at ./main.go:34<font></font>
+./main.go:31: moved to heap: u<font></font>
+./main.go:33: createUserV2 &amp;u does not escape</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这些行说与变量u关联的用户类型的值（具有命名的用户类型，在第31行创建）由于第34行的返回而被转储到堆中。最后一行与之前的内容相同，该行上的println调用33不重置用户类型。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+阅读这些报告可能会造成混淆，并且可能会有所不同，具体取决于所讨论的变量的类型是基于命名类型还是文字类型。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+像以前一样，将u变量修改为文字类型* user而不是命名类型user。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单16</font></font><br>
+<br>
+<pre><code class="go hljs"><span class="hljs-number">27</span> <span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">createUserV2</span><span class="hljs-params">()</span> *<span class="hljs-title">user</span></span> {
+<span class="hljs-number">28</span>     u := &amp;user{
+<span class="hljs-number">29</span>         name:  <span class="hljs-string">"Bill"</span>,
+<span class="hljs-number">30</span>         email: <span class="hljs-string">"bill@ardanlabs.com"</span>,
+<span class="hljs-number">31</span>     }
+<span class="hljs-number">32</span>
+<span class="hljs-number">33</span>     <span class="hljs-built_in">println</span>(<span class="hljs-string">"V2"</span>, u)
+<span class="hljs-number">34</span>     <span class="hljs-keyword">return</span> u
+<span class="hljs-number">35</span> }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+再次运行报告。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+清单17</font></font><br>
+<br>
+<pre><code class="bash hljs">./main.go:30: &amp;user literal escapes to heap<font></font>
+./main.go:30:     from u (assigned) at ./main.go:28<font></font>
+./main.go:30:     from ~r0 (<span class="hljs-built_in">return</span>) at ./main.go:34</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在该报告说，变量u所引用的用户类型的值（在第28行上创建的具有文字类型* user的值）由于在第34行上的返回而被转储到堆中。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结论</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+创建值并不能确定其位置。</font><font style="vertical-align: inherit;">只有值的分割方式将决定编译器将如何处理该值。</font><font style="vertical-align: inherit;">每次您在调用堆栈中共享一个值时，该值都会转储到堆中。</font><font style="vertical-align: inherit;">值可能会从堆栈中逸出还有其他原因。</font><font style="vertical-align: inherit;">我将在下一篇文章中谈论它们。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这些文章的目的是为选择对任何给定类型使用值语义或指针语义提供指导。</font><font style="vertical-align: inherit;">每个语义都与利润和价值配对。</font><font style="vertical-align: inherit;">值的语义将值存储在堆栈上，这减少了GC的负担。</font><font style="vertical-align: inherit;">但是，必须存储，跟踪和维护具有相同值的不同副本。</font><font style="vertical-align: inherit;">指针语义将值放入堆中，这可能会对GC造成压力。</font><font style="vertical-align: inherit;">但是，它们是有效的，因为仅需要存储，跟踪和维护一个值。</font><font style="vertical-align: inherit;">关键是正确，一致和平衡地使用每种语义。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN497982/index.html">功能和过程管理方法。如何以及如何管理？</a></li>
+<li><a href="../zh-CN497984/index.html">从reCAPTCHA迁移到Cloudflare中的hCaptcha</a></li>
+<li><a href="../zh-CN497986/index.html">监视网页使用的所有内存：performance.measureMemory（）</a></li>
+<li><a href="../zh-CN497988/index.html">反应应用程序性能分析</a></li>
+<li><a href="../zh-CN497990/index.html">PostgreSQL：用C语言开发扩展（功能）</a></li>
+<li><a href="../zh-CN497996/index.html">您不想增强免疫力。还是人体的极端</a></li>
+<li><a href="../zh-CN498000/index.html">在开发自己的游戏之前我想知道的事情</a></li>
+<li><a href="../zh-CN498002/index.html">Z3袖珍指南</a></li>
+<li><a href="../zh-CN498004/index.html">Docker容器中的工作站</a></li>
+<li><a href="../zh-CN498006/index.html">选择专利律师</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

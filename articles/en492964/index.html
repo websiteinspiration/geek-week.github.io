@@ -1,0 +1,243 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⏲️ 💧 📢 Processing millions of events per day with cascading queues 🃏 👩🏾‍🏭 👨🏼‍🎓</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hundreds, thousands, and in some services, millions of queues, through which a huge amount of data passes, are spinning under the hood of our product....">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Processing millions of events per day with cascading queues</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/manychat/blog/492964/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Hundreds, thousands, and in some services, millions of queues, through which a huge amount of data passes, are spinning under the hood of our product. </font><font style="vertical-align: inherit;">All this must be processed in some magical way and not be shot. </font><font style="vertical-align: inherit;">In this post I will tell you what architectural approaches we use at home, having a fairly modest technology stack and not having a small data center in our “pantry”.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/iq/-o/dc/iq-odcaikfzjfsiwqgpx2phk5us.png"><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What do we have?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, on the one hand, we have a well-known technology stack: Nginx, PHP, PostgreSQL, Redis. </font><font style="vertical-align: inherit;">On the other hand, tens of thousands of events occur in our system every minute, and in the peak it can reach hundreds of thousands of events. </font><font style="vertical-align: inherit;">In order to make it clear what these events are, and how we should respond to them, I will make a small product digression, after which I will tell you how we developed the Event-based automation system.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ManyChat is a platform for marketing automation. The owner of the Facebook page can connect it to our platform and configure the automation of interaction with his subscribers (in other words, create a chat bot). Automation usually consists of many chains of interactions that may not be interconnected. Within these automation chains, certain actions can occur with the subscriber, for example, assigning a specific tag in the system, or assigning / changing the value of a field in a subscriber’s card. This data further allows you to segment the audience and build a more relevant interaction with the subscribers of the page.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Our customers really wanted Event-based automation - the ability to customize the execution of an action when a specific event is triggered within the subscriber (for example, tagging). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since a trigger event can work from different automation chains, it is important that there is a single point of configuration for all Event-based actions on the client side, and on our processing side there should be a single bus that processes the change of the subscriber context from different automation points. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In our system, there is a common bus through which all events occurring with subscribers pass. This is more than 500 million events per day. Their processing is rather delicate - this is a record in the data warehouse, so that the page owner has the opportunity to historically see everything that happened to his subscribers.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It would seem that in order to implement an Event-based system we already have everything, and it is enough for us to integrate our business logic into the processing of a common event bus. </font><font style="vertical-align: inherit;">But we have certain requirements for our new system:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We do not want to get degraded performance in processing the main event bus</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">It is important for us to maintain the order of processing messages in the new system, as this may be tied to the business logic of the client who sets up the automation</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Avoid the effect of noisy neighbors when active pages with a large number of subscribers clog the queue and block the processing of events of "small" pages</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If we integrate the processing of our logic into the processing of a common event bus, then we will get a serious degradation in performance, since we will have to check each event for compliance with the configured automation. </font><font style="vertical-align: inherit;">As part of the automation setup, certain filters can be applied (for example, start automation when an event is triggered only for female clients older than 30 years). </font><font style="vertical-align: inherit;">That is, when processing events in the main bus, a huge amount of extra requests to the database will be processed, and also a rather heavy-weight logic will start comparing the current context of the subscriber with the automation settings. </font><font style="vertical-align: inherit;">This option does not suit us, so we went to think further.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/xt/rq/in/xtrqingjirs1ne1ljopat1z-nti.jpeg"><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Organization of a cascade of queues</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since our business logic associated with the event-based system is very well separable from the logic for processing events from the main bus, we decide to put the types of events we need from the shared bus in a separate queue for further processing in a separate data stream. Thus, we remove the problem associated with degradation of performance in processing the main event bus. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the same stage, we decide what it would be cool to transfer events to the next cascade queue to put these events in separate queues for each bot. Thus, isolating the activity of each bot with the framework of its turn, which allows us to solve the problem associated with the effect of noisy neighbors. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Our data flow diagram now looks like this:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/he/nz/2c/henz2cmwi9i5ii7pmzew-hokd3g.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, in order for this scheme to work, we need to solve the issue of processing new queues.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are more than 1 million connected pages (bots) on our platform, which means that potentially we can get ~ 1 million queues in our scheme, only at the level of the event-based layer. </font><font style="vertical-align: inherit;">From a technical point of view, this is not scary for us. </font><font style="vertical-align: inherit;">As the queue server, we use Redis with its standard data types, such as LIST, SORTED SET, and others. </font><font style="vertical-align: inherit;">This means who each queue is the standard data structure for Redis in RAM, which can be created or deleted on the fly, which allows us to easily and flexibly operate a huge number of queues in our system. </font><font style="vertical-align: inherit;">I’ll talk more deeply about using Redis as a queue server with technical details in a separate post, but for now let's get back to our architecture.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is clear that each bot has a different activity, and that the probability of getting 1 million queues in the “need to process now” state is extremely small. </font><font style="vertical-align: inherit;">But at one point in time, it is quite possible that we will have a couple of tens of thousands of active queues that require processing. </font><font style="vertical-align: inherit;">The number of these queues is constantly changing. </font><font style="vertical-align: inherit;">These queues themselves also change, some of them are subtracted completely and deleted, some of them are dynamically created and filled with events for processing. </font><font style="vertical-align: inherit;">Accordingly, we need to come up with an effective way to handle them.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Processing a huge pool of queues</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So we have a bunch of queues. At each point in time, there may be a random amount. An important condition for processing each queue, which was mentioned at the beginning of his post, is that events within each page should be processed strictly sequentially. This means that at one point in time, each queue cannot be processed by more than one worker in order to avoid competitive problems.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But to make the ratio of queues to handlers 1: 1 is a dubious task. The number of queues is constantly changing, both up and down. The number of running handlers is also not infinite, at least we have a limitation on the part of the operating system and hardware, and we would not want workers to stand idle on empty queues. To solve the problem of interaction between handlers and queues, we implemented a round robin system to process our queue pool. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And here the control line came to our aid.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/wg/rx/yp/wgrxypigmbunxgzyc_hkgqfodjq.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When the event is forwarded from the shared bus to the event-based queue of a particular bot, we also put the identifier of this bot queue in the control queue. The control queue stores only the identifiers of the queues that are in the pool and need to be processed. Only unique values ​​are stored in the control queue, that is, the same bot queue identifier will be stored in the control queue only once, regardless of how many times it is written there. On Redis, this is implemented using the SORTED SET data structure.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Further, we can distinguish a certain number of workers, each of whom will receive from the control queue his identifier of the bot queue for processing. Thus, each worker will independently process the chunk from the queue assigned to him, after processing the chunk, return the identifier of the processed queue to the control, thereby returning it to our round robin. The main thing is not to forget to provide the whole thing with locks, so that two workers could not process the same bot queue in parallel. This situation is possible if the bot identifier enters the control queue when it is already being processed by the worker. For locks, we also use Redis as the key: value store with TTL.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When we take a task with a bot queue identifier from the control queue, we put a TTL lock on the queue taken and begin processing it. </font><font style="vertical-align: inherit;">If the other consumer takes the task with the queue that is already being processed from the control queue, he will not be able to lock, return the task to the control queue and receive the next task. </font><font style="vertical-align: inherit;">After processing the bot queue by the consumer, he removes the lock and goes to the control queue for the next task. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The final scheme is as follows: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/it/jh/bl/itjhblg3hv1urwu_8gx3fhuj8wq.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result, with the current scheme, we solved the main identified problems:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Performance degradation in the main event bus</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Event Handling Violation</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The effect of noisy neighbors</font></font></li>
+</ul><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How to deal with dynamic load?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The scheme is working, but in it we have a fixed number of consumers for a dynamic number of queues. Obviously, with this approach, we will sag in the processing of queues every time their number increases sharply. It seems that it would be nice for our workers to dynamically start or extinguish when needed. It would also be nice if this doesn’t greatly complicate the process of rolling out new code. At such moments, the hands are very itchy to go and write your process manager. In the future, we did just that, but this story is different.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thinking, we decided, why not once again use all familiar and familiar tools. So we got our internal API, which worked on a standard bundle of NGINX + PHP-FPM. As a result, we can replace our fixed pool of workers with APIs, and let NGINX + PHP-FPM resolve and manage the workers ourselves, and it’s enough for us to have between the control queue and our internal API only one control consumer who will send queue identifiers to our API to processing, and the queue itself will be processed in the worker raised by PHP-FPM. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The new scheme was as follows:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-l/a9/7p/-la97p-usddzj76y4c8grd8gbxa.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It looks beautiful, but our control consumer works in one thread, and our API works synchronously. </font><font style="vertical-align: inherit;">This means that the consumer will hang every time while PHP-FPM is grinding a queue. </font><font style="vertical-align: inherit;">This does not suit us.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Making our API asynchronous</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But what if we could send a task to our API, and let it thresh business logic there, and our control consumer will follow the next task in the control queue, after which it will be pulled back into the API, and so on. </font><font style="vertical-align: inherit;">No sooner said than done. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The implementation takes a couple of lines of code, and the Proof of Concept looks like this:</font></font><br>
+<br>
+<pre><code class="php hljs"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Api</span> </span>{
+    	<span class="hljs-keyword">public</span> <span class="hljs-function"><span class="hljs-keyword">function</span> <span class="hljs-title">actionDoSomething</span>(<span class="hljs-params"></span>)
+    	</span>{<font></font>
+    		$data = $_POST;<font></font>
+    		<span class="hljs-keyword">$this</span>-&gt;dropFPMSession();
+    		<span class="hljs-comment">// ,        , &nbsp;   </span>
+    		<span class="hljs-comment">//     </span><font></font>
+    	}<font></font>
+    <font></font>
+    <font></font>
+    	<span class="hljs-keyword">protected</span> <span class="hljs-function"><span class="hljs-keyword">function</span> <span class="hljs-title">dropFPMSession</span>(<span class="hljs-params"></span>)
+    	</span>{<font></font>
+    		ignore_user_abort(<span class="hljs-literal">true</span>); 
+    		<span class="hljs-comment">//          </span>
+    		ob_end_flush(); <span class="hljs-comment">//  </span>
+    		flush(); <span class="hljs-comment">//  </span>
+    		@session_write_close(); <span class="hljs-comment">// </span><font></font>
+    	<font></font>
+    		fastcgi_finish_request(); <font></font>
+    		<span class="hljs-comment">//          </span><font></font>
+    	}<font></font>
+    }</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the dropFPMSession () method, we break the connection with the client, giving it a response of 200, after which we can perform any heavy logic in postprocessing. </font><font style="vertical-align: inherit;">The client in our case is the control consumer. </font><font style="vertical-align: inherit;">It is important for him to quickly scatter tasks from the control queue into processing on the API and to know that the task has reached the API. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Using this approach, we took off a bunch of headaches associated with the dynamic control of consumers and their automatic scaling.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scalable further</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result, the architecture of our subsystem began to consist of three layers: Data Layer, Processes and Internal API. At the same time, information passes through all data streams about which bot the processed event / task belongs to. Obviously, we can use our key / bot identifier for sharding, while continuing to scale our system horizontally. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If we imagine our architecture as a solid unit, it will look like this: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/bb/mw/en/bbmwendsu4hnp_xymwqnulblwvc.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Having increased the number of such units, we can put a thin balancer in front of them, which will throw our events / tasks into the necessary units, depending on the sharding key. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/wf/1g/sk/wf1gsktxy1iqdp_jhqougdnfkuw.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thus, we get a large margin for horizontal scaling of our system.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When implementing business logic, you should not forget about the thread safety concept, otherwise you can get unexpected results. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Such a scheme with cascades of queues and the removal of heavy business logic into asynchronous processing has been used in several parts of the system for more than two years. </font><font style="vertical-align: inherit;">The load during this time for each of the subsystems has grown tens of times, and the proposed implementation allows us to easily and quickly scale. </font><font style="vertical-align: inherit;">At the same time, we continue to work on our main stack, without expanding it with new tools / languages ​​and without increasing, thereby overhead the introduction and support of new tools.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en492948/index.html">Meet defer</a></li>
+<li><a href="../en492952/index.html">Back to the Future with the Java Developer Course</a></li>
+<li><a href="../en492956/index.html">Gamers are never ex. Fond memories and forbidden pleasures - in a survey by DataArt</a></li>
+<li><a href="../en492958/index.html">Automated recursive computing</a></li>
+<li><a href="../en492962/index.html">My quarantine autonomous survival kit</a></li>
+<li><a href="../en492966/index.html">For the first time a photon was teleported from one chip to another</a></li>
+<li><a href="../en492968/index.html">In memory of Freeman Dyson, the genius of mathematics, turned into a technological visionary</a></li>
+<li><a href="../en492970/index.html">How TeamViewer stores passwords</a></li>
+<li><a href="../en492972/index.html">How the skin is moisturized, and what happens when you manically wash your hands with alcohol with COVID-19</a></li>
+<li><a href="../en492976/index.html">Coronavirus: A fiasco of the century in the making? How we make decisions without reliable data</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

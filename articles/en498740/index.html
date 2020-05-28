@@ -1,0 +1,232 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👋🏿 🐼 📔 PostgreSQL Antipatterns: Registry Navigation 👶🏿 🤤 📠</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Today there will be no complicated cases and sophisticated SQL algorithms. Everything will be very simple, at Captain's level. Evidence - we do a revi...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: Registry Navigation</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/498740/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Today there will be no complicated cases and sophisticated SQL algorithms. </font><font style="vertical-align: inherit;">Everything will be very simple, at Captain's level. Evidence - we do a </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">review of the event register</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> with sorting by time. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is, there is a plate in the base </font></font><code>events</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, and its field </font></font><code>ts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">is exactly the same time by which we want to display these records in an orderly manner:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> <span class="hljs-keyword">events</span>(
+  <span class="hljs-keyword">id</span>
+    <span class="hljs-built_in">serial</span>
+      PRIMARY <span class="hljs-keyword">KEY</span><font></font>
+, ts<font></font>
+    <span class="hljs-built_in">timestamp</span>
+, <span class="hljs-keyword">data</span>
+    <span class="hljs-keyword">json</span><font></font>
+);<font></font>
+<font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> <span class="hljs-keyword">events</span>(ts <span class="hljs-keyword">DESC</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is clear that we will have not a dozen entries there, so we will need some kind of </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">page navigation</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 0 </font><font style="vertical-align: inherit;">“I’m a pogrommist at my mom”</font></font></h2><br>
+<pre><code class="python hljs">cur.execute(<span class="hljs-string">"SELECT * FROM events;"</span>)<font></font>
+rows = cur.fetchall();<font></font>
+rows.sort(key=<span class="hljs-keyword">lambda</span> row: row.ts, reverse=<span class="hljs-literal">True</span>);<font></font>
+limit = <span class="hljs-number">26</span><font></font>
+print(rows[offset:offset+limit]);<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It’s almost no joke - rarely, but found in the wild. </font><font style="vertical-align: inherit;">Sometimes after working with ORM it can be difficult to switch to a “direct” work with SQL. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But let's move on to more common and less obvious problems.</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">#1. </font><font style="vertical-align: inherit;">OFFSET</font></font></h2><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  ...<font></font>
+<span class="hljs-keyword">FROM</span>
+  <span class="hljs-keyword">events</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  ts <span class="hljs-keyword">DESC</span>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">26</span> <span class="hljs-keyword">OFFSET</span> $<span class="hljs-number">1</span>; <span class="hljs-comment">-- 26 -   , $1 -  </span></code></pre><br>
+<blockquote>    26?        . , 25  ,  1, ,      -       .<br>
+<br>
+,     «»   ,    .      PostgreSQL     ,      , —     .</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And while in the application interface the viewing of the registry is implemented as switching between visual “pages”, nobody for a long time notices anything suspicious. Exactly until the moment when, in the struggle for convenience, UI / UX does not decide to remake the interface to “endless scroll” - that is, all registry entries are drawn in a single list that the user can twist up and down. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And now, during the next test, you are caught </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">duplicating entries</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in the registry. Why, because the table has a normal index </font></font><code>(ts)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">on which your query is based? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Exactly because you did not consider what is </font></font><b><code>ts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">not a unique key</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in this table. Actually, his </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">meanings are not unique</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, like any “time” in real conditions - that’s why the same record in two neighboring queries easily “jumps” from page to page due to a different final order as part of sorting the same key value. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In fact, the second problem is also hidden here, which is much more difficult to notice - </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">some entries will not be shown</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> at all! </font><font style="vertical-align: inherit;">After all, the "duplicated" records took someone's place. </font><font style="vertical-align: inherit;">A detailed explanation with beautiful pictures can be </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">found here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Expanding the Index</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The cunning developer understands that you need to make the index key unique, and the easiest way is to expand it with a deliberately unique field, which PK is perfect for:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">UNIQUE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> <span class="hljs-keyword">events</span>(ts <span class="hljs-keyword">DESC</span>, <span class="hljs-keyword">id</span> <span class="hljs-keyword">DESC</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And the request mutates:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  ...<font></font>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  ts <span class="hljs-keyword">DESC</span>, <span class="hljs-keyword">id</span> <span class="hljs-keyword">DESC</span>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">26</span> <span class="hljs-keyword">OFFSET</span> $<span class="hljs-number">1</span>;</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 2 </font><font style="vertical-align: inherit;">Transition to "cursors"</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Some time later, the DBA comes to you and is “happy” that your requests are </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hellishly loading the server with their horse-drawn OFFSETs</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and in general, it is time to switch to </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">navigation from the last value shown</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Your request mutates again:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  ...<font></font>
+<span class="hljs-keyword">WHERE</span>
+  (ts, <span class="hljs-keyword">id</span>) &lt; ($<span class="hljs-number">1</span>, $<span class="hljs-number">2</span>) <span class="hljs-comment">--      </span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  ts <span class="hljs-keyword">DESC</span>, <span class="hljs-keyword">id</span> <span class="hljs-keyword">DESC</span>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">26</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You breathed a sigh of relief before it came ...</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 3 </font><font style="vertical-align: inherit;">Index Cleaning</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Because one day your DBA read </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">an article about finding inefficient indexes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and realized that </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the “last but not the least” timestamp is not good</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">And he came to you again - now with the thought that this index should nevertheless turn back into </font></font><code>(ts DESC)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But what to do with the initial problem of “jumping” records between pages? .. And everything is simple - you need to choose blocks with an unlimited number of records! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, who forbids us to read not “exactly 26”, but “not less than 26”? </font><font style="vertical-align: inherit;">For example, so that in the next block there are </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">records with obviously different values</font></font><code>ts</code></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - then there will be no problems with “jumping” between the blocks! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here's how to do it:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  ...<font></font>
+<span class="hljs-keyword">WHERE</span>
+  ts &lt; $<span class="hljs-number">1</span> <span class="hljs-keyword">AND</span>
+  ts &gt;= <span class="hljs-keyword">coalesce</span>((
+    <span class="hljs-keyword">SELECT</span><font></font>
+      ts<font></font>
+    <span class="hljs-keyword">FROM</span>
+      <span class="hljs-keyword">events</span>
+    <span class="hljs-keyword">WHERE</span>
+      ts &lt; $<span class="hljs-number">1</span>
+    <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+      ts <span class="hljs-keyword">DESC</span>
+    <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">1</span> <span class="hljs-keyword">OFFSET</span> <span class="hljs-number">25</span>
+  ), <span class="hljs-string">'-infinity'</span>)
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  ts <span class="hljs-keyword">DESC</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What is going on here?</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We step down 25 records and get the “boundary” value </font></font><code>ts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If there is already nothing there, then replace the NULL value with </font></font><code>-infinity</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Subtract the entire segment of values ​​between the received value </font></font><code>ts</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and the parameter $ 1 passed from the interface (the previous “last” drawn value).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If a block returned with less than 26 entries, it is the last one.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Or the same picture:</font></font><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ep/37/y3/ep37y34-saszrynp8jujarqyrzq.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since now our </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sample does not have any definite “beginning”</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , nothing prevents us from “reversing” this request in the opposite direction and implementing dynamic loading of data blocks from the “reference point” in both directions - both down and up.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Comment</font></font></h4><br>
+<ol>
+<li>,        ,   «  ».       <b>   Index Only Scan</b>.</li>
+<li> ,     ,      <code>ts</code>    ,  <b> </b>.      — «   00:00:00.000»,    .  ,     .     ,     .</li>
+</ol></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en498726/index.html">How to learn Data Science and Business Intelligence for free? Talk at the Open House Day at Ozon Masters</a></li>
+<li><a href="../en498730/index.html">Errors in designing the VR interface, VR for interface designers</a></li>
+<li><a href="../en498732/index.html">If programming languages ​​could tell about themselves</a></li>
+<li><a href="../en498734/index.html">Antiquities: multimedia technology of the early nineties</a></li>
+<li><a href="../en498738/index.html">Making a mini PC on Ryzen APU or trucker computer</a></li>
+<li><a href="../en498746/index.html">3D industry wages are down</a></li>
+<li><a href="../en498750/index.html">Win-win position: improving user experience and making online business happier</a></li>
+<li><a href="../en498754/index.html">It’s good that the creator of your favorite instrument didn’t listen to donkeys when he invented the bicycle</a></li>
+<li><a href="../en498758/index.html">Oumuamua's strange space object may be a fragment of a dead planet</a></li>
+<li><a href="../en498760/index.html">Free quarantine educational courses: business, management, marketing</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

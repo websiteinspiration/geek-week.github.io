@@ -1,0 +1,301 @@
+<!doctype html>
+<html class="no-js" lang="es">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🕳️ 🕋 🤾🏾 Optimizaciones del compilador JIT para .NET 5 👨🏿‍🤝‍👨🏽 🎵 🚏</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hace algún tiempo, comencé un viaje increíble al mundo del compilador JIT para encontrar lugares donde puedas meter las manos y acelerar algo, como En...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Optimizaciones del compilador JIT para .NET 5</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/493586/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Hace algún tiempo, comencé un viaje increíble al mundo del compilador JIT para encontrar lugares donde puedas meter las manos y acelerar algo, como En el curso del trabajo principal, se ha acumulado una pequeña cantidad de conocimiento en LLVM y sus optimizaciones. En este artículo, me gustaría compartir una lista de mis mejoras en JIT (en .NET se llama RyuJIT en honor a algún dragón o anime, no lo descubrí), la mayoría de los cuales ya han llegado a master y estarán disponibles en .NET (Core) 5 Mis optimizaciones afectan diferentes fases de JIT, que se pueden mostrar de manera muy esquemática de la siguiente manera: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/di/ao/qk/diaoqktgwhzremeu8qd8inutrak.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como se puede ver en el diagrama, JIT es un módulo separado relacionado con la </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">interfaz Jit</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> estrecha </font><font style="vertical-align: inherit;">, por la cual JIT consulta sobre algunas cosas, por ejemplo, ¿es </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">posible?</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">echa una clase a otra. </font><font style="vertical-align: inherit;">Cuanto más tarde el JIT compila el método en Tier1, más información puede proporcionar el tiempo de ejecución, por ejemplo, que los </font></font><code>static readonly</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">campos se pueden reemplazar con una constante, porque </font><font style="vertical-align: inherit;">la clase ya está inicializada estáticamente.</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entonces, comencemos con la lista.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 1817</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : optimizaciones de boxing / unboxing en coincidencia de patrones</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Importador </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Muchas de las nuevas características de C # a menudo pecan al insertar </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">códigos de operación</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> CIL de </font><b><font style="vertical-align: inherit;">box / unbox</font></b><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Esta es una operación muy costosa, que es esencialmente la asignación de un nuevo objeto en el montón, copiando el valor de la pila en él, y luego también carga el GC al final. </font><font style="vertical-align: inherit;">Ya hay varias optimizaciones en JIT para este caso, pero encontré la falta de coincidencia de patrones en C # 8, por ejemplo:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">int</span> Case1&lt;T&gt;(T o)<font></font>
+{<font></font>
+    <span class="hljs-keyword">if</span> (o <span class="hljs-keyword">is</span> <span class="hljs-keyword">int</span> x)
+        <span class="hljs-keyword">return</span> x;
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">int</span> Case2&lt;T&gt;(T o) =&gt; o <span class="hljs-keyword">is</span> <span class="hljs-keyword">int</span> n ? n : <span class="hljs-number">42</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">int</span> Case3&lt;T&gt;(T o)<font></font>
+{<font></font>
+    <span class="hljs-keyword">return</span> o <span class="hljs-keyword">switch</span><font></font>
+    {<font></font>
+        <span class="hljs-keyword">int</span> n =&gt; n,
+        <span class="hljs-keyword">string</span> str =&gt; str.Length,<font></font>
+        _ =&gt; <span class="hljs-number">0</span><font></font>
+    };<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Y veamos el asm-codegen antes de mi optimización (por ejemplo, para la especialización int) para los tres métodos: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/iv/5m/8h/iv5m8hqdrwqazfpztoh_n0o0lho.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Y ahora después de mi mejora: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-t/f7/bx/-tf7bxj9jip9xzpa9nr3ccelv9w.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El hecho es que la optimización ha encontrado patrones de código IL</font></font><br>
+<br>
+<pre><code class="plaintext hljs">box !!T<font></font>
+isinst Type1<font></font>
+unbox.any Type2</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Al importar y tener información sobre tipos, pude simplemente ignorar estos códigos de operación y no insertar boxing-anboxing. </font><font style="vertical-align: inherit;">Por cierto, también </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">implementé la</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> misma optimización </font><font style="vertical-align: inherit;">en Mono. </font><font style="vertical-align: inherit;">En lo sucesivo, un enlace a Pull-Request está contenido en el encabezado de la descripción de optimización.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 1157</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> typeof (T) .IsValueType ⇨ verdadero / falso</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Importador </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Aquí </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">entrené</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> a JIT para reemplazar inmediatamente </font><b><font style="vertical-align: inherit;">Type.IsValueType</font></b><font style="vertical-align: inherit;"> con una constante si es posible. </font><font style="vertical-align: inherit;">Este es un desafío menos y la capacidad de cortar condiciones y ramas completas en el futuro, un ejemplo:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">void</span> Foo&lt;T&gt;()<font></font>
+{<font></font>
+    <span class="hljs-keyword">if</span> (!<span class="hljs-keyword">typeof</span>(T).IsValueType)<font></font>
+        Console.WriteLine(<span class="hljs-string">"not a valuetype"</span>);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Y veamos el codegen para la especialización </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Foo &lt;int&gt;</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> antes de la mejora: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/oa/28/lc/oa28lcmskvzitsjlpqr5dlh8uv4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Y después de la mejora: lo </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zw/db/n_/zwdbn_ukemjzxf9qbkato_ptblm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+mismo se puede hacer con otras propiedades de Tipo si es necesario.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 1157</font></font></a> <code>typeof(T1).IsAssignableFrom(typeof(T2)) ⇨ true/false</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Importador </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Casi lo mismo: ahora puede verificar la jerarquía en métodos genéricos sin temor a que esto no esté optimizado, por ejemplo:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">void</span> Foo&lt;T1, T2&gt;()<font></font>
+{<font></font>
+    <span class="hljs-keyword">if</span> (!<span class="hljs-keyword">typeof</span>(T1).IsAssignableFrom(<span class="hljs-keyword">typeof</span>(T2)))<font></font>
+        Console.WriteLine(<span class="hljs-string">"T1 is not assignable from T2"</span>);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Del mismo modo, será reemplazado por una constante </font></font><code>true/false</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">y la condición se puede eliminar por completo. </font><font style="vertical-align: inherit;">En tales optimizaciones, por supuesto, hay algunos casos de esquina que siempre debe tener en cuenta: Sistema .__ Canon compartió genéricos, matrices, variabilidad co (ntr), valores nulos, objetos COM, etc.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 1378</font></font></a> <code>"Hello".Length ⇨ 5</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Importador </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A pesar de que la optimización es lo más obvia y simple posible, tuve que sudar mucho para implementarla en JIT-e. La cuestión es que JIT no sabía sobre el contenido de la cadena, vio literales de cadena ( </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GT_CNS_STR</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ), pero no sabía nada sobre el contenido específico de las cadenas. Tuve que ayudarlo contactando a VM (para expandir la interfaz JIT mencionada anteriormente), y la optimización en sí misma es esencialmente unas </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pocas líneas de código</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Hay muchos casos de usuarios, además de los obvios, como: </font></font><b><code>str.IndexOf("foo") + "foo".Length</code></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">para los no obvios en los que está involucrada la alineación (le recuerdo: Roslyn no se ocupa de la alineación, por lo que esta optimización sería ineficaz, además, como todas las demás), por ejemplo:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">bool</span> <span class="hljs-title">Validate</span>(<span class="hljs-params"><span class="hljs-keyword">string</span> str</span>)</span> =&gt; str.Length &gt; <span class="hljs-number">0</span> &amp;&amp; str.Length &lt;= <span class="hljs-number">100</span>;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">bool</span> <span class="hljs-title">Test</span>(<span class="hljs-params"></span>)</span> =&gt; Validate(<span class="hljs-string">"Hello"</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Veamos el codegen para </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Test</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ( </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Validar está en</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> línea): </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sl/kl/dz/slkldz4tb8stxhrq_bhz7cmqkdm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+y ahora el codegen después de agregar la optimización: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/4p/ao/f5/4paof5hshv_gsogtwqsocahc6vu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+es decir </font><font style="vertical-align: inherit;">alinee el método, reemplace las variables con literales de cadena, reemplace .Length de literales con longitudes de cadena reales, doble las constantes, elimine el código muerto. </font><font style="vertical-align: inherit;">Por cierto, dado que JIT ahora puede verificar el contenido de una cadena, se han abierto puertas para otras optimizaciones relacionadas con los literales de cadena. </font><font style="vertical-align: inherit;">La optimización en sí misma se mencionó en el anuncio de la primera vista previa de .NET 5.0: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">devblogs.microsoft.com/dotnet/announcing-net-5-0-preview-1</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> en la sección </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">Mejoras</font></a><font style="vertical-align: inherit;"> en la </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">calidad del código en RyuJIT</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 1644:</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Optimización de cheques encuadernados.</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> eliminación de verificación de límites </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para muchos, no será un secreto que cada vez que acceda a una matriz por índice, el JIT inserta una verificación para usted de que la matriz no va más allá y arroja una excepción si esto sucede; en el caso de una lógica errónea, no podría para leer memoria aleatoria, obtener algo de valor y continuar.</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">Foo</span>(<span class="hljs-params"><span class="hljs-keyword">int</span>[] array, <span class="hljs-keyword">int</span> index</span>)</span><font></font>
+{<font></font>
+    <span class="hljs-comment">// if ((uint) array.Length &lt;= (uint) index)</span>
+    <span class="hljs-comment">//     throw new IndexOutOfRangeException();</span>
+    <span class="hljs-keyword">return</span> array[index];<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tal verificación es útil, pero puede afectar en gran medida el rendimiento: en primer lugar, agrega una operación de comparación y hace que su código no esté ramificado, y en segundo lugar, agrega un código de llamada de excepción a su método con todas las consecuencias. Sin embargo, en muchos casos, el JIT puede eliminar estas verificaciones si puede probarse a sí mismo que el índice nunca irá más allá de eso, o que ya hay alguna otra verificación y no necesita agregar una más: Eliminación de verificación de límites (rango). Encontré varios casos en los que no pudo hacer frente y los corrigió (y en el futuro planeo algunas mejoras más de esta fase).</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">var</span> item = array[index &amp; mask];</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Aquí en este código, le digo a JIT que </font></font><code>&amp; mask</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">esencialmente limita el índice de arriba a un valor </font></font><code>mask</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, es decir </font><font style="vertical-align: inherit;">si el valor </font></font><code>mask</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">y la longitud de la matriz son </font><font style="vertical-align: inherit;">conocidos por JIT </font><font style="vertical-align: inherit;">, no puede insertar una verificación enlazada. </font><font style="vertical-align: inherit;">Lo mismo ocurre con%, (&amp; x &gt;&gt; y) operaciones. </font><font style="vertical-align: inherit;">Un ejemplo del uso de esta optimización en </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">aspnetcore</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Además, si sabemos que en nuestra matriz, por ejemplo, hay 256 elementos o más, entonces si nuestro indexador desconocido es del tipo byte, no importa cuánto lo intente, nunca podrá salir de los límites. </font><font style="vertical-align: inherit;">PR: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">github.com/dotnet/coreclr/pull/25912</font></font></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 24584:</font></font></a> <code>x / 2 ⇨ x * 0.5</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Morph </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+C de este PR y comencé mi increíble inmersión en el mundo de las optimizaciones JIT. </font><font style="vertical-align: inherit;">La operación "división" es más lenta que la operación "multiplicación" (y si es para enteros y, en general, un orden de magnitud). </font><font style="vertical-align: inherit;">Funciona para constantes solo iguales a la potencia de dos, por ejemplo:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">float</span> <span class="hljs-title">DivideBy2</span>(<span class="hljs-params"><span class="hljs-keyword">float</span> x</span>)</span> =&gt; x / <span class="hljs-number">2</span>; <span class="hljs-comment">// = x * 0.5; </span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Codegen antes de la optimización: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/df/vo/mf/dfvomfc6foisqpk9uvq8nfihfzy.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+y después: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ij/xk/u5/ijxku5zq0hhxmltazwxgfq1tvss.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+si comparamos estas dos instrucciones para Haswell, entonces todo quedará claro:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">vdivss (Latency: 10-20,  R.Throughput: 7-14)<font></font>
+vmulss (Latency:     5,  R.Throughput:  0.5)<font></font>
+</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Esto será seguido por optimizaciones que todavía están en la etapa de revisión de código y no por el hecho de que serán aceptadas.</font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 31978:</font></font></a> <code>Math.Pow(x, 2) ⇨ x * x</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Importador </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Todo es simple aquí: en lugar de llamar a pow (f) para un caso bastante popular, cuando el grado es constante 2 (bueno, es gratis para 1, -1, 0), puede expandirlo en un simple x * x. </font><font style="vertical-align: inherit;">Puede expandir cualquier otro grado, pero para esto debe esperar la implementación del modo de "matemática rápida" en .NET, en el cual la especificación IEEE-754 puede ser descuidada por razones de rendimiento. </font><font style="vertical-align: inherit;">Ejemplo:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">float</span> <span class="hljs-title">Pow2</span>(<span class="hljs-params"><span class="hljs-keyword">float</span> x</span>)</span> =&gt; MathF.Pow(x, <span class="hljs-number">2</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Codegen antes de la optimización: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/1o/7m/zw/1o7mzwatkp3kritfyahj_zjhija.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+y después:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/el/9g/19/el9g19y1rul_r4sej7fx7sixiso.png"><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 33024:</font></font></a> <code>x * 2 ⇨ x + x</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Disminución </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+También la optimización de micro (nano) piphol bastante simple, le permite multiplicar por 2 sin cargar la constante en el registro.</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">float</span> <span class="hljs-title">MultiplyBy2</span>(<span class="hljs-params"><span class="hljs-keyword">float</span> x</span>)</span> =&gt; x * <span class="hljs-number">2</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Codegen antes de la optimización: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/e7/4s/-r/e74s-rigvhc6eh14gl7ygnbeqva.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Después: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/d5/wg/ru/d5wgrutrxfvbsccck-hhjdvw37w.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+en general, la instrucción es la </font></font><code>mul(ss/sd/ps/pd)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">misma en latencia y rendimiento que </font></font><code>add(ss/sd/ps/pd)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, pero la necesidad de cargar la constante "2" puede ralentizar un poco el trabajo. </font><font style="vertical-align: inherit;">Aquí, en el ejemplo del codegen anterior, </font></font><code>vaddss</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hice todo dentro del marco de un registro.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 32368:</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Optimización de Array.Length / c (o% s)</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Morph </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dio la casualidad de que el campo Longitud de Array es un tipo con signo, y dividir y el resto por una constante es mucho más eficiente de un tipo sin signo (y no solo una potencia de dos), solo compara este codegen: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/7u/cf/0a/7ucf0a2z26ew1ndszgycipb4dxw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mi PR solo le recuerda a JIT que </font></font><code>Array.Length</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">aunque significativo, pero de hecho, la longitud de la matriz NUNCA (a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">menos que sea un anarquista</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) puede ser menor que cero, lo que significa que puede verlo como un número sin signo y aplicar algunas optimizaciones como para uint.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 32716:</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Optimización de comparaciones simples en código sin ramificación</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fase:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Análisis de flujo </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Esta es otra clase de optimizaciones que opera con bloques básicos en lugar de expresiones dentro de uno. </font><font style="vertical-align: inherit;">Aquí JIT es un poco conservador y tiene margen para mejoras, por ejemplo, inserte cmove cuando sea posible. </font><font style="vertical-align: inherit;">Comencé con una optimización simple para este caso:</font></font><br>
+<br>
+<pre><code class="cs hljs">x = condition ? A : B;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+si A y B son constantes y la diferencia entre ellas es la unidad, por ejemplo, </font></font><code>condition ? 1 : 2</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">entonces, sabiendo que la operación de comparación en sí misma devuelve 0 o 1, podemos reemplazar el salto con sumar. </font><font style="vertical-align: inherit;">En términos de RyuJIT, se parece a esto: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/am/y8/rv/amy8rv0tjz3vxzelpbz1lhgqr6a.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+recomiendo ver la </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">descripción del</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> RP en sí, espero que todo se describa claramente allí.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">No todas las optimizaciones son igualmente útiles.</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Las optimizaciones requieren una tarifa bastante alta: </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+* Aumento = complejidad del código existente para soporte y lectura </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+* Errores potenciales: probar optimizaciones del compilador es increíblemente difícil y fácil perder algo y obtener algún tipo de falla por parte de los usuarios. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+* Compilación lenta </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+* Aumento del tamaño del binario JIT </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como ya entendió, no se aceptan todas las ideas y prototipos de optimizaciones y es necesario demostrar que tienen derecho a la vida. Una de las formas aceptadas para probar esto en .NET es ejecutar la utilidad jit-utils, que AOT compilará un conjunto de bibliotecas (todas BCL y corelib) y comparará el código del ensamblador para todos los métodos antes y después de las optimizaciones, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">así es como este informe</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> busca la optimización</font></font><code>"str".Length</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Además del informe, todavía hay un cierto círculo de personas (como </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">jkotas</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) que, de un vistazo, pueden evaluar la utilidad y piratear todo desde la altura de su experiencia y comprender qué lugares en .NET pueden ser un cuello de botella y cuáles no. </font><font style="vertical-align: inherit;">Y una cosa más: no juzgue la optimización por el argumento "nadie escribe", "sería mejor simplemente mostrar una advertencia en Roslyn": nunca se sabe cómo se verá su código después de que JIT alinee todo lo que sea posible y complete constantes.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es493574/index.html">Proxy local para filtrar el tráfico del navegador</a></li>
+<li><a href="../es493578/index.html">El resumen de materiales frescos del mundo del front-end para la última semana No. 407 (16 al 22 de marzo de 2020)</a></li>
+<li><a href="../es493580/index.html">Aprendiendo a implementar microservicios. Parte 4. Jenkins</a></li>
+<li><a href="../es493582/index.html">Verano artificial: ultravioleta lejano contra coronavirus</a></li>
+<li><a href="../es493584/index.html">Noticias del mundo de OpenStreetMap No. 503 (03.03.2020-09.03.2020)</a></li>
+<li><a href="../es493590/index.html">Por qué Cisco AnyConnect no es solo un cliente VPN</a></li>
+<li><a href="../es493594/index.html">PHP Digest No. 176 (del 11 al 23 de marzo de 2020)</a></li>
+<li><a href="../es493596/index.html">El hombre que no tenía prisa</a></li>
+<li><a href="../es493598/index.html">Ocultar parte del número de teléfono</a></li>
+<li><a href="../es493604/index.html">Eventos digitales en Moscú del 23 al 29 de marzo</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

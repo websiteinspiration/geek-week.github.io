@@ -1,0 +1,244 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🦗 🏇🏾 🌝 ClickHouse中的字符串优化。Yandex报告 🙆 🐥 🕳️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="ClickHouse分析数据库引擎处理许多不同的行，从而消耗资源。为了加速系统，不断添加新的优化。ClickHouse开发人员Nikolay Kochetov讨论了字符串数据类型，包括新类型LowCardinality，并说明了如何加快字符串的处理速度。
+ 
+ 
+ -首先，让我们看看如何存储字符串。...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>ClickHouse中的字符串优化。Yandex报告</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/492868/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ClickHouse分析数据库引擎处理许多不同的行，从而消耗资源。</font><font style="vertical-align: inherit;">为了加速系统，不断添加新的优化。</font><font style="vertical-align: inherit;">ClickHouse开发人员Nikolay Kochetov讨论了字符串数据类型，包括新类型LowCardinality，并说明了如何加快字符串的处理速度。</font></font><br>
+<br>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/rqf-ILRgBdY" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-首先，让我们看看如何存储字符串。 </font></font><br>
+<a name="habracut"></a><br>
+<img src="https://habrastorage.org/webt/ch/9s/zs/ch9szsqfnkkvpmjjxoo0lmpacno.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们有字符串数据类型。</font><font style="vertical-align: inherit;">字符串默认情况下效果很好，应该几乎始终使用它。</font><font style="vertical-align: inherit;">它的开销很小-每行9个字节。</font><font style="vertical-align: inherit;">如果我们希望行大小是固定的并且事先知道，则最好使用FixedString。</font><font style="vertical-align: inherit;">您可以在其中设置所需的字节数，这对于IP地址或哈希函数等数据非常方便。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rd/lx/mo/rdlxmobm0ch5l88ab74sszn_fps.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当然，有时会变慢。</font><font style="vertical-align: inherit;">假设您要对表进行查询。</font><font style="vertical-align: inherit;">ClickHouse以100 GB / s的速度读取相当大量的数据，处理的行数很少。</font><font style="vertical-align: inherit;">我们有两个存储几乎相同数据的表。</font><font style="vertical-align: inherit;">ClickHouse可以更快地从第二个表读取数据，但每秒读取的行数要少三倍。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/nd/tz/6l/ndtz6l6-1pwaycgcoxhslfj2hcm.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果我们查看压缩数据的大小，它将几乎相等。实际上，相同的数据写在表中-前十亿个数字-仅在第一列中以UInt64的形式写入，在字符串的第二列中。因此，第二个查询从磁盘读取数据的时间更长，并将其解压缩。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/i8/a2/vf/i8a2vfterxcfto5foypz6tig3zy.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是另一个例子。假设有一组预定的线，则将其限制为1000或10,000的常数，并且几乎永远不变。对于这种情况，Enum数据类型适合我们，在ClickHouse中有两个-Enum8和Enum16。由于存储在Enum中，因此我们可以快速处理请求。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ClickHouse具有GROUP BY，IN，DISTINCT的加速功能，以及某些功能的优化功能，例如，用于与常量字符串进行比较。当然，字符串中的数字不会转换，但是相反，常量字符串会转换为值Enum。在那之后，一切都会被快速比较。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是也有缺点。即使我们知道确切的行集，有时也需要对其进行补充。新生产线已经到来-我们必须做ALTER。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/b0/ay/sz/b0ayszedkf252ktki2xizo2fxfm.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最佳实现了ClickHouse中的ETER枚举ALTER。我们不会覆盖磁盘上的数据，但是由于Enum结构存储在表本身的架构中，因此ALTER会减慢速度。因此，例如，我们必须等待来自表的读取请求。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+问题是，能否做得更好？也许是吧。您可以将Enum结构保存在表架构中，而不是在ZooKeeper中。但是，可能会出现同步问题。例如，一个副本接收到数据，另一个副本没有接收到数据，并且如果它具有旧的Enum，则某些内容将损坏。 （在ClickHouse中，我们几乎完成了非阻塞的ALTER请求。当我们完全完成它们时，我们就不必等待读取请求。）</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/yf/rc/vj/yfrcvjamitxxi5taditsaouvrl4.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了不打扰ALTER Enum，您可以使用外部ClickHouse词典。让我提醒您，这是ClickHouse内部的键值数据结构，您可以使用它从外部源（例如，从MySQL表）获取数据。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在ClickHouse词典中，我们存储许多不同的行，并在表中存储它们以数字形式的标识符。如果需要获取字符串，则调用dictGet函数并使用它。在那之后，我们不应该改变。要向Enum添加一些东西，我们将其插入到相同的MySQL表中。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是还有其他问题。首先，笨拙的语法。如果要获取字符串，则必须调用dictGet。其次，缺乏一些优化。与字典的常量字符串进行比较也不是一件容易的事。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+更新可能仍然存在问题。假设我们在缓存字典中请求了一行，但是它没有进入缓存。然后，我们必须等待，直到从外部源加载了数据。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/em/4z/ii/em4ziibqzsukh-mvfu2o8dpncv0.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+两种方法的共同缺点是，我们将所有密钥存储在一个位置并进行同步。</font><font style="vertical-align: inherit;">那么为什么不将字典存储在本地呢？</font><font style="vertical-align: inherit;">没有同步-没问题。</font><font style="vertical-align: inherit;">您可以将字典本地存储在磁盘上。</font><font style="vertical-align: inherit;">也就是说，我们做了插入，记录了一个字典。</font><font style="vertical-align: inherit;">如果我们使用内存中的数据，则可以将字典写到数据块，数据块或某列或某个高速缓存中，以加快计算速度。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">词汇字符串编码 </font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，我们开始在ClickHouse中创建新的数据类型-LowCardinality。这是一种用于存储数据的格式：如何将它们写入磁盘，如何读取，如何将它们显示在内存中以及它们的处理方案。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/se/5h/5e/se5h5er0yccult4fjfamsksw4rk.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+幻灯片上有两列。在右侧，字符串以标准的String类型存储。可以看出，这些是某种手机型号。在左侧，只有LowCardinality类型的列完全相同。它由具有许多不同行的字典（右侧列的行）和位置列表（行号）组成。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用这两种结构，可以还原原始列。还有一个反向反向索引-哈希表，可帮助您逐行查找字典中的位置。需要加快某些查询的速度。例如，如果要比较，请在我们的列中查找一行或将它们合并在一起。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+LowCardinality是参数数据类型。它可以是数字，也可以是存储为数字的内容，也可以是字符串，也可以是它们中的Nullable。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/et/r4/h9/etr4h9fjutj5sf6ffxqjmf04xpu.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+LowCardinality的独特之处在于可以将其保存为某些功能。幻灯片上显示了一个示例请求。在第一行中，我从String创建了一个类型为LowCardinality的列，命名为S。然后我问她的名字-ClickHouse说它是String中的LowCardinality。好吧。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第三行几乎是相同的，仅我们称为长度函数。在ClickHouse中，length函数返回UInt64数据类型。但是我们从UInt64获得了LowCardinality。重点是什么？</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/6h/hs/0x/6hhs0xgy2-hnsc8tputwp8ukqqu.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+手机名称存储在字典中，我们应用了长度功能。现在我们有一个类似的字典，只包含数字，这些是字符串的长度。带有位置的列未更改。结果，我们处理了更少的数据，并按要求的时间进行了保存。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+可能还有其他优化，例如添加简单的缓存。在计算函数的值时，您可以记住并使其相同，而无需重新计算。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+还可以通过GROUP BY进行优化，因为带有字典的列已经被部分聚合了-您可以快速计算哈希函数的值，并大致找到将下一行放在何处。您还可以专门化一些聚合函数，例如uniq，因为您可以仅向其发送字典，而保留位置不变-这样，一切将更快地运行。我们已经添加到ClickHouse的前两个优化。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/kc/6u/v4/kc6uv48b2vbsmki20ckwvvbc990.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是，如果我们用数据类型创建一列并在其中插入许多错误的不同行怎么办？我们的记忆是否饱满？不，ClickHouse中有两个特殊设置。第一个是low_cardinality_max_dictionary_size。这是可以写入磁盘的字典的最大大小。插入的过程如下：当我们插入数据时，会有一行流，从中我们形成一个大型的通用字典。如果字典变得比设置值大，则将当前字典写入磁盘，并将其余各行写在索引旁边的一侧。结果，我们将永远不会重述大型词典，也不会出现任何内存问题。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第二个设置称为low_cardinality_use_single_dictionary_for_part。想象一下，在以前的方案中，当我们插入数据时，我们的字典已满，然后将其写入磁盘。问题来了，为什么现在不组成另一本完全相同的字典呢？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当它溢出时，我们将再次将其写入磁盘并开始形成第三个磁盘。默认情况下，此设置仅禁用此功能。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+实际上，如果我们要插入一些行但意外插入了“垃圾”，那么许多词典可能会很有用。假设我们先插入了坏行，然后又插入了好行。然后，字典将分为许多小词典。其中一些将带有垃圾，但后者将带有良好的线条。而且，如果我们只阅读最后一个小词，那么所有内容也会很快起作用。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/jc/jx/jb/jcjxjbo7vmgmexmzxryscvj0lhu.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在谈论LowCardinality的优点之前，我会立即说，我们不太可能减少磁盘上的数据（尽管可能会发生这种情况），因为ClickHouse会压缩数据。有一个默认选项-LZ4。您也可以使用ZSTD进行压缩。但是这两种算法都已经实现了字典压缩，因此我们的外部ClickHouse字典不会有太大帮助。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了避免毫无根据，我从指标（字符串，低基数（字符串）和枚举）中获取了一些数据，并将它们保存在不同的数据类型中。</font><font style="vertical-align: inherit;">结果是三列，其中写入了十亿行。</font><font style="vertical-align: inherit;">第一列CodePage共有62个值。</font><font style="vertical-align: inherit;">您会看到，在LowCardinality（字符串）中，它们对它们的挤压更好。</font><font style="vertical-align: inherit;">字符串稍差一些，但这很可能是由于以下事实：字符串较短，我们存储了它们的长度，并且它们占用了大量空间并且压缩得不好。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果使用PhoneModel，则其中有超过4.8万个，并且String和LowCardinality（String）之间几乎没有区别。</font><font style="vertical-align: inherit;">对于URL，我们还仅节省了2 GB-我认为您不应该依赖于此。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">估算工作速度</font></font></h3> <br>
+<img src="https://habrastorage.org/webt/3q/v7/ar/3qv7aronmenayqfhdjait6xo3tw.jpeg"><br>
+<b><sup><sub><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">幻灯片中的链接</font></font></a></sub></sup></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+现在让我们评估工作速度。为了对其进行评估，我使用了描述纽约出租车的数据集。它</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">可以</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在GitHub上。它有超过十亿的旅行。它显示了位置，行程的开始和结束时间，付款方式，乘客数量，甚至是出租车的类型-绿色，黄色和Uber。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/2o/9n/qb/2o9nqbsb7dodtnoimgnnl66lhlg.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我提出的第一个要求非常简单-我问的是最常订购出租车的地方。为此，您需要从订购的地方获取位置，在其上进行GROUP BY并计算计数功能。在这里，ClickHouse提供了一些东西。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/te/uy/kz/teuykz6_ucr7tuklbfsnobntncc.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了衡量查询处理的速度，我创建了三个具有相同数据的表，但将三种不同的数据类型用于我们的起始位置：字符串，LowCardinality和枚举。 LowCardinality和Enum比String快五倍。枚举速度更快，因为它可以处理数字。 LowCardinality-因为实施了GROUP BY优化。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pl/mx/qr/plmxqrgggpwl4xp2quqggej847k.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们使请求变得复杂-问一下纽约最受欢迎的公园在哪里。再次，我们将根据最常订购出租车的位置来进行度量，但与此同时，我们将仅过滤出可以使用“停车”一词的那些位置。还添加一个赞函数。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/0u/iq/bz/0uiqbzwkh280_wuzn8bccqg2lhi.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们看看时间-我们看到Enum突然开始放慢速度。而且它的工作速度甚至比标准String数据类型还要慢。这是因为like函数根本没有针对Enum优化。我们必须将行从Enum转换为常规行-我们需要做更多的工作。默认情况下，LowCardinality（字符串）也未进行优化，但与字典上的工作方式一样，因此查询比字符串快。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+枚举存在一个更全球性的问题。如果要对其进行优化，则必须在代码的每个位置都进行优化。假设我们编写了一个新函数-您肯定必须为Enum进行优化。在LowCardinality中，默认情况下所有内容均已优化。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_j/oc/eq/_joceq5ioy66p6gjatm1l5f2rqy.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们看一下最后的请求，更多的是人为的。</font><font style="vertical-align: inherit;">我们将仅从我们的位置计算哈希函数。</font><font style="vertical-align: inherit;">哈希函数是一个相当慢的请求，需要很长时间，因此所有内容都会减慢三倍。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/dn/06/x9/dn06x9ujvdxgdpmjcus8qzlccbg.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+尽管没有过滤，但LowCardinality仍然更快。</font><font style="vertical-align: inherit;">这是因为我们的函数仅在字典上起作用。</font><font style="vertical-align: inherit;">哈希计算函数具有一个参数-它可以处理较少的数据，并且还可以返回LowCardinality。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/63/yt/qz/63ytqzwuufiatce0y8wdy4whn5s.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们的全球计划是在任何情况下都实现不低于String的速度，并节省加速度。</font><font style="vertical-align: inherit;">也许有一天我们会用LowCardinality替换String，您将更新ClickHouse，一切将为您更快地工作。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN492850/index.html">并非每个人都想切换到远程工作</a></li>
+<li><a href="../zh-CN492856/index.html">Covid19，从数据科学的角度来看，您和您的社会都是如此。杰里米·霍华德（Jeremy Howard）和瑞秋·托马斯（Rachel Thomas）的翻译文章（fast.ai）</a></li>
+<li><a href="../zh-CN492862/index.html">针对开发人员的15个最佳Oracle APEX性能调优技巧</a></li>
+<li><a href="../zh-CN492864/index.html">我可以砍船吗？</a></li>
+<li><a href="../zh-CN492866/index.html">《无语机器学习》一书</a></li>
+<li><a href="../zh-CN492872/index.html">如何组织远程访问而不遭受黑客攻击</a></li>
+<li><a href="../zh-CN492874/index.html">移动设备的渲染优化</a></li>
+<li><a href="../zh-CN492878/index.html">极客拖鞋：寻求临时关闭办公室的积极态度</a></li>
+<li><a href="../zh-CN492880/index.html">我们应该建造什么智能家居？</a></li>
+<li><a href="../zh-CN492884/index.html">用PHP接收来自youtube广播和Google授权的消息</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

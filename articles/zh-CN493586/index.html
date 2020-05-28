@@ -1,0 +1,301 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐹 🐈 ⚙️ .NET 5的JIT编译器优化 ☠️ 🤾🏽 😅</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="前一段时间，我开始了一段奇妙的旅程，进入了JIT编译器世界，以寻找可以亲身体验并加快速度的地方，因为在主要工作过程中，已积累了少量的LLVM及其优化知识。在本文中，我想分享我在JIT方面的改进列表（在.NET中，它是为纪念某些龙或动漫而被称为RyuJIT的-我没有弄清楚），其中大多数已经掌握并且可以...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>.NET 5的JIT编译器优化</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/493586/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前一段时间，我开始了一段奇妙的旅程，进入了JIT编译器世界，以寻找可以亲身体验并加快速度的地方，因为在主要工作过程中，已积累了少量的LLVM及其优化知识。在本文中，我想分享我在JIT方面的改进列表（在.NET中，它是为纪念某些龙或动漫而被称为RyuJIT的-我没有弄清楚），其中大多数已经掌握并且可以在.NET（Core）中使用5我的优化影响JIT的不同阶段，其可以被示出非常示意性地如下：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/di/ao/qk/diaoqktgwhzremeu8qd8inutrak.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如可从图中可以看出，JIT是与狭窄的单独模块</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的JIT接口</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，通过该对一些事情JIT咨询，例如，是</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有可能</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">将一个班级推向另一个班级。</font><font style="vertical-align: inherit;">JIT将方法编译为Tier1的时间越晚，运行时可以提供的信息越多，例如，可以将</font></font><code>static readonly</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">字段替换为常量，因为 </font><font style="vertical-align: inherit;">该类已经被静态初始化。</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，让我们从列表开始。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃1817</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：模式匹配中的装箱/拆箱优化</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">导入器</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+许多新的C＃功能通常会通过插入</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">box / unbox</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> CIL操作码来</font><b><font style="vertical-align: inherit;">犯错</font></b><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">这是一个非常昂贵的操作，实质上是在堆上分配一个新对象，将值从堆栈中复制到堆栈中，然后最后还加载GC。</font><font style="vertical-align: inherit;">在这种情况下，JIT中已经有许多优化，但是我发现C＃8中缺少模式匹配，例如：</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">int</span> Case1&lt;T&gt;(T o)<font></font>
+{<font></font>
+    <span class="hljs-keyword">if</span> (o <span class="hljs-keyword">is</span> <span class="hljs-keyword">int</span> x)
+        <span class="hljs-keyword">return</span> x;
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">int</span> Case2&lt;T&gt;(T o) =&gt; o <span class="hljs-keyword">is</span> <span class="hljs-keyword">int</span> n ? n : <span class="hljs-number">42</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">int</span> Case3&lt;T&gt;(T o)<font></font>
+{<font></font>
+    <span class="hljs-keyword">return</span> o <span class="hljs-keyword">switch</span><font></font>
+    {<font></font>
+        <span class="hljs-keyword">int</span> n =&gt; n,
+        <span class="hljs-keyword">string</span> str =&gt; str.Length,<font></font>
+        _ =&gt; <span class="hljs-number">0</span><font></font>
+    };<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们看看针对所有三种方法进行优化之前的asm-codegen（例如，用于int专业化）：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/iv/5m/8h/iv5m8hqdrwqazfpztoh_n0o0lho.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在，在进行改进之后：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-t/f7/bx/-tf7bxj9jip9xzpa9nr3ccelv9w.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事实是优化发现了IL代码的模式</font></font><br>
+<br>
+<pre><code class="plaintext hljs">box !!T<font></font>
+isinst Type1<font></font>
+unbox.any Type2</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+导入并获得有关类型的信息后，她能够简单地忽略这些操作码，而无需插入boxing-anboxing。</font><font style="vertical-align: inherit;">顺便说一下，我</font><font style="vertical-align: inherit;">也在Mono中</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实现了</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">相同的优化</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">在下文中，到Pull-Request的链接包含在优化描述的标题中。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃1157</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> typeof（T）.IsValueType⇨是/否</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">导入程序</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在这里，我训练了JIT，以便</font><font style="vertical-align: inherit;">在可能的情况下</font><font style="vertical-align: inherit;">立即用</font><font style="vertical-align: inherit;">常量</font><font style="vertical-align: inherit;">替换</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Type.IsValueType</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">这是一个挑战，它是将来减少全部条件和分支的能力的一个例子，例如：</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">void</span> Foo&lt;T&gt;()<font></font>
+{<font></font>
+    <span class="hljs-keyword">if</span> (!<span class="hljs-keyword">typeof</span>(T).IsValueType)<font></font>
+        Console.WriteLine(<span class="hljs-string">"not a valuetype"</span>);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们看一下</font><font style="vertical-align: inherit;">改进之前</font><font style="vertical-align: inherit;">
+和之后的</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Foo &lt;int&gt;</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">专业化的代码生成：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/oa/28/lc/oa28lcmskvzitsjlpqr5dlh8uv4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">改进之后：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zw/db/n_/zwdbn_ukemjzxf9qbkato_ptblm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如有必要，可以使用其他Type属性进行相同的处理。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃1157</font></font></a> <code>typeof(T1).IsAssignableFrom(typeof(T2)) ⇨ true/false</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">导入器</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+几乎是同一件事-现在，您可以检查通用方法中的层次结构，而不必担心这没有优化，例如：</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">void</span> Foo&lt;T1, T2&gt;()<font></font>
+{<font></font>
+    <span class="hljs-keyword">if</span> (!<span class="hljs-keyword">typeof</span>(T1).IsAssignableFrom(<span class="hljs-keyword">typeof</span>(T2)))<font></font>
+        Console.WriteLine(<span class="hljs-string">"T1 is not assignable from T2"</span>);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同样，它将被常量替换，</font></font><code>true/false</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并且条件可以完全删除。</font><font style="vertical-align: inherit;">当然，在此类优化中，您应始终牢记一些极端情况：System .__ Canon共享泛型，数组，co（ntr）可变性，可为空，COM对象等。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃1378</font></font></a> <code>"Hello".Length ⇨ 5</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">导入器</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+尽管优化过程尽可能的明显和简单，但我不得不花很多精力在JIT-e中实现它。问题是，JIT不了解字符串的内容，他看到了字符串文字（</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GT_CNS_STR</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">），但是对字符串的具体内容一无所知。我必须通过联系VM来帮助他（以扩展前述的JIT-Interface），并且优化本身实际上是</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">几行代码</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。除了显而易见的情况外，还有很多用例，例如：</font></font><b><code>str.IndexOf("foo") + "foo".Length</code></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">对于涉及内联的非显而易见的用例（我提醒您：Roslyn不处理内联，因此这种优化与其他所有方法一样无效），例如：</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">bool</span> <span class="hljs-title">Validate</span>(<span class="hljs-params"><span class="hljs-keyword">string</span> str</span>)</span> =&gt; str.Length &gt; <span class="hljs-number">0</span> &amp;&amp; str.Length &lt;= <span class="hljs-number">100</span>;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">bool</span> <span class="hljs-title">Test</span>(<span class="hljs-params"></span>)</span> =&gt; Validate(<span class="hljs-string">"Hello"</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们看看代码生成的</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">测试</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">验证的</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内联）：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sl/kl/dz/slkldz4tb8stxhrq_bhz7cmqkdm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+添加优化后，现在的代码生成：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/4p/ao/f5/4paof5hshv_gsogtwqsocahc6vu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+即 </font><font style="vertical-align: inherit;">内联方法，用字符串文字替换变量，用真实的字符串长度替换文字中的.Length，折叠常量，删除无效代码。</font><font style="vertical-align: inherit;">顺便说一下，由于JIT现在可以检查字符串的内容，因此为与字符串文字相关的其他优化打开了大门。</font><font style="vertical-align: inherit;">.NET 5.0的第一个预览版的公告中提到了优化本身：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">devblogs.microsoft.com/dotnet/announcing-net-5-0-preview-1 </font></font></a><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在RyuJIT</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">中的</font><b><font style="vertical-align: inherit;">代码质量改进</font></b><font style="vertical-align: inherit;">一节</font><b><font style="vertical-align: inherit;">中</font></b><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃1644：</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">优化绑定检查。</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">边界检查消除</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于很多人来说，每次您通过索引访问数组时，JIT都会为您插入一个检查数组是否超出范围的检查，如果发生这种情况，则抛出异常-这在逻辑上是错误的，您不能读取随机内存，获得一些价值并继续。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">Foo</span>(<span class="hljs-params"><span class="hljs-keyword">int</span>[] array, <span class="hljs-keyword">int</span> index</span>)</span><font></font>
+{<font></font>
+    <span class="hljs-comment">// if ((uint) array.Length &lt;= (uint) index)</span>
+    <span class="hljs-comment">//     throw new IndexOutOfRangeException();</span>
+    <span class="hljs-keyword">return</span> array[index];<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这样的检查很有用，但是会极大地影响性能：首先，它添加了一个比较操作并使代码无分支，其次，它向方法中添加了一个异常调用代码，并带来了所有后果。但是，在许多情况下，如果JIT可以证明自己的索引永远不会超出该范围，或者已经存在其他检查，并且不再需要添加其他内容，则JIT可以删除这些检查-边界（范围）检查消除。我发现了一些他无法应付的情况，并进行了纠正（以后，我计划在此阶段进行更多改进）。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">var</span> item = array[index &amp; mask];</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在这段代码中，我告诉JIT从</font></font><code>&amp; mask</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">本质上将索引限制为一个值</font></font><code>mask</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，即 </font><font style="vertical-align: inherit;">如果JIT知道</font></font><code>mask</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数组</font><font style="vertical-align: inherit;">的值</font><font style="vertical-align: inherit;">和长度，则不能插入绑定检查。</font><font style="vertical-align: inherit;">对于％（＆x &gt;&gt; y）操作也是如此。</font><font style="vertical-align: inherit;">在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">aspnetcore</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">中使用此优化的</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">示例</font></a><font style="vertical-align: inherit;">。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同样，如果我们知道例如数组中有256个或更多的元素，那么如果我们未知的索引器是字节类型的，无论尝试多努力，它都永远不会超出范围。</font><font style="vertical-align: inherit;">公关：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">github.com/dotnet/coreclr/pull/25912</font></font></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃24584：</font></font></a> <code>x / 2 ⇨ x * 0.5</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+此PR的</font><font style="vertical-align: inherit;">Morph </font><font style="vertical-align: inherit;">C，开始了我对JIT优化领域的惊人了解。</font><font style="vertical-align: inherit;">“除”运算比“乘法”运算慢（如果是整数，则通常为一个数量级）。</font><font style="vertical-align: inherit;">适用于仅等于2的幂的常数，例如：</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">float</span> <span class="hljs-title">DivideBy2</span>(<span class="hljs-params"><span class="hljs-keyword">float</span> x</span>)</span> =&gt; x / <span class="hljs-number">2</span>; <span class="hljs-comment">// = x * 0.5; </span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+优化之前</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/df/vo/mf/dfvomfc6foisqpk9uvq8nfihfzy.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+和之后的代码生成：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ij/xk/u5/ijxku5zq0hhxmltazwxgfq1tvss.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果我们将Haswell的这两条指令进行比较，那么一切将变得清晰：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">vdivss (Latency: 10-20,  R.Throughput: 7-14)<font></font>
+vmulss (Latency:     5,  R.Throughput:  0.5)<font></font>
+</code></pre><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">随后将进行优化，这些优化仍处于代码审查阶段，而不是被接受的事实。</font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃31978：</font></font></a> <code>Math.Pow(x, 2) ⇨ x * x</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">导入</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+器这里的一切都很简单：在度数为2的情况下（而不是调用pow（f）），当度数为2时（对1，-1，0也免费），您可以将其扩展为简单的x * x。</font><font style="vertical-align: inherit;">您可以扩展任何其他程度，但是为此，您需要等待.NET中“快速数学”模式的实现，在该模式中出于性能考虑可以忽略IEEE-754规范。</font><font style="vertical-align: inherit;">例：</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">float</span> <span class="hljs-title">Pow2</span>(<span class="hljs-params"><span class="hljs-keyword">float</span> x</span>)</span> =&gt; MathF.Pow(x, <span class="hljs-number">2</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+优化之前</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/1o/7m/zw/1o7mzwatkp3kritfyahj_zjhija.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+和之后的代码生成：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/el/9g/19/el9g19y1rul_r4sej7fx7sixiso.png"><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃33024：</font></font></a> <code>x * 2 ⇨ x + x</code></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">降低</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同样非常简单的微观（纳米）油耗优化，允许您乘以2，而无需将常数加载到寄存器中。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">float</span> <span class="hljs-title">MultiplyBy2</span>(<span class="hljs-params"><span class="hljs-keyword">float</span> x</span>)</span> =&gt; x * <span class="hljs-number">2</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+优化之前的代码生成：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/e7/4s/-r/e74s-rigvhc6eh14gl7ygnbeqva.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+之后：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/d5/wg/ru/d5wgrutrxfvbsccck-hhjdvw37w.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常，该指令的</font></font><code>mul(ss/sd/ps/pd)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">延迟和吞吐量</font><font style="vertical-align: inherit;">与</font><font style="vertical-align: inherit;">相同</font></font><code>add(ss/sd/ps/pd)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，但是需要加载常量“ 2”会稍微减慢工作速度。</font><font style="vertical-align: inherit;">在上面的代码生成示例中，我</font></font><code>vaddss</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在一个寄存器的框架内进行了所有操作。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃32368：</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Array.Length / c（或％s）的优化</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Morph </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+碰巧的是，Array的Length字段是一个有符号的类型，并且用一个常数进行除法和余数可以更有效地执行无符号类型（而不仅仅是2的幂），只需比较一下此代码源：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/7u/cf/0a/7ucf0a2z26ew1ndszgycipb4dxw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我的PR只是提醒JIT </font></font><code>Array.Length</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">尽管很重要，但实际上，数组的长度NEVER（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">除非您是无政府主义者</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）可以小于零，这意味着您可以将其视为无符号数，并进行一些优化（例如uint）。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PR </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃32716：</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">优化无</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">分支</font></a><font style="vertical-align: inherit;">代码中的简单比较</font></font></h3><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">阶段：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">流程分析</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是另一类优化，使用基本块而不是其中的表达式进行操作。</font><font style="vertical-align: inherit;">这里的JIT有点保守，还有改进的空间，例如在可能的情况下插入cmove。</font><font style="vertical-align: inherit;">我从这种情况的简单优化开始：</font></font><br>
+<br>
+<pre><code class="cs hljs">x = condition ? A : B;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例如，如果A和B是常量，并且它们之间的差是1，</font></font><code>condition ? 1 : 2</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">那么我们知道比较操作本身返回0或1，就可以用add代替jump。</font><font style="vertical-align: inherit;">就RyuJIT而言，它看起来像这样：我</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/am/y8/rv/amy8rv0tjz3vxzelpbz1lhgqr6a.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+建议看</font><font style="vertical-align: inherit;">一下PR本身</font><font style="vertical-align: inherit;">的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">描述</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，希望在那里有清楚的描述。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并非所有优化都同样有用。</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+优化需要相当高的费用：</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+*增加=支持和阅读的现有代码的复杂性</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+*潜在的错误：测试编译器的优化异常困难，容易遗漏某些东西并从用户那里获得某种错误。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+*编译缓慢</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+*增加JIT Binar的大小</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+正如您已经了解的那样，并非所有优化的思想和原型都被接受，因此有必要证明它们具有生命权。在.NET中证明这一点的一种公认方法是运行jit-utils实用程序，该实用程序将AOT编译一组库（所有BCL和corelib），并在优化前后比较所有方法的汇编代码，</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这就是此报告</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">寻找优化的方式</font></font><code>"str".Length</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">除了该报告之外，还有一些人（例如</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">jkotas</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）一眼就能评估其实用性并从他们的经验高度了解所有内容，并了解.NET中的哪些地方可能成为瓶颈，哪些没有。</font><font style="vertical-align: inherit;">还有一件事：不要用“没人写”这样的参数来判断优化，“最好在Roslyn中显示警告会更好” –您永远不知道代码在JIT内联后会如何处理并填充常量。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN493574/index.html">用于过滤浏览器流量的本地代理</a></li>
+<li><a href="../zh-CN493578/index.html">上周第407期（2020年3月16日至22日）来自前端世界的新鲜材料摘要</a></li>
+<li><a href="../zh-CN493580/index.html">学习部署微服务。第4部分。詹金斯</a></li>
+<li><a href="../zh-CN493582/index.html">人工夏季：针对冠状病毒的远紫外线</a></li>
+<li><a href="../zh-CN493584/index.html">来自世界开放地图503号的新闻（03.03.2020-09.03.2020）</a></li>
+<li><a href="../zh-CN493590/index.html">为什么Cisco AnyConnect不仅是VPN客户端</a></li>
+<li><a href="../zh-CN493594/index.html">PHP文摘第176号（2020年3月11日至23日）</a></li>
+<li><a href="../zh-CN493596/index.html">那个不急的人</a></li>
+<li><a href="../zh-CN493598/index.html">隐藏电话号码的一部分</a></li>
+<li><a href="../zh-CN493604/index.html">3月23日至29日在莫斯科举行的数字活动</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

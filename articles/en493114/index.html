@@ -1,0 +1,290 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🗜️ 🍃 👰🏾 How Data Engineer Watched Data 🙌🏼 ♒️ 🤳🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello, Habr! I want to tell you how we wrote and implemented a service for monitoring data quality. We have many sources of data: data from financial ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>How Data Engineer Watched Data</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/exness/blog/493114/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Hello, Habr! I want to tell you how we wrote and implemented a service for monitoring data quality. We have many sources of data: data from financial markets, trading activity of our customers, quotes and much more. All this generates billions of records per day in our processes. The completeness and consistency of trade data is a critical component of Exness's business. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If you are close to problems of data quality assurance and are interested in how we solved this problem at home, then welcome to cat.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/tr/ye/yp/tryeypa06o0_z7izvecle0z22_k.png"><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+My name is Dmitry, I work in a team that stores both raw data and the transformation, aggregation and provision of all processed company data to all departments of the company. </font><font style="vertical-align: inherit;">Our data is consumed by many teams within the company, such as Business Intelligence, Anti-Fraud, Finance, and we also provide them to our b2b partners. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Working with data is a responsible and difficult mission, because stopping one ETL process can lead to paralysis of part of Exness's business.&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To solve ETL problems, we use a variety of tools: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pf/09/pb/pf09pb0rhtvzcdvm-njwaqytwhq.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Challenges that we face every day:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tens of millions of transaction records daily;</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Billion market entries daily (quotes, etc.);</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The heterogeneity of data sources (such as external sources of Market Data, different trading platforms);</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Providing exactly once semantics for important data (financial transactions);</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ensuring the integrity and completeness of the data;</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Providing guarantees that for the stipulated time the transaction will be added to all the necessary tables and aggregates.</font></font><br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In order to provide such guarantees, it was necessary to learn how to track, measure and proactively respond to deviations in the quality of the data. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Given the complexity of our data collection and processing processes, given the high speed of development and modification of ETL processes, it becomes necessary to monitor the quality of data already at the final point. </font><font style="vertical-align: inherit;">We usually have a Clickhouse or PostgreSQL database. </font><font style="vertical-align: inherit;">Such metrics will tell us how quickly our processes work out:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">server</span>,&nbsp;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">avg</span>(<span class="hljs-keyword">updated</span> - close_time)&nbsp;
+<span class="hljs-keyword">FROM</span> &nbsp; trades&nbsp;
+<span class="hljs-keyword">WHERE</span>&nbsp; close_time &gt; subtractHours(<span class="hljs-keyword">Now</span>(), <span class="hljs-number">2</span>)&nbsp;
+<span class="hljs-keyword">GROUP</span>&nbsp; <span class="hljs-keyword">BY</span> <span class="hljs-keyword">server</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+They will help to find duplicates in the data (there are no constraint unique in Clickhouse):</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">SUM</span>(<span class="hljs-keyword">count</span>) <span class="hljs-keyword">FROM</span> (
+&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">SELECT</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">COUNT</span>(*) <span class="hljs-keyword">AS</span> <span class="hljs-keyword">count</span>
+&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">FROM</span> trades
+&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">GROUP</span> <span class="hljs-keyword">BY</span> order_id
+&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">HAVING</span> <span class="hljs-keyword">count</span> &gt; <span class="hljs-number">1</span><font></font>
+)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can come up with a ton of queries (many of which we already use) that help monitor the quality of the data: comparing the number of rows in the source table and the destination table, the time of the last insertion in the table, comparing the contents of two queries and much more. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The metrics are symptoms. </font><font style="vertical-align: inherit;">By themselves, they do not indicate the cause of the problem, but allow us to show that there is a problem. </font><font style="vertical-align: inherit;">This will be a trigger for the engineer to pay attention to the problem and identify the root cause. </font><font style="vertical-align: inherit;">Analogy: if a person has a temperature, then something has broken in his body. </font><font style="vertical-align: inherit;">Temperature is a sufficient symptom to begin to understand and find the cause of the breakdown. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We looked for a ready-made solution that could collect such symptom metrics for us. </font><font style="vertical-align: inherit;">Our requirements:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Support for various data sources (databases, queues, http-requests);</font></font><br>
+</li>
+<li>  ;&nbsp;<br>
+</li>
+<li>   ( , );<br>
+</li>
+<li>   .<br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the beginning of the article, I listed the technologies that we use in ETL. As you can see, we are supporters of open-source solutions! One example: we use the column-oriented Clickhouse database as the main data warehouse. Our team made changes to the Clickhouse source code several times (mainly fixing bugs). As tools for working with metrics and time series, we use: ecosystem influxdb, prometheus and victoria metrics, zabbix. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To our surprise, it turned out that there is no ready-made and convenient tool for monitoring the quality of data that fits into the technologies we have chosen. Or were we looking badly? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yes, zabbix has the ability to run </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Custom Scripts</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">telegraf</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">You can teach how to run SQL queries and turn their results into metrics. </font><font style="vertical-align: inherit;">But this required serious finishing, and did not work out of the box the way we wanted. </font><font style="vertical-align: inherit;">Therefore, we wrote our own service (daemon) to monitor data quality. </font><font style="vertical-align: inherit;">Meet nerve!</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nerve features</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ideologically, nerve can be described with the following phrase: </font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">This is a service that runs scheduled, heterogeneous, customized tasks for collecting numerical values, and presents the results as metrics for different metric collection systems.</font></font><br>
+</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Key features of the program:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Support for different types of tasks: Query, CompareQueries, etc .;</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The ability to write your types of tasks in Python as a runtime plugin;</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Work with different types of resources: Clickhouse, Postgres, etc .;</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Model data metrics, as in </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">prometheus</font></font></a><br>
+<code>metric_name{label="value"} 123.3</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font><br>
+</li>
+<li>    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=">pull</a>    prometheus;<br>
+</li>
+<li>  :   crontab-style;<br>
+</li>
+<li>WEB UI    ;<br>
+</li>
+<li>       yaml ;<br>
+</li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=">Twelve-Factor App</a>.&nbsp;<br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Task and Resource are the basic entities for configuring and working with nerve. Task - a typed periodic action, as a result of which we obtain metrics. Resource - an object that contains configuration and logic specific for working with a specific data source. Let's see how nerve works with an example. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/qn/hc/lj/qnhclj6umzphg17yoxniaqsayaa.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We have three tasks. Two of them are of type Query - SQL query. One is of type Garcon - this is a customized task that goes to one of our services. The frequency of the task can be set by a time period. For example, 10m means once every ten minutes. Or crontab-style "* / 5 * * * *" - every fifth full minute. Tasks TaskA and TaskC are associated with the DbCon1 resource, which is of type Clickhouse. Let's see how the config will look:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">tasks:<font></font>
+&nbsp;&nbsp;- name: TaskA<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;type: Query<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;resources: DbCon1<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;period: 1m<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;config:<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;query: SELECT COUNT(*) FROM ticks<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;gauge: metric_count{table="ticks"}<font></font>
+<font></font>
+&nbsp;&nbsp;- name: TaskB<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;type: Garcon<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;period: 10m<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;config:<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;url: "http://hostname:9003/api/v1/orders/backups/"<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;gauge: backup_ago<font></font>
+<font></font>
+&nbsp;&nbsp;- name: TaskC<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;type: Query<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;period: "*/5 * * * *"<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;resources: DbCon1<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;config:<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;query: SELECT now() - toDateTime(time_msc/1000)<font></font>
+&nbsp;&nbsp;&nbsp;FROM deals WHERE trade_server= 'Real'<font></font>
+&nbsp;&nbsp;&nbsp;ORDER BY deal DESC LIMIT 1<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;gauge: orders_lag<font></font>
+<font></font>
+resources:<font></font>
+&nbsp;&nbsp;- name: DbCon1<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;type: Clickhouse<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;config:<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;host: clickhouse.env<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;port: 9000<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;user: readonly<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;password: "***"<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;database: data<font></font>
+<font></font>
+results:<font></font>
+&nbsp;&nbsp;common_labels:<font></font>
+    env="prod"<font></font>
+task_types_paths:<font></font>
+&nbsp;&nbsp;- "./tasks"<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The "./tasks" path is the path to customized tasks. In particular, the Garcon task type is defined there. In this article I will omit the moment of creating my task types. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result of launching the nerve service with such a config, in WEB UI it will be possible to monitor how tasks are fulfilled: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ge/8c/vu/ge8cvutjypzxx5xfs84pij9bohc.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And at / metrics metrics for collection will be available: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sy/1_/y3/sy1_y3l6boqe3kppdb07wsdnoei.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Query task type most often used in our team. Therefore, we have expanded its capabilities for working with GROUP BY and templates. These mechanisms make it possible to collect a lot of information about the data with one request at a time: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/xn/hk/bh/xnhkbhjo7eceirg5rhzy73wqm4q.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The TradesLag task will collect the maximum delay for a closed order to enter the trades table every five minutes, taking into account only orders closed in the last two hours.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A few words about the implementation. </font><font style="vertical-align: inherit;">Nerve is a multi-threaded python3 ~ 3k LoC application that is easy to run through Docker, complementing it with a task configuration.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What happened</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+With nerve, we got what we wanted. </font><font style="vertical-align: inherit;">At the moment, in addition to our team, other teams in Exness have shown interest in him. </font><font style="vertical-align: inherit;">It spins about 40 tasks with a frequency of 30 seconds to a day. </font><font style="vertical-align: inherit;">Nerve collects about 500 metrics about our data. </font><font style="vertical-align: inherit;">Adding new metrics is a matter of 5-10 minutes. </font><font style="vertical-align: inherit;">The full flow of work with metrics looks like this: nerve → prometheus → Victoria Metrics → Grafana dashboards → Alerts in PagerDuty. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+With nerve, we also started collecting business metrics: we periodically select raw events in the trading system to evaluate trading conditions.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thank you, Khabrovsk citizen, for reading my article to the end. </font><font style="vertical-align: inherit;">I foresee your question: where is the link to github? </font><font style="vertical-align: inherit;">The answer is this: we have not yet posted nerve in Open Source. </font><font style="vertical-align: inherit;">This requires additional work on our part to improve documentation and finish a couple of features. </font><font style="vertical-align: inherit;">If this article is well received by the community, this will give us an additional incentive to share our development with you! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Good to all!</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en493102/index.html">Global Automation Trends: RPA Development</a></li>
+<li><a href="../en493106/index.html">How much is new in the Devil's Dozen?</a></li>
+<li><a href="../en493108/index.html">Cloudflare selects AMD processors for tenth-generation edge servers</a></li>
+<li><a href="../en493110/index.html">How to delegate in remote work - a guide for team lead and more</a></li>
+<li><a href="../en493112/index.html">How to start a new business in 6 months instead of 3 years</a></li>
+<li><a href="../en493116/index.html">“More interactivity!” or How was TeamLead Conf 2020</a></li>
+<li><a href="../en493118/index.html">Overview of Memory Tagging Extension (Armv8.5-A)</a></li>
+<li><a href="../en493122/index.html">Banzai Games office: Japan in the center of Moscow</a></li>
+<li><a href="../en493124/index.html">Do-it-yourself Bare-Metal Provisioning, or Automatic server preparation from scratch</a></li>
+<li><a href="../en493126/index.html">Antipatterns of event-oriented architecture</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

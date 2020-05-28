@@ -1,0 +1,501 @@
+<!doctype html>
+<html class="no-js" lang="pt">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤚🏻 🤷🏽 🙍🏾 Balanceamento de carga e dimensionamento de conexões de longa duração do Kubernetes 🎎 🐜 🐱</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Este artigo ajudará você a entender como o balanceamento de carga no Kubernetes funciona, o que acontece ao dimensionar conexões de longa duração e po...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Balanceamento de carga e dimensionamento de conexões de longa duração do Kubernetes</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/493820/"><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/445/275/8af/4452758afb53f8b3161ace47d8c6ea49.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Este artigo ajudará você a entender como o balanceamento de carga no Kubernetes funciona, o que acontece ao dimensionar conexões de longa duração e por que você deve considerar o balanceamento no lado do cliente se você usa HTTP / 2, gRPC, RSockets, AMQP ou outros protocolos de longa duração.&nbsp;</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Um pouco sobre como o tráfego é redistribuído no Kubernetes&nbsp;</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O Kubernetes fornece duas abstrações convenientes para a implantação de aplicativos: Serviços e Implantações. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As implantações descrevem como e quantas cópias do seu aplicativo devem estar em execução a qualquer momento. </font><font style="vertical-align: inherit;">Cada aplicativo é implantado como em (Pod) e recebe um endereço IP. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Os serviços de recursos são semelhantes a um balanceador de carga. </font><font style="vertical-align: inherit;">Eles são projetados para distribuir o tráfego entre várias lareiras. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Vamos ver como fica</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">No diagrama abaixo, você vê três instâncias do mesmo aplicativo e um balanceador de carga:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/80f/58d/4f9/80f58d4f9cd1e34a88aa7b8a33c0a82f.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O balanceador de carga é chamado de Serviço, recebe um endereço IP. </font><font style="vertical-align: inherit;">Qualquer solicitação recebida é redirecionada para um dos pods:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/63e/7ef/b73/63e7efb73e75ce67fcd47f74b03aa04d.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O script de implantação determina o número de instâncias do aplicativo. </font><font style="vertical-align: inherit;">Você quase nunca precisará implantar diretamente em:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a96/121/8c3/a961218c382f2343f72bdcf639f20222.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Cada pod possui um endereço IP próprio:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/3c0/699/ef3/3c0699ef3d5a60d5b08f7afdfdedac29.png"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+É útil considerar os serviços como um conjunto de endereços IP. </font><font style="vertical-align: inherit;">Cada vez que você acessa o serviço, um dos endereços IP é selecionado na lista e usado como o endereço de destino. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Isto é o seguinte</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Há uma solicitação de ondulação 10.96.45.152 para o serviço:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/60a/52c/539/60a52c539ed6d1791cbafa794db2c4a9.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O serviço seleciona um dos três endereços de pod como o destino:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/2a8/ac4/e23/2a8ac4e23e79da06ee64c01e071b9089.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O tráfego é redirecionado para um pod específico:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/7ec/f2c/38e/7ecf2c38ef0af62d07d169c120ca5def.png"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se seu aplicativo consistir em um front-end e um back-end, você terá um serviço e uma implantação para cada um. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quando o front-end atende à solicitação ao back-end, ele não precisa saber exatamente quantos heaps o back-end serve: pode haver um, dez ou cem. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Além disso, o frontend não sabe nada sobre os endereços dos lares que atendem ao backend. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quando o front-end faz uma solicitação ao back-end, ele usa o endereço IP do serviço de back-end, que não muda. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Aqui está como fica</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Em 1 solicita o componente interno de back-end. </font><font style="vertical-align: inherit;">Em vez de escolher um específico para o back-end, ele executa uma solicitação de serviço:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/1ff/50c/a99/1ff50ca9970854efe8af15ac2a7d1791.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O serviço seleciona um dos pods de back-end como o endereço de destino:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/530/dd9/9ad/530dd99add6451742a891d69ef06d03b.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O tráfego vai da lareira 1 à lareira 5 selecionada pelo serviço:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/2ea/bdb/808/2eabdb8086fefc2c48d171f3c0e2c87e.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Em 1, ele não sabe exatamente quantos lares menores de 5 estão ocultos atrás do serviço:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/665/f5e/edc/665f5eedc580d007fd9db6ced40f86d1.png"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mas como exatamente o serviço distribui solicitações? </font><font style="vertical-align: inherit;">O balanceamento de rodízio parece ser usado? </font><font style="vertical-align: inherit;">Vamos acertar.&nbsp;</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Balanceamento nos serviços Kubernetes</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Os serviços Kubernetes não existem. Não há processo para o serviço ao qual é atribuído um endereço IP e uma porta. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Você pode verificar isso acessando qualquer nó no cluster e executando o comando netstat -ntlp. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Você nem consegue encontrar o endereço IP alocado ao serviço. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O endereço IP do serviço está localizado na camada de controle, no controlador e registrado no banco de dados - etcd. O mesmo endereço é usado por outro componente - kube-proxy. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O proxy Kube recebe uma lista de endereços IP para todos os serviços e forma um conjunto de regras de tabelas de ip em cada nó do cluster. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Essas regras dizem: "Se virmos o endereço IP do serviço, precisamos modificar o endereço de destino da solicitação e enviá-lo para um dos pods".</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O endereço IP do serviço é usado apenas como ponto de entrada e não é servido por nenhum processo que esteja ouvindo esse endereço IP e porta. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Vamos olhar para isso</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .&nbsp;</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Considere um cluster de três nós. </font><font style="vertical-align: inherit;">Existem pods em cada nó:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/605/ed6/e82/605ed6e82d24139c7122fd0886fb3f5f.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Lareiras tricotadas em bege fazem parte do serviço. </font><font style="vertical-align: inherit;">Como o serviço não existe como um processo, fica acinzentado:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/175/57b/919/17557b91988036bf15bdb5fd02b25c44.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O primeiro solicita o serviço e deve recair em um dos lares relacionados:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/13d/49c/2df/13d49c2dff1c5a15bfced3347ad4bc6c.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mas o serviço não existe, não há processo. </font><font style="vertical-align: inherit;">Como funciona?</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a7e/362/c43/a7e362c43d31ac5ba0368cbbfceae398.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Antes de a solicitação sair do nó, ela passa pelas regras do iptables:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/29d/eea/0ef/29deea0efafef803b87c66a7c17cc9cc.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">As regras do iptables sabem que não há serviço e substituem seu endereço IP por um dos endereços IP dos pods associados a este serviço:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a4e/ec6/0ad/a4eec60ad28fbf16b085d9b8697dce81.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A solicitação recebe um endereço IP válido como o endereço de destino e é normalmente processada:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/653/ef7/4b8/653ef74b8f34567652c2e0a00c89d9a7.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Dependendo da topologia da rede, a solicitação finalmente chega ao coração:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/696/c59/873/696c5987341d20780825ff2a4f6f7d12.png"></div></li>
+</ol><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O iptables é capaz de equilibrar a carga?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Não, o iptables é usado para filtragem e não foi projetado para balanceamento. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No entanto, é possível escrever um conjunto de regras que funcionam como um </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pseudo-balanceador</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+E é exatamente isso que o Kubernetes faz. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se você tiver três pods, o kube-proxy escreverá as seguintes regras:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Escolha o primeiro com uma probabilidade de 33%, caso contrário, vá para a próxima regra.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Escolha o segundo com uma probabilidade de 50%, caso contrário, vá para a próxima regra.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Escolha o terceiro em.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Esse sistema leva ao fato de que cada sub é selecionado com uma probabilidade de 33%.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/08e/d59/2bc/08ed592bc03dd1f9740f29985451aaca.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+E não há garantia de que menos de 2 seja selecionado a seguir após o arquivo 1. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nota</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : iptables usa um módulo estatístico de distribuição aleatória. </font><font style="vertical-align: inherit;">Assim, o algoritmo de balanceamento é baseado na seleção aleatória. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Agora que você entende como os serviços funcionam, vejamos cenários de trabalho mais interessantes.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">As conexões de longa duração no Kubernetes não são dimensionadas por padrão</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Cada solicitação HTTP do front-end ao back-end é atendida por uma conexão TCP separada, que abre e fecha. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se o front-end enviar 100 solicitações por segundo para o back-end, 100 conexões TCP diferentes serão abertas e fechadas. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Você pode reduzir o tempo de processamento da solicitação e reduzir a carga se abrir uma conexão TCP e usá-la para todas as solicitações HTTP subsequentes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O protocolo HTTP contém um recurso chamado HTTP keep-alive ou reutilização da conexão. Nesse caso, uma conexão TCP é usada para enviar e receber muitos pedidos e respostas HTTP:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a65/cef/c9f/a65cefc9f558265089c48cdf96a1d049.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Esse recurso não está ativado por padrão: o servidor e o cliente devem ser configurados de acordo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A instalação em si é simples e acessível para a maioria das linguagens e ambientes de programação. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Aqui estão alguns links para exemplos em diferentes idiomas:</font></font><br>
+<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=https://medium.com/%40onufrienkos/keep-alive-connection-on-inter-service-"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Manter vivo no Node.js</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=https://www.baeldung.com/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Manter vivo na bota de mola</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=https://blog.insightdatascience.com/learning-about-the-"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Manter vivo em python</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=https://docs.microsoft.com/en-us/dotnet/api/system.net."><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Manter vivo no .NET</font></font></a></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O que acontece se usarmos o keep-alive no Kubernetes? </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Vamos supor que o suporte de front-end e back-end se mantenha ativo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Temos uma cópia do front-end e três cópias do back-end. O front-end faz a primeira solicitação e abre uma conexão TCP com o back-end. A solicitação chega ao serviço, um dos pods de back-end é selecionado como o endereço de destino. Ele envia uma resposta para o back-end e o front-end a recebe. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Diferente da situação usual, quando a conexão TCP é fechada após o recebimento da resposta, ela é mantida aberta para as seguintes solicitações HTTP. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O que acontece se o front-end envia mais solicitações de back-end? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para encaminhar essas solicitações, uma conexão TCP aberta será usada, todas as solicitações serão enviadas para a mesma sob o back-end, onde a primeira solicitação foi recebida.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O iptables não deve redistribuir o tráfego? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Não neste caso. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quando uma conexão TCP é criada, ela segue as regras do iptables, que selecionam uma específica para o back-end para onde o tráfego irá. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como todos os pedidos a seguir passam por uma conexão TCP já aberta, as regras do iptables não são mais chamadas. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Vamos ver como fica</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O primeiro sub envia uma solicitação ao serviço:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/0d1/235/11b/0d123511bd0e4e5d3806fdd7917e0bd7.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Você já sabe o que vai acontecer a seguir. </font><font style="vertical-align: inherit;">O serviço não existe, mas existem regras do iptables que manipularão a solicitação:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/0d1/235/11b/0d123511bd0e4e5d3806fdd7917e0bd7.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Um dos pods de back-end será selecionado como o endereço de destino:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/9ae/5c0/e5b/9ae5c0e5bd3478f20d1546951a298dfd.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A solicitação chega à lareira. </font><font style="vertical-align: inherit;">Nesse ponto, uma conexão TCP permanente entre os dois pods será estabelecida:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/b23/154/129/b23154129408fd401651880d3b94d816.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Qualquer próxima solicitação do primeiro pod passará por uma conexão já estabelecida:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/f90/e1c/232/f90e1c232dbc399d39aaff47045b9aa8.gif"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como resultado, você obteve uma resposta mais rápida e maior largura de banda, mas perdeu a capacidade de dimensionar o back-end. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mesmo se você tiver dois pods no back-end, com uma conexão constante, o tráfego sempre será direcionado para um deles. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Isso pode ser corrigido? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como o Kubernetes não sabe como equilibrar conexões persistentes, essa tarefa é de sua responsabilidade. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Serviços são um conjunto de endereços IP e portas chamados de terminais. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Seu aplicativo pode obter uma lista de pontos de extremidade do serviço e decidir como distribuir solicitações entre eles. Você pode abrir uma conexão persistente para cada lareira e equilibrar solicitações entre essas conexões usando round-robin. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ou aplique </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">algoritmos de balanceamento</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> mais </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;">sofisticados</font></a><font style="vertical-align: inherit;"> .</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O código do lado do cliente responsável pelo balanceamento deve seguir esta lógica:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Obtenha a lista de pontos de extremidade do serviço.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Para cada nó de extremidade, abra uma conexão persistente.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Quando você precisar fazer uma solicitação, use uma das conexões abertas.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Atualize regularmente a lista de terminais, crie novos ou feche as conexões persistentes antigas, se a lista mudar.</font></font></li>
+</ol><br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Aqui está como será</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Em vez de enviar a primeira solicitação para o serviço, você pode equilibrar as solicitações no lado do cliente:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/98f/91a/0c9/98f91a0c9ecae76bd8f286ba3a282ff1.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Você precisa escrever um código que pergunte quais pods fazem parte do serviço:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/040/203/cb5/040203cb52d6b22bb8179a6870d2485f.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Assim que você receber a lista, salve-a no lado do cliente e use-a para conectar-se aos pods:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/4e5/741/3e7/4e57413e7b01b017cf57fab312b28089.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Você é responsável pelo algoritmo de balanceamento de carga:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/8d9/bc6/7ad/8d9bc67ad511790b477c8509c91fffb0.gif"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Agora, a pergunta é: esse problema se aplica apenas ao HTTP keep-alive?</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Balanceamento de carga no lado do cliente</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+HTTP não é o único protocolo que pode usar conexões TCP persistentes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se seu aplicativo usar um banco de dados, a conexão TCP não abrirá toda vez que você precisar executar uma solicitação ou obter um documento no banco de dados.&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em vez disso, uma conexão TCP permanente com o banco de dados é aberta e usada. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se o seu banco de dados estiver implantado no Kubernetes e o acesso for fornecido como um serviço, você encontrará os mesmos problemas descritos na seção anterior. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Uma réplica do banco de dados será carregada mais que o restante. </font><font style="vertical-align: inherit;">O Kube-proxy e o Kubernetes não ajudarão a equilibrar as conexões. </font><font style="vertical-align: inherit;">Você deve cuidar de equilibrar as consultas no seu banco de dados.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Dependendo da biblioteca que você usa para se conectar ao banco de dados, você pode ter várias opções para resolver esse problema. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A seguir, é apresentado um exemplo de acesso a um cluster de banco de dados MySQL no Node.js:</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">var</span> mysql = <span class="hljs-built_in">require</span>(<span class="hljs-string">'mysql'</span>);
+<span class="hljs-keyword">var</span> poolCluster = mysql.createPoolCluster();<font></font>
+<font></font>
+<span class="hljs-keyword">var</span> endpoints = <span class="hljs-comment">/* retrieve endpoints from the Service */</span><font></font>
+<font></font>
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">var</span> [index, endpoint] <span class="hljs-keyword">of</span> endpoints) {<font></font>
+&nbsp; poolCluster.add(<span class="hljs-string">`mysql-replica-<span class="hljs-subst">${index}</span>`</span>, endpoint);<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-comment">// Make queries to the clustered MySQL database</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Existem muitos outros protocolos que usam conexões TCP persistentes:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WebSockets e WebSockets protegidos</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">HTTP / 2</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">gRPC</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RSockets</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AMQP</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Você já deve estar familiarizado com a maioria desses protocolos. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mas se esses protocolos são tão populares, por que não existe uma solução de balanceamento padronizada? Por que é necessária uma alteração na lógica do cliente? Existe uma solução nativa do Kubernetes? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O proxy e o iptables do Kube são projetados para fechar a maioria dos cenários de implantação padrão do Kubernetes. Isto é por conveniência. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se você usa um serviço da web que fornece uma API REST, está com sorte - nesse caso, conexões TCP permanentes não são usadas, você pode usar qualquer serviço Kubernetes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Porém, assim que você começar a usar conexões TCP persistentes, terá que descobrir como distribuir uniformemente a carga nos back-end. O Kubernetes não contém soluções prontas para este caso.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No entanto, é claro, existem opções que podem ajudar.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Balanceamento de conexões de longa duração em Kubernetes</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O Kubernetes possui quatro tipos de serviços:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Clusterip</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NodePort</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Balanceador de carga</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sem cabeça</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Os três primeiros serviços são baseados no endereço IP virtual, usado pelo kube-proxy para criar regras do iptables. </font><font style="vertical-align: inherit;">Mas a base fundamental de todos os serviços é um serviço do tipo sem cabeça. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nenhum endereço IP está associado ao serviço decapitado e fornece apenas um mecanismo para obter uma lista de endereços IP e portas das lareiras associadas (pontos de extremidade). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Todos os serviços são baseados no serviço sem cabeça. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O serviço ClusterIP é um serviço decapitado com algumas adições:&nbsp;</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A camada de gerenciamento atribui a ele um endereço IP.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O Kube-proxy forma as regras necessárias do iptables.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Portanto, você pode ignorar o kube-proxy e usar diretamente a lista de pontos de extremidade recebidos do serviço sem cabeçalho para equilibrar a carga em seu aplicativo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mas como adicionar lógica semelhante a todos os aplicativos implantados em um cluster? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se seu aplicativo já estiver implantado, essa tarefa poderá parecer impossível. </font><font style="vertical-align: inherit;">No entanto, existe uma alternativa.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O Service Mesh o ajudará</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Você provavelmente já percebeu que a estratégia de balanceamento de carga do lado do cliente é bastante padrão. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quando o aplicativo é iniciado, ele:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Obtém uma lista de endereços IP do serviço.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Abre e mantém um conjunto de conexões.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Atualiza periodicamente o pool, adicionando ou removendo pontos de extremidade.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Assim que o aplicativo deseja fazer uma solicitação, ele:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Seleciona uma conexão disponível usando algum tipo de lógica (por exemplo, round-robin).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Atende à solicitação.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Essas etapas funcionam para WebSockets, gRPC e AMQP. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Você pode separar essa lógica em uma biblioteca separada e usá-la em seus aplicativos. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No entanto, grades de serviço como Istio ou Linkerd podem ser usadas. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O Service Mesh complementa seu aplicativo com um processo que:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pesquisa automaticamente endereços IP de serviços.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Verifica conexões como WebSockets e gRPC.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Equilibra solicitações usando o protocolo correto.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O Service Mesh ajuda a gerenciar o tráfego dentro do cluster, mas consome bastante recursos. </font><font style="vertical-align: inherit;">Outras opções estão usando bibliotecas de terceiros, como o Netflix Ribbon, ou proxies programáveis, como o Envoy.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O que acontece se você ignorar problemas de balanceamento?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Você não pode usar o balanceamento de carga e não notar nenhuma alteração. Vejamos alguns cenários de trabalho. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se você tem mais clientes que servidores, esse não é um problema tão grande. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suponha que haja cinco clientes que se conectem a dois servidores. Mesmo se não houver balanceamento, os dois servidores serão usados:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/3eb/2a3/ebf/3eb2a3ebfd09862d4200744170daec7e.gif"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As conexões podem ser distribuídas de maneira desigual: talvez quatro clientes estejam conectados ao mesmo servidor, mas há uma boa chance de os dois servidores serem usados. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O que é mais problemático é o cenário oposto. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se você tiver menos clientes e mais servidores, seus recursos poderão não ser utilizados o suficiente e um gargalo em potencial aparecerá. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suponha que haja dois clientes e cinco servidores. </font><font style="vertical-align: inherit;">Na melhor das hipóteses, haverá duas conexões permanentes com dois em cada cinco servidores. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Outros servidores ficarão ociosos:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/ee5/0d2/eaf/ee50d2eaf1dbefd5933dd9ec5221bd58.gif"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se esses dois servidores não puderem processar o processamento de solicitações do cliente, a escala horizontal não ajudará.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusão</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Os serviços Kubernetes foram projetados para funcionar na maioria dos cenários de aplicativos Web padrão. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No entanto, assim que você começa a trabalhar com protocolos de aplicativos que usam conexões TCP persistentes, como bancos de dados, gRPC ou WebSockets, os serviços não são mais adequados. </font><font style="vertical-align: inherit;">O Kubernetes não fornece mecanismos internos para balancear conexões TCP persistentes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Isso significa que você deve escrever aplicativos com a possibilidade de balancear no lado do cliente. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tradução preparado por uma equipe </font></font></i><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes AAS a partir de Mail.ru</font></font></i></a><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font></i><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O que mais se pode ler sobre o tópico</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<ol>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Três níveis de dimensionamento automático no Kubernetes e como usá-los efetivamente</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .&nbsp;</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes no espírito de pirataria com um modelo de implementação</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=">   Kubernetes  </a>.</li>
+</ol></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt493808/index.html">Linearizando código assíncrono com corutin</a></li>
+<li><a href="../pt493810/index.html">Cinco anos de intenso desenvolvimento do mercado para reconhecimento de documentos</a></li>
+<li><a href="../pt493814/index.html">Como conduzimos entrevistas em Barcelona</a></li>
+<li><a href="../pt493816/index.html">Guia Git Número da peça 1: tudo o que você precisa saber sobre o diretório .git</a></li>
+<li><a href="../pt493818/index.html">Guia Git Número da peça 2: a regra de ouro e outros princípios básicos de rebase</a></li>
+<li><a href="../pt493822/index.html">Problemas e recursos da implementação UEFI em várias plataformas</a></li>
+<li><a href="../pt493826/index.html">Dividir e conquistar: melhorar a eletrólise da água</a></li>
+<li><a href="../pt493828/index.html">Como a interface conta histórias em videogames</a></li>
+<li><a href="../pt493830/index.html">Quais perguntas são feitas pelo desenvolvedor Junior iOS nas primeiras entrevistas</a></li>
+<li><a href="../pt493832/index.html">Painel de distribuição do Coronavirus COVID-19 (React + Chart.js + BootstrapTable)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

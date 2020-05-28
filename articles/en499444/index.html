@@ -1,0 +1,378 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⏬ 🔮 🔕 Postgres: bloat, pg_repack and deferred constraints 👨🏻‍🌾 👜 👨🏻‍💼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The effect of bloating tables and indexes (bloat) is widely known and is present not only in Postgres. There are ways to deal with it “out of the box”...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Postgres: bloat, pg_repack and deferred constraints</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/miro/blog/499444/"><img src="https://habrastorage.org/webt/vf/eu/y5/vfeuy53s9e1md_jhdwxbkkmr-8e.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The effect of bloating tables and indexes (bloat) is widely known and is present not only in Postgres. </font><font style="vertical-align: inherit;">There are ways to deal with it “out of the box” like VACUUM FULL or CLUSTER, but they lock tables during operation and therefore cannot always be used. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The article will have a bit of theory about how bloat occurs, how to deal with it, about deferred constraints, and about the problems that they bring to the use of the pg_repack extension.</font></font><a name="habracut"></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This article is based on </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">my presentation</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> at PgConf.Russia 2020.</font></font><br>
+<br>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/8vaVeCKuz6M" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Why bloat occurs</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Postgres is based on the multi-version model ( </font></font><abbr title="Multi-Version Concurrency Control"><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MVCC</font></font></a></abbr><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). Its essence is that each row in the table can have several versions, while transactions see no more than one of these versions, but not necessarily the same one. This allows multiple transactions to work simultaneously and have virtually no effect on each other. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Obviously, all these versions need to be stored. Postgres works with memory page by page and the page is the minimum amount of data that can be read from disk or written. Let's look at a small example to understand how this happens.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suppose we have a table in which we have added several records. In the first page of the file where the table is stored, new data has appeared. These are live versions of strings that are available to other transactions after a commit (for simplicity, we will assume that the Read Committed isolation level). </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pb/ep/av/pbepavyhm5_alpqup33j8vfcocm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Then we updated one of the entries and thereby marked the old version as irrelevant. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/na/tr/tg/natrtgitck2f7ymtdalnr_coecu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Step by step, updating and deleting the version of the lines, we got a page in which about half of the data is “garbage”. This data is not visible to any transaction. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_j/8d/ji/_j8djifah3idpuohxwseop01xcw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Postgres has a </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">VACUUM</font></a><font style="vertical-align: inherit;"> mechanism</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, which cleans up irrelevant versions and frees up space for new data. But if it is not configured aggressively enough or is busy working in other tables, then the “junk data” remains, and we have to use additional pages for new data. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So in our example, at some point in time, the table will consist of four pages, but there will be only half the live data in it. As a result, when accessing the table, we will read much more data than necessary. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/nz/ni/rn/nznirnw2kenpvkn7kv7hqwi1k08.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Even if VACUUM now deletes all irrelevant versions of strings, the situation will not improve dramatically. We will have free space in the pages or even whole pages for new lines, but we will continue to read more data than necessary.</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+By the way, if a completely blank page (the second in our example) were at the end of the file, then VACUUM could trim it. </font><font style="vertical-align: inherit;">But now she is in the middle, so nothing can be done with her. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fy/ix/rq/fyixrqdxzpivbooplfjoqpeyc-q.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When the number of such blank or very flat pages becomes large, which is called bloat, it begins to affect performance. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Everything described above is the mechanics of bloat occurrence in tables. </font><font style="vertical-align: inherit;">In indexes, this happens in much the same way.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Do I have a bloat?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are several ways to determine if you have a bloat. The idea of ​​the first is to use internal Postgres statistics, which contains approximate information about the number of rows in tables, the number of “live” rows, etc. On the Internet, you can find many variations of ready-made scripts. We took as a basis a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">script</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> from PostgreSQL Experts, which can evaluate bloat tables along with toast and bloat btree indexes. In our experience, its error is 10-20%. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Another way is to use the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgstattuple</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> extension </font><font style="vertical-align: inherit;">, which allows you to look inside the pages and get both estimated and accurate bloat values. But in the second case, you have to scan the entire table.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A small bloat value, up to 20%, we consider acceptable. </font><font style="vertical-align: inherit;">It can be considered as an analogue of fillfactor for </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tables</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">indexes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">At 50% and above, performance problems may begin.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ways to deal with bloat</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are several ways to deal with bloat out of the box in Postgres, but they are far from always suitable for everyone. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Set AUTOVACUUM so that bloat does not occur</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . And more precisely, to keep it at an acceptable level for you. This seems to be “captain's” advice, but in reality this is not always easy to achieve. For example, you are actively developing with regular changes to the data schema or some kind of data migration is occurring. As a result, your load profile can change frequently and, as a rule, it can be different for different tables. This means that you need to constantly work a bit ahead of the curve and adjust AUTOVACUUM to the changing profile of each table. But it’s obvious that this is not easy.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Another common reason that AUTOVACUUM does not have time to process tables is the presence of lengthy transactions that prevent it from clearing data due to the fact that it is available to these transactions. The recommendation here is also obvious - get rid of hanging transactions and minimize the time of active transactions. But if the load on your application is a hybrid of OLAP and OLTP, then at the same time you can have many frequent updates and short requests, as well as lengthy operations - for example, building a report. In such a situation, it is worth thinking about spreading the load to different bases, which will allow for finer tuning of each of them.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Another example - even if the profile is uniform, but the database is under very high load, even the most aggressive AUTOVACUUM may not cope, and a bloat will occur. Scaling (vertical or horizontal) is the only solution. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But what about the situation when you configured AUTOVACUUM, but the bloat continues to grow. </font><b><font style="vertical-align: inherit;">VACUUM FULL</font></b></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Command</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">rebuilds the contents of tables and indexes and leaves only relevant data in them. To eliminate bloat, it works perfectly, but during its execution, an exclusive lock on the table (AccessExclusiveLock) is captured, which will not allow queries to this table, even selects. If you can afford to stop your service or part of it for a while (from tens of minutes to several hours, depending on the size of the database and your hardware), then this option is the best. Unfortunately, we do not have time to run VACUUM FULL during the scheduled maintenance, so this method does not suit us. </font><b><font style="vertical-align: inherit;">CLUSTER</font></b></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Command</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">it also rebuilds the contents of tables, as does VACUUM FULL, at the same time it allows you to specify the index according to which the data will be physically ordered on disk (but in the future the order is not guaranteed). In certain situations, this is a good optimization for a number of queries - with reading several records by index. The disadvantage of the command is the same as that of VACUUM FULL - it locks the table during operation. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">REINDEX</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> command </font><b><font style="vertical-align: inherit;">is</font></b><font style="vertical-align: inherit;"> similar to the previous two, but rebuilds a specific index or all indexes on the table. Locks are slightly weaker: ShareLock to the table (prevents modifications, but allows you to select) and AccessExclusiveLock to the rebuildable index (blocks requests using this index). However, in version 12 of Postgres, the </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">CONCURRENTLY</font></a><font style="vertical-align: inherit;"> parameter</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, which allows you to rebuild the index without blocking the parallel addition, modification or deletion of records. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In earlier versions of Postgres, you can achieve a result similar to REINDEX CONCURRENTLY with </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CREATE INDEX CONCURRENTLY</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . It allows you to create an index without strict blocking (ShareUpdateExclusiveLock, which does not interfere with parallel queries), then replace the old index with a new one and delete the old index. This eliminates bloat indexes without interfering with your application. It is important to consider that when rebuilding indexes there will be an additional load on the disk subsystem. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thus, if there are ways for indexes to eliminate bloat “hot”, then for tables there are none. Here various external extensions come into </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;">play</font></a><font style="vertical-align: inherit;"> : </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_repack</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">(formerly pg_reorg), </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgcompact</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgcompacttable</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and others. </font><font style="vertical-align: inherit;">In the framework of this article, I will not compare them and will only talk about pg_repack, which, after some refinement, we use at home.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">How pg_repack works</font></font></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/5j/bp/ng/5jbpng5ietzdlekjqc32gdf_5cs.gif"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suppose we have a very normal table for ourselves - with indexes, restrictions, and, unfortunately, with bloat. The first step is pg_repack creates a log table to store data about all changes during operation. The trigger will replicate these changes to each insert, update, and delete. Then a table is created that is similar to the original in structure, but without indexes and restrictions, so as not to slow down the process of inserting data. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Next, pg_repack transfers data from the old to the new table, automatically filtering all irrelevant rows, and then creates indexes for the new table. During the execution of all these operations, changes are accumulated in the log table.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The next step is to transfer the changes to the new table. </font><font style="vertical-align: inherit;">The migration is performed in several iterations, and when less than 20 entries remain in the log table, pg_repack captures a strict lock, transfers the latest data and replaces the old table with the new one in the Postgres system tables. </font><font style="vertical-align: inherit;">This is the only and very short point in time when you cannot work with the table. </font><font style="vertical-align: inherit;">After that, the old table and the table with the logs are deleted and space is freed up in the file system. </font><font style="vertical-align: inherit;">The process is completed. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In theory, everything looks great, what in practice? </font><font style="vertical-align: inherit;">We tested pg_repack without load and under load, and checked its operation in case of a premature stop (in other words, Ctrl + C). </font><font style="vertical-align: inherit;">All tests were positive. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We went to the prod - and then everything went wrong as we expected.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The first pancake on prod</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On the first cluster, we received an error about violating a unique restriction:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ ./pg_repack -t tablename -o id<font></font>
+INFO: repacking table <span class="hljs-string">"tablename"</span><font></font>
+ERROR: query failed: <font></font>
+    ERROR: duplicate key value violates unique constraint <span class="hljs-string">"index_16508"</span><font></font>
+DETAIL:  Key (id, index)=(100500, 42) already exists.<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This restriction had the auto-generated name index_16508 - it was created by pg_repack. </font><font style="vertical-align: inherit;">By the attributes included in its composition, we determined “our” restriction, which corresponds to it. </font><font style="vertical-align: inherit;">The problem turned out to be that this is not quite an ordinary restriction, but a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">deferred constraint</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , i.e. </font><font style="vertical-align: inherit;">its verification is performed later than the sql command, which leads to unexpected consequences.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Deferred constraints: why are they needed and how do they work</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A bit of theory about deferred constraints. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Consider a simple example: we have a car reference table with two attributes - the name and order of the car in the directory.</font></font><br>
+<img src="https://habrastorage.org/webt/n8/1s/td/n81stdw9kie5wll03ylnel18aie.png" align="right"><br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> cars<font></font>
+(<font></font>
+  <span class="hljs-type">name</span> <span class="hljs-type">text</span> <span class="hljs-keyword">constraint</span> pk_cars <span class="hljs-keyword">primary key</span>,<font></font>
+  ord <span class="hljs-type">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">null</span> <span class="hljs-keyword">constraint</span> uk_cars <span class="hljs-keyword">unique</span><font></font>
+);<font></font>
+</code></pre><br>
+<br clear="all"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's say we needed to swap the first and second cars. </font><font style="vertical-align: inherit;">The solution "in the forehead" is to update the first value to the second, and the second to the first:</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">begin</span>;
+  <span class="hljs-keyword">update</span> cars <span class="hljs-keyword">set</span> ord = <span class="hljs-number">2</span> <span class="hljs-keyword">where</span> <span class="hljs-type">name</span> = <span class="hljs-string">'audi'</span>;
+  <span class="hljs-keyword">update</span> cars <span class="hljs-keyword">set</span> ord = <span class="hljs-number">1</span> <span class="hljs-keyword">where</span> <span class="hljs-type">name</span> = <span class="hljs-string">'bmw'</span>;
+<span class="hljs-keyword">commit</span>;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But when executing this code, we expectedly get a violation of the constraint, because the order of the values ​​in the table is unique:</font></font><br>
+<br>
+<pre><code class="bash hljs">[23305] ERROR: duplicate key value violates unique constraint “uk_cars”<font></font>
+Detail: Key (ord)=(2) already exists.<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+How to do it differently? Option one: add an additional replacement of the value by an order that is guaranteed not to exist in the table, for example, “-1”. In programming, this is called “exchanging the values ​​of two variables through the third.” The only drawback of this method is the additional update. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Option two: redesign the table to use a floating-point data type for the order value instead of integers. Then, when updating the value from 1, for example, to 2.5, the first record will automatically “stand up” between the second and third. This solution works, but there are two limitations. Firstly, it will not work for you if the value is used somewhere in the interface. Secondly, depending on the accuracy of the data type, you will have a limited number of possible inserts before recalculating the values ​​of all records.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Option three: make the restriction deferred so that it is checked only at the time of the commit:</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> cars<font></font>
+(<font></font>
+  <span class="hljs-type">name</span> <span class="hljs-type">text</span> <span class="hljs-keyword">constraint</span> pk_cars <span class="hljs-keyword">primary key</span>,<font></font>
+  ord <span class="hljs-type">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">null</span> <span class="hljs-keyword">constraint</span> uk_cars <span class="hljs-keyword">unique</span> <span class="hljs-keyword">deferrable</span> <span class="hljs-keyword">initially</span> <span class="hljs-keyword">deferred</span>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since the logic of our initial request ensures that all values ​​are unique by the time of the commit, it will succeed. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The above example is, of course, very synthetic, but it reveals the idea. </font><font style="vertical-align: inherit;">In our application, we use deferred constraints to implement logic that is responsible for resolving conflicts while simultaneously working with common widget objects on the board. </font><font style="vertical-align: inherit;">Using such restrictions allows us to make application code a little easier. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, depending on the type of constraint in Postgres, there are three levels of granularity for checking them: row level, transaction, and expression. </font></font><br>
+<img src="https://habrastorage.org/webt/vn/bw/qq/vnbwqqmhgjpnd7kb8dtxpixb8xi.png"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Source: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">begriffs</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+CHECK and NOT NULL are always checked at the row level, for other restrictions, as can be seen from the table, there are different options. </font><font style="vertical-align: inherit;">Read more </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To summarize briefly, pending restrictions in some situations give more readable code and fewer commands. </font><font style="vertical-align: inherit;">However, you have to pay for this by complicating the debug process, since the moment the error occurred and the moment you find out about it are separated in time. </font><font style="vertical-align: inherit;">Another possible problem is that the scheduler cannot always build the optimal plan if a delayed constraint is involved in the request.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Refinement pg_repack</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We figured out what pending restrictions are, but how are they related to our problem? </font><font style="vertical-align: inherit;">Recall the error we previously received:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ ./pg_repack -t tablename -o id<font></font>
+INFO: repacking table <span class="hljs-string">"tablename"</span><font></font>
+ERROR: query failed: <font></font>
+    ERROR: duplicate key value violates unique constraint <span class="hljs-string">"index_16508"</span>
+DETAIL:  Key (id, index)=(100500, 42) already exists.</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It occurs at the time of copying data from the log table to the new table. It looks weird because the data in the log table is committed along with the data in the original table. If they satisfy the constraints of the original table, then how can they violate the same constraints in the new? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As it turned out, the root of the problem lies in the previous step of pg_repack, which creates only indexes, but not restrictions: the old table had a unique constraint, and the new one created a unique index instead.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_y/da/fc/_ydafcxizllawi1jo3o5ai-x-kg.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is important to note here that if the restriction is normal and not deferred, then the unique index created instead of it is equivalent to this restriction, because </font><font style="vertical-align: inherit;">Postgres unique constraints are implemented by creating a unique index. </font><font style="vertical-align: inherit;">But in the case of a deferred constraint, the behavior is not the same, because the index cannot be deferred and is always checked at the time the sql command is executed. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thus, the essence of the problem lies in the “postponement” of the check: in the original table it occurs at the time of the commit, and in the new one - at the time of the sql command execution. </font><font style="vertical-align: inherit;">So we need to make sure that the checks are performed the same way in both cases: either always deferred, or always immediately. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So what ideas did we have?</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Create an index similar to deferred</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The first idea is to perform both checks in immediate mode. This may give rise to several false positive triggers of the restriction, but if there are few of them, then this should not affect the work of users, since for them such conflicts are a normal situation. They occur, for example, when two users start simultaneously editing the same widget, and the client of the second user does not have time to get information that the widget is already locked for editing by the first user. In this situation, the server refuses the second user, and its client rolls back the changes and blocks the widget. A little later, when the first user finishes editing, the second will receive information that the widget is no longer locked, and will be able to repeat its action.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/dw/oq/jw/dwoqjwhuqva3veavihajfcd5t4c.gif"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To ensure that checks are always in emergency mode, we created a new index similar to the original deferred constraint:</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">UNIQUE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">CONCURRENTLY</span> uk_tablename__immediate <span class="hljs-keyword">ON</span> tablename (id, <span class="hljs-keyword">index</span>);
+<span class="hljs-comment">-- run pg_repack</span>
+<span class="hljs-keyword">DROP</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">CONCURRENTLY</span> uk_tablename__immediate;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On the test environment, we received only a few expected errors. Success! We again launched pg_repack on the prod and got 5 errors on the first cluster in an hour of work. This is an acceptable result. However, already on the second cluster, the number of errors increased many times and we had to stop pg_repack. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Why did it happen? The probability of an error depends on how many users work simultaneously with the same widgets. Apparently, at that moment with the data stored on the first cluster, there were much fewer competitive changes than on the rest, i.e. we were just “lucky." </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The idea did not work. At that moment, we saw two other solution options: rewrite our application code to abandon pending restrictions, or “teach” pg_repack to work with them. We have chosen the second.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Replace indexes in new table with deferred constraints from source table</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The purpose of the revision was obvious - if the original table has a deferred constraint, then for the new one you need to create such a constraint, not an index. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To test our changes, we wrote a simple test:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">table with deferred restriction and one record;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">insert data in the loop that conflict with the existing record;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">make update - the data no longer conflicts;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">commit change.</font></font></li>
+</ul><br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> test_table<font></font>
+(<font></font>
+  id <span class="hljs-type">serial</span>,<font></font>
+  val <span class="hljs-type">int</span>,
+  <span class="hljs-keyword">constraint</span> uk_test_table__val <span class="hljs-keyword">unique</span> (val) <span class="hljs-keyword">deferrable</span> <span class="hljs-keyword">initially</span> <span class="hljs-keyword">deferred</span> <font></font>
+);<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> test_table (val) <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">0</span>);
+<span class="hljs-keyword">FOR</span> i <span class="hljs-keyword">IN</span> <span class="hljs-number">1.</span><span class="hljs-number">.10000</span> <span class="hljs-keyword">LOOP</span>
+  <span class="hljs-keyword">BEGIN</span>
+    <span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> test_table <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">0</span>) <span class="hljs-keyword">RETURNING</span> id <span class="hljs-keyword">INTO</span> v_id;
+    <span class="hljs-keyword">UPDATE</span> test_table <span class="hljs-keyword">set</span> val = i <span class="hljs-keyword">where</span> id = v_id;
+    <span class="hljs-keyword">COMMIT</span>;
+  <span class="hljs-keyword">END</span>;
+<span class="hljs-keyword">END</span> <span class="hljs-keyword">LOOP</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The original version of pg_repack always crashed on the first insert, the revised version worked without errors. </font><font style="vertical-align: inherit;">Fine. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We go to the prod and again we get an error in the same phase of copying data from the log table to the new one:</font></font><br>
+<br>
+<pre><code class="bash hljs">$ ./pg_repack -t tablename -o id<font></font>
+INFO: repacking table <span class="hljs-string">"tablename"</span><font></font>
+ERROR: query failed: <font></font>
+    ERROR: duplicate key value violates unique constraint <span class="hljs-string">"index_16508"</span>
+DETAIL:  Key (id, index)=(100500, 42) already exists.</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Classic situation: everything works on test environments, but not on prod ?!</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">APPLY_COUNT and the joint of two batches</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We started analyzing the code literally line by line and found an important point: data is transferred from the log table to the new one with batches, the APPLY_COUNT constant indicated the size of the batches:</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">for</span> (;;)<font></font>
+{<font></font>
+num = apply_log(connection, table, APPLY_COUNT);<font></font>
+<font></font>
+<span class="hljs-keyword">if</span> (num &gt; MIN_TUPLES_BEFORE_SWITCH)
+     <span class="hljs-keyword">continue</span>;  <span class="hljs-comment">/* there might be still some tuples, repeat. */</span><font></font>
+...<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The problem is that the data of the original transaction, in which several operations can potentially violate the restriction, can be transferred to the joint of two batches during the transfer - half of the teams will be commited in the first match and the other half in the second. And here's how lucky: if the teams in the first batch do not violate anything, then everything is fine, but if they violate - an error occurs. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+APPLY_COUNT is equal to 1000 entries, which explains why our tests were successful - they did not cover the case of “junction of batches”. We used two commands - insert and update, so exactly 500 transactions of two teams were always placed in the batch and we did not experience problems. After adding the second update, our edit stopped working:</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">FOR</span> i <span class="hljs-keyword">IN</span> <span class="hljs-number">1.</span><span class="hljs-number">.10000</span> <span class="hljs-keyword">LOOP</span>
+  <span class="hljs-keyword">BEGIN</span>
+    <span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> test_table <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">1</span>) <span class="hljs-keyword">RETURNING</span> id <span class="hljs-keyword">INTO</span> v_id;
+    <span class="hljs-keyword">UPDATE</span> test_table <span class="hljs-keyword">set</span> val = i <span class="hljs-keyword">where</span> id = v_id;
+    <span class="hljs-keyword">UPDATE</span> test_table <span class="hljs-keyword">set</span> val = i <span class="hljs-keyword">where</span> id = v_id; <span class="hljs-comment">-- one more update</span>
+    <span class="hljs-keyword">COMMIT</span>;
+  <span class="hljs-keyword">END</span>;
+<span class="hljs-keyword">END</span> <span class="hljs-keyword">LOOP</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, the next task is to make sure that the data from the source table that changed in one transaction falls into the new table also within the same transaction.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Refusal of Butching</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And again we had two solutions. </font><font style="vertical-align: inherit;">First: let's completely abandon the batching and do the data transfer in one transaction. </font><font style="vertical-align: inherit;">In favor of this solution was its simplicity - the required code changes were minimal (by the way, in older versions then pg_reorg worked just that way). </font><font style="vertical-align: inherit;">But there is a problem - we are creating a long transaction, and this, as was said earlier, is a threat to the emergence of a new bloat.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The second solution is more complicated, but probably more correct: create a column in the log table with the identifier of the transaction that added the data to the table. Then, when copying data, we will be able to group them by this attribute and ensure that the related changes will be transferred together. A batch will be formed from several transactions (or one large one) and its size will vary depending on how much data has changed in these transactions. It is important to note that since the data of different transactions fall into the log table in random order, it will not be possible to read it sequentially, as it was before. seqscan for every request filtered by tx_id is too expensive, you need an index, but it will slow down the method due to the overhead of updating it. In general, as always, you need to sacrifice something.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, we decided to start with the first option, as a simpler one. First, it was necessary to understand whether a long transaction would be a real problem. Since the main data transfer from the old table to the new one also occurs in one long transaction, the question has transformed into “how much will we increase this transaction?” The duration of the first transaction depends mainly on the size of the table. The duration of the new one depends on how many changes accumulate in the table during the data transfer, i.e. from the intensity of the load. The pg_repack run occurred during the minimum load on the service, and the amount of change was incomparably small compared to the original table size. We decided that we can neglect the time of the new transaction (for comparison, this is an average of 1 hour and 2-3 minutes).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The experiments were positive. Running on prod too. For clarity, a picture with the size of one of the bases after the run: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/z4/ps/gu/z4psgu_s8jsbhwnxst2pogfcsfa.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since this solution completely suited us, we did not try to implement the second, but we are considering discussing it with the developers of the extension. Unfortunately, our current revision is not yet ready for publication, since we have solved the problem only with unique pending restrictions, and for a full-fledged patch it is necessary to make support of other types. We hope to be able to do this in the future.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Perhaps you have a question, why did we get involved in this story with the completion of pg_repack, and did not, for example, use its analogues? </font><font style="vertical-align: inherit;">At some point, we also thought about this, but the positive experience of using it earlier, on tables without pending restrictions, motivated us to try to understand the essence of the problem and fix it. </font><font style="vertical-align: inherit;">In addition, to use other solutions, it also takes time to conduct tests, so we decided that first we would try to fix the problem in it, and if we realized that we could not do it in a reasonable amount of time, then we would begin to consider analogues.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">findings</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What we can recommend based on our own experience:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Monitor your bloat. </font><font style="vertical-align: inherit;">Based on monitoring data, you can understand how well autovacuum is configured.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Set AUTOVACUUM to keep bloat at a reasonable level.</font></font></li>
+<li>   bloat           “ ”,     .  –   .</li>
+<li>        –        ,     .</li>
+</ol></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en499434/index.html">How to implement knowledge management: benefit “pouches”, “parrot fines” and clip thinking</a></li>
+<li><a href="../en499436/index.html">Remote-controlled enzyme will accelerate the treatment of strokes and spinal injuries</a></li>
+<li><a href="../en499438/index.html">Stream for testers and not only</a></li>
+<li><a href="../en499440/index.html">As we wrote the world's coolest autopilot for a shunting locomotive</a></li>
+<li><a href="../en499442/index.html">Creating a Pseudo-3D Racing Game: Implementing the Hills and Finishing the Game</a></li>
+<li><a href="../en499446/index.html">Testing STEP format bootloaders for VR</a></li>
+<li><a href="../en499448/index.html">Implementing SOLID and layered architecture in Node.js with TypeScript and InversifyJS</a></li>
+<li><a href="../en499450/index.html">Choosing the equipment for a game Persian using genetics / evolution in Python</a></li>
+<li><a href="../en499452/index.html">Everyday life of an ophthalmologist at the clinic: when doctors are not enough</a></li>
+<li><a href="../en499454/index.html">Video Live! Badoo Localization Meetup April 21</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

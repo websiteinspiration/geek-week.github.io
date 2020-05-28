@@ -1,0 +1,501 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌇 ☮️ 📮 Kubernetes load balancing and scaling long-lived connections 👩🏽‍🎤 ⤴️ 👦</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="This article will help you understand how load balancing in Kubernetes works, what happens when scaling long-lived connections and why you should cons...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Kubernetes load balancing and scaling long-lived connections</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/493820/"><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/445/275/8af/4452758afb53f8b3161ace47d8c6ea49.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This article will help you understand how load balancing in Kubernetes works, what happens when scaling long-lived connections and why you should consider balancing on the client side if you use HTTP / 2, gRPC, RSockets, AMQP or other long-lived protocols.&nbsp;</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A bit about how traffic is redistributed in Kubernetes&nbsp;</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetes provides two convenient abstractions for rolling out applications: Services and Deployments. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Deployments describe how and how many copies of your application should be running at any given time. </font><font style="vertical-align: inherit;">Each application is deployed as under (Pod) and is assigned an IP address. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Feature services are similar to a load balancer. </font><font style="vertical-align: inherit;">They are designed to distribute traffic across multiple hearths. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Let's see how it looks</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In the diagram below, you see three instances of the same application and a load balancer:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/80f/58d/4f9/80f58d4f9cd1e34a88aa7b8a33c0a82f.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The load balancer is called the Service, it is assigned an IP address. </font><font style="vertical-align: inherit;">Any incoming request is redirected to one of the pods:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/63e/7ef/b73/63e7efb73e75ce67fcd47f74b03aa04d.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The deployment script determines the number of application instances. </font><font style="vertical-align: inherit;">You will almost never have to deploy directly under:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a96/121/8c3/a961218c382f2343f72bdcf639f20222.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Each pod is assigned its own IP address:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/3c0/699/ef3/3c0699ef3d5a60d5b08f7afdfdedac29.png"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is useful to consider services as a set of IP addresses. </font><font style="vertical-align: inherit;">Each time you access the service, one of the IP addresses is selected from the list and used as the destination address. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">This is as follows</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">There is a curl request 10.96.45.152 to the service:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/60a/52c/539/60a52c539ed6d1791cbafa794db2c4a9.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The service selects one of the three pod addresses as the destination:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/2a8/ac4/e23/2a8ac4e23e79da06ee64c01e071b9089.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Traffic is redirected to a specific pod:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/7ec/f2c/38e/7ecf2c38ef0af62d07d169c120ca5def.png"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If your application consists of a frontend and a backend, then you will have both a service and a deployment for each. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When the frontend fulfills the request to the backend, it does not need to know exactly how many heaps the backend serves: there can be one, ten, or one hundred. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Also, the frontend does not know anything about the addresses of the hearths serving the backend. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When the frontend makes a request to the backend, it uses the IP address of the backend service, which does not change. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Here is how it looks</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Under 1 requests the backend internal component. </font><font style="vertical-align: inherit;">Instead of choosing a specific one for the backend, it performs a service request:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/1ff/50c/a99/1ff50ca9970854efe8af15ac2a7d1791.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The service selects one of the backend pods as the destination address:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/530/dd9/9ad/530dd99add6451742a891d69ef06d03b.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Traffic goes from hearth 1 to hearth 5 selected by the service:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/2ea/bdb/808/2eabdb8086fefc2c48d171f3c0e2c87e.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Under 1, it does not know exactly how many such hearths as under 5 are hidden behind the service:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/665/f5e/edc/665f5eedc580d007fd9db6ced40f86d1.png"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But how exactly does the service distribute requests? </font><font style="vertical-align: inherit;">Does round-robin balancing seem to be used? </font><font style="vertical-align: inherit;">Let's get it right.&nbsp;</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Balancing in Kubernetes Services</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetes services do not exist. There is no process for the service that is assigned an IP address and port. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can verify this by going to any node in the cluster and running the netstat -ntlp command. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can’t even find the IP address allocated to the service. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The IP address of the service is located in the control layer, in the controller, and recorded in the database - etcd. The same address is used by another component - kube-proxy. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kube-proxy receives a list of IP addresses for all services and forms a set of iptables rules on each node of the cluster. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+These rules say: "If we see the IP address of the service, we need to modify the destination address of the request and send it to one of the pods."</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The IP address of the service is used only as an entry point and is not served by any process listening to this ip address and port. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Let's look at that</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .&nbsp;</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Consider a cluster of three nodes. </font><font style="vertical-align: inherit;">There are pods on each node:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/605/ed6/e82/605ed6e82d24139c7122fd0886fb3f5f.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Knitted hearths painted in beige are part of the service. </font><font style="vertical-align: inherit;">Since the service does not exist as a process, it is grayed out:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/175/57b/919/17557b91988036bf15bdb5fd02b25c44.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The first one asks for the service and should fall on one of the related headers:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/13d/49c/2df/13d49c2dff1c5a15bfced3347ad4bc6c.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">But the service does not exist, there is no process. </font><font style="vertical-align: inherit;">How does it work?</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a7e/362/c43/a7e362c43d31ac5ba0368cbbfceae398.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Before the request leaves the node, it goes through the iptables rules:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/29d/eea/0ef/29deea0efafef803b87c66a7c17cc9cc.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The iptables rules know that there is no service, and replace its IP address with one of the IP addresses of the pods associated with this service:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a4e/ec6/0ad/a4eec60ad28fbf16b085d9b8697dce81.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The request receives a valid IP address as the destination address and is normally processed:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/653/ef7/4b8/653ef74b8f34567652c2e0a00c89d9a7.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Depending on the network topology, the request eventually reaches the hearth:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/696/c59/873/696c5987341d20780825ff2a4f6f7d12.png"></div></li>
+</ol><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Are iptables able to balance the load?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No, iptables are used for filtering and were not designed for balancing. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, it is possible to write a set of rules that work like a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pseudo-balancer</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And that’s exactly what Kubernetes does. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If you have three pods, kube-proxy will write the following rules:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Choose the first one with a probability of 33%, otherwise go to the next rule.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Choose the second one with a probability of 50%, otherwise go to the next rule.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Choose the third under.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Such a system leads to the fact that each sub is selected with a probability of 33%.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/08e/d59/2bc/08ed592bc03dd1f9740f29985451aaca.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And there is no guarantee that under 2 it will be selected next after file 1. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Note</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : iptables uses a random distribution statistical module. </font><font style="vertical-align: inherit;">Thus, the balancing algorithm is based on random selection. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now that you understand how services work, let's look at more interesting work scenarios.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Long-lived connections in Kubernetes do not scale by default</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Each HTTP request from the front-end to the back-end is served by a separate TCP connection, which opens and closes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If the frontend sends 100 requests per second to the backend, then 100 different TCP connections open and close. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can reduce the processing time of the request and reduce the load if you open one TCP connection and use it for all subsequent HTTP requests. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The HTTP protocol contains a feature called HTTP keep-alive, or reuse of the connection. In this case, one TCP connection is used to send and receive many HTTP requests and responses:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a65/cef/c9f/a65cefc9f558265089c48cdf96a1d049.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This feature is not enabled by default: both the server and the client must be configured accordingly. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The setup itself is simple and accessible for most programming languages ​​and environments. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here are some links to examples in different languages:</font></font><br>
+<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=https://medium.com/%40onufrienkos/keep-alive-connection-on-inter-service-"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Keep-alive in Node.js</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=https://www.baeldung.com/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Keep-alive in spring boot</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=https://blog.insightdatascience.com/learning-about-the-"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Keep-alive in python</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=https://docs.microsoft.com/en-us/dotnet/api/system.net."><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Keep-alive in .NET</font></font></a></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What happens if we use keep-alive in Kubernetes? </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's assume that both the frontend and backend support keep-alive. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We have one copy of the frontend and three copies of the backend. The frontend makes the first request and opens a TCP connection to the backend. The request reaches the service, one of the backend pods is selected as the destination address. It sends a response to the backend, and the frontend receives it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Unlike the usual situation, when the TCP connection is closed after receiving the response, it is now kept open for the following HTTP requests. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What happens if the frontend sends more backend requests? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To forward these requests, an open TCP connection will be used, all requests will be sent to the same one under the backend, where the first request got.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Shouldn't iptables redistribute traffic? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Not in this case. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When a TCP connection is created, it goes through the iptables rules, which select a specific one for the backend where the traffic will go. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since all of the following requests go over an already open TCP connection, iptables rules are no longer called. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Let's see how it looks</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The first sub sends a request to the service:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/0d1/235/11b/0d123511bd0e4e5d3806fdd7917e0bd7.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">You already know what will happen next. </font><font style="vertical-align: inherit;">The service does not exist, but there are iptables rules that will handle the request:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/0d1/235/11b/0d123511bd0e4e5d3806fdd7917e0bd7.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">One of the backend pods will be selected as the destination address:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/9ae/5c0/e5b/9ae5c0e5bd3478f20d1546951a298dfd.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The request reaches the hearth. </font><font style="vertical-align: inherit;">At this point, a permanent TCP connection between the two pods will be established:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/b23/154/129/b23154129408fd401651880d3b94d816.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Any next request from the first pod will go through an already established connection:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/f90/e1c/232/f90e1c232dbc399d39aaff47045b9aa8.gif"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result, you got a faster response and higher bandwidth, but lost the ability to scale the backend. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Even if you have two pods in the backend, with a constant connection, traffic will always go to one of them. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Can this be fixed? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since Kubernetes does not know how to balance persistent connections, this task is your responsibility. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Services are a set of IP addresses and ports called endpoints. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Your application can get a list of endpoints from the service and decide how to distribute requests between them. You can open a persistent connection to each hearth and balance requests between these connections using round-robin. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Or apply more </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sophisticated balancing algorithms</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The client-side code that is responsible for balancing should follow this logic:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Get the list of endpoints from the service.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">For each endpoint, open a persistent connection.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">When you need to make a request, use one of the open connections.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Regularly update the list of endpoints, create new ones, or close old persistent connections if the list changes.</font></font></li>
+</ol><br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Here is how it will look</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Instead of sending the first request to the service, you can balance requests on the client side:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/98f/91a/0c9/98f91a0c9ecae76bd8f286ba3a282ff1.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">You need to write code that asks which pods are part of the service:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/040/203/cb5/040203cb52d6b22bb8179a6870d2485f.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">As soon as you receive the list, save it on the client side and use it to connect to the pods:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/4e5/741/3e7/4e57413e7b01b017cf57fab312b28089.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">You yourself are responsible for the load balancing algorithm:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/8d9/bc6/7ad/8d9bc67ad511790b477c8509c91fffb0.gif"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now the question is: does this issue only apply to HTTP keep-alive?</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Client side load balancing</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+HTTP is not the only protocol that can use persistent TCP connections. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If your application uses a database, then the TCP connection does not open every time you need to execute a request or get a document from the database.&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Instead, a permanent TCP connection to the database is opened and used. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If your database is deployed in Kubernetes and access is provided as a service, then you will encounter the same problems as described in the previous section. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+One database replica will be loaded more than the rest. </font><font style="vertical-align: inherit;">Kube-proxy and Kubernetes will not help to balance connections. </font><font style="vertical-align: inherit;">You should take care of balancing queries to your database.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Depending on which library you use to connect to the database, you may have various options for solving this problem. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The following is an example of accessing a MySQL database cluster from Node.js:</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">var</span> mysql = <span class="hljs-built_in">require</span>(<span class="hljs-string">'mysql'</span>);
+<span class="hljs-keyword">var</span> poolCluster = mysql.createPoolCluster();<font></font>
+<font></font>
+<span class="hljs-keyword">var</span> endpoints = <span class="hljs-comment">/* retrieve endpoints from the Service */</span><font></font>
+<font></font>
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">var</span> [index, endpoint] <span class="hljs-keyword">of</span> endpoints) {<font></font>
+&nbsp; poolCluster.add(<span class="hljs-string">`mysql-replica-<span class="hljs-subst">${index}</span>`</span>, endpoint);<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-comment">// Make queries to the clustered MySQL database</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There are tons of other protocols that use persistent TCP connections:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WebSockets and secured WebSockets</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">HTTP / 2</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">gRPC</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RSockets</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AMQP</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You should already be familiar with most of these protocols. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But if these protocols are so popular, why is there no standardized balancing solution? Why is a change in client logic required? Is there a native Kubernetes solution? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kube-proxy and iptables are designed to close most standard deployment scenarios for Kubernetes. This is for convenience. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If you use a web service that provides a REST API, you are in luck - in this case, permanent TCP connections are not used, you can use any Kubernetes service. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But as soon as you start using persistent TCP connections, you will have to figure out how to evenly distribute the load on the backends. Kubernetes does not contain ready-made solutions for this case.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, of course, there are options that may help.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Balancing long-lived connections in Kubernetes</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetes has four types of services:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Clusterip</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NodePort</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Loadbalancer</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Headless</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The first three services are based on the virtual IP address, which is used by kube-proxy to build iptables rules. </font><font style="vertical-align: inherit;">But the fundamental basis of all services is a headless type service. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No IP address is associated with the headless service, and it only provides a mechanism for obtaining a list of IP addresses and ports of associated hearths (endpoints). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All services are based on the headless service. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ClusterIP service is a headless service with some additions:&nbsp;</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The management layer assigns it an IP address.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kube-proxy forms the necessary iptables rules.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thus, you can ignore kube-proxy and directly use the list of endpoints received from the headless service to balance the load in your application. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But how to add similar logic to all applications deployed in a cluster? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If your application is already deployed, then such a task may seem impossible. </font><font style="vertical-align: inherit;">However, there is an alternative.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Service Mesh will help you</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You probably already noticed that the client-side load balancing strategy is quite standard. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When the application starts, it:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Gets a list of IP addresses from the service.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Opens and maintains a connection pool.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Periodically updates the pool, adding or removing endpoints.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As soon as the application wants to make a request, it:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Selects an available connection using some kind of logic (e.g. round-robin).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fulfills the request.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+These steps work for WebSockets, gRPC, and AMQP. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can separate this logic into a separate library and use it in your applications. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, service grids such as Istio or Linkerd can be used instead. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Service Mesh complements your application with a process that:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Automatically searches for IP addresses of services.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Checks connections such as WebSockets and gRPC.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Balances requests using the correct protocol.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Service Mesh helps manage traffic within the cluster, but it is quite resource intensive. </font><font style="vertical-align: inherit;">Other options are using third-party libraries, such as Netflix Ribbon, or programmable proxies, such as Envoy.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What happens if you ignore balancing issues?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can not use load balancing and not notice any changes. Let's look at a few work scenarios. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If you have more clients than servers, this is not such a big problem. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suppose there are five clients that connect to two servers. Even if there is no balancing, both servers will be used:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/3eb/2a3/ebf/3eb2a3ebfd09862d4200744170daec7e.gif"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Connections can be distributed unevenly: perhaps four clients connected to the same server, but there is a good chance that both servers will be used. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What is more problematic is the opposite scenario. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If you have fewer clients and more servers, your resources may not be used enough and a potential bottleneck will appear. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suppose there are two clients and five servers. </font><font style="vertical-align: inherit;">At best, there will be two permanent connections to two out of five servers. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Other servers will be idle:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/ee5/0d2/eaf/ee50d2eaf1dbefd5933dd9ec5221bd58.gif"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If these two servers cannot handle client request processing, horizontal scaling will not help.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusion</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetes services are designed to work in most standard web application scenarios. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, as soon as you start working with application protocols that use persistent TCP connections, such as databases, gRPC or WebSockets, services are no longer suitable. </font><font style="vertical-align: inherit;">Kubernetes does not provide internal mechanisms for balancing persistent TCP connections. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This means you must write applications with the possibility of balancing on the client side. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Translation prepared by a team </font></font></i><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes aaS from of Mail.ru</font></font></i></a><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font></i><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What else to read on the topic</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<ol>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Three levels of autoscaling in Kubernetes and how to use them effectively</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .&nbsp;</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes in the spirit of piracy with an implementation template</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=">   Kubernetes  </a>.</li>
+</ol></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en493808/index.html">Linearizing asynchronous code with corutin</a></li>
+<li><a href="../en493810/index.html">Five years of intensive development of the market for document recognition</a></li>
+<li><a href="../en493814/index.html">How we conduct interviews in Barcelona</a></li>
+<li><a href="../en493816/index.html">Git Guide Part number 1: everything you need to know about the .git directory</a></li>
+<li><a href="../en493818/index.html">Git Guide Part number 2: the golden rule and other basics of rebase</a></li>
+<li><a href="../en493822/index.html">Problems and features of UEFI implementation on various platforms</a></li>
+<li><a href="../en493826/index.html">Divide and conquer: improving the electrolysis of water</a></li>
+<li><a href="../en493828/index.html">How the interface tells stories in video games</a></li>
+<li><a href="../en493830/index.html">What questions are asked by Junior iOS developer at the first interviews</a></li>
+<li><a href="../en493832/index.html">Coronavirus COVID-19 Distribution Dashboard (React + Chart.js + BootstrapTable)</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

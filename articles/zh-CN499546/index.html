@@ -1,0 +1,348 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧘🏾 🧝🏽 🙆🏾 模拟摄像机EVR-Y2022F的固件开发 🎫 🐥 👇🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在上一篇文章中，对模拟摄像机的设备进行了详细检查，以创建自己的固件。如前所述，相机具有来源不明的微控制器。它比普通的AVR丰富得多：它具有两个3.3V和1.8V的电源电压，并且还具有DSP功能。当我想到自动对焦算法的实现时，得出了这个结论。尽管如此，我并不喜欢像STM32之类的复杂MK，甚至仅仅是因...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>模拟摄像机EVR-Y2022F的固件开发</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/499546/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在上一篇文章中，对模拟摄像机的设备进行了详细检查，以创建自己的固件。如前所述，相机具有来源不明的微控制器。它比普通的AVR丰富得多：它具有两个3.3V和1.8V的电源电压，并且还具有DSP功能。当我想到自动对焦算法的实现时，得出了这个结论。尽管如此，我并不喜欢像STM32之类的复杂MK，甚至仅仅是因为我从未使用过它们。我绝对决定使用AVR MK之一来实现我的固件。因此，在这个阶段，我开始意识到自动对焦功能的实现不是很容易处理，甚至是不可能的。</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我的选择落在了ATmega128 MK上，因为正是他落入了我的怀抱。就结论数目而言，ATmega8 MK显然是不够的，尤其是因为以防万一，我决定保留一个完整的MK端口，以便从视频处理器输入数字视频流。首先，我弄清楚了我自己的固件中将包含哪些功能，尤其是原始固件中未包含的功能以及必须忽略的功能。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们考虑一种用于分析数字视频流的自动对焦算法的变体。我设法发现视频流数据是与“ CK”脉冲同步的字节交替。视频流的字节以8位灰度级（256个级别）对视频信号的Y，Cr，Cb分量进行编码。即，从该摄像机的视频处理器输出的数字视频是分量复用的。有关亮度（Y）的信息包含在视频流的每第二个字节中，而有关颜色的信息则少两倍。即，关于红色Cr的色差信号的信息被包含在每四个字节中，以及关于蓝色的色差信号的信息。因此，该流表示以下序列：Cb0，Y0，Cr0，Y1，Cb2，Y2，Cr2，Y3，Cb4，Y4，Cr4，Y5等。即有关每个像素亮度的信息没有间隙，而有关像素颜色的信息则按分量顺序排列。这种变薄是由于对小细节的颜色不敏感以及视频信号中的色带减小所致。这些属性用于模拟电视和视频数字化。上面的“压缩”（颜色二次采样）的成分比为4：2：2。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了使自动对焦算法起作用，仅分析亮度分量就足够了，这也很容易通过“逐字节”截取视频流来实现。如果CK频率约为18 MHz，则CK / 2为9 MHz，这对于ATmega128 MK而言似乎是可以实现的。水平和垂直同步脉冲使控制器能够``计数''并分析图像的任何区域。也许，对于自动聚焦算法而言，仅分析栅格的中心就足够了。显然，聚焦越好，图像越清晰，因此视频信号的频带越宽（更多的RF分量）。也就是说，有可能（甚至有必要）将快速傅立叶变换（FFT）算法应用于数字视频流的片段并分析RF分量。在这种情况下，您每次都需要扭曲焦点，使用“半除法”方法作为数学优化方法。因此，您可以获得最佳结果。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+考虑到在具有简单体系结构的MK上是不可能的，尽管在任何情况下，我都保留了一个用于数字视频的端口，但我对自动对焦功能并不在意。除了自动对焦外，我决定实现许多其他功能，这些功能在原始固件中不可用。但是为此，必须将摄像机限制在静态条件下，这对于视频监控来说是典型的。假定相机随后将能够使用特殊机制自动和手动地在水平面和垂直平面上旋转。当相机自动对准特定对象时，其球面坐标将被预先存储在控制设备的内存中，变焦和聚焦的“坐标”也将发生变化，这也将被预先选择并存储在内存中。可以根据PELCO-D协议组织管理，此外，在该协议的规范中，有专门的团队来开展这项业务。当然，缩放和焦点的坐标将“配对”特定距离。也就是说，将以给定距离定位的对象将成为焦点。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在开始编写固件程序之前，您需要考虑哪些MK外围设备以及涉及哪些结论。然后，您需要考虑如何在相机内部放置和固定带有自己的MK的电路板。从而使它尽可能方便和可维护。我决定使用带有MK的电路板，其结论将完全传递到左侧和右侧。该板将位于相机底部空间很小的位置，并以可拆卸的连接方式固定。同时，板上的连接器将有“针脚”，摄像机侧面将有相配的插座。对于响应插座，我决定再制造两个转接板，其尺寸与摄像机侧面的尺寸相同。这些卡的薄片进入相机的上侧，直接进入主板。假设每个薄片都将连接到摄像机主板上的所需点。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在使用MK开发板的过程中，我想到了用时钟（RTC）补充摄像机的功能，并强调了I2C线，该线位于RTC DS1307板上（我已经知道了），装有石英和电池，以防万一是EEPROM 24AA512，用手。板上的顶部边缘还有用于连接SPI和JTAG编程器的连接器。在原始主板上，MK使用12 MHz石英时钟。对我来说也是一样通常，最好将石英放置在11.0592 MHz处，以实现清晰的UART操作。我事先仔细计算过可拆卸关节的“梳子”之间的距离。我决定从5伏的“ Krenka”中馈入MK，该5伏的“ Krenka”将被拧到主板下方的框架上（它也将用作散热器）。如图所示，保险丝FB801之后立即从输入电压12V取电。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pk/rs/q8/pkrsq8mtjjredo8w2mfne5goziy.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 1.微控制器的电源管理。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+在“ SprintLayout”中绘制电路板时，我想知道MK的每个引脚的用途，这些引脚“输出”到连接器。结果就是这样一幅画。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/bm/95/xg/bm95xgf-akgycofwc_mdsjp8rki.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 2.其他印刷电路板的草图。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+实话实说，我在撰写本文时画了侧板（沿着边缘）。但实际上，我是用切割机制作的。事实证明，这不是最成功的选择。而且带有MK的董事会本身做得很歪。我以某种方式将侧面辅助板拧到相机框架的侧面，将助焊剂螺母焊接到PCB的铜表面上。事实是，侧面的空间很小，而且相机的盖子实际上是背对背“拧紧”的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下图显示了MK结论的分布及其目的。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/cc/ry/d2/ccryd2b_viknimo-w0asy0j8fuy.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 3.微控制器结论的目的。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+有很多要评论的地方。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于SPI编程器（STK200 +），不需要输出“ PEN”。照常通过“ RESET”进行激活。但是MK具有一个单独的接口（PDI / PDO），而不是“ MISO”和“ MOSI”，并且组合了“ CLK”线。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+作为ADC的参考电压，我选择了相同的5V，由MK本身供电。我试图单独获得3.3V的电压（与原始电路相同），但同时存在陷阱。并且为了切换到5V参考电压，您需要稍微改变电路，如图所示。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mn/od/wr/mnodwrbakf5xlxkq1qskzeuhmkc.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 4.转换5V参考电压上的按钮。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+也就是说，您需要从3.3V电源侧解焊R505电阻器的一侧，而从MK电源线向其施加5V电压。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在仅在设计板内部使用的MK结论中，仅涉及三个。具有RTC的1 Hz脉冲信号到达PB7以更新时间。引脚PD0和PD1分配给I2C总线。尽管实际上将硬件i2c（TWI）接口连接到这些输出，但仍将使用CVAVR库“ i2c.h”以编程方式实现它。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+输出“ RESET” MC引脚，但无需外部复位链即可自行进行MK复位。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+可以理解，HD和VD时钟脉冲将通过外部中断端口到达MK，以读取视频场。但是，除了自动对焦功能外，不再需要它们。来自变焦和聚焦限位开关的信号到达外部中断的相邻端口。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+端口“ A” MK保留用于数字视频流。端口“ C”完全保留用于SD。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PD4引脚用于切换TX / RX RS-485。原始电路中没有开关：MAX485芯片的第二和第三脚接地。原始MK仅能通过PELCO-D接收用于控制摄像机的数据。我决定做一个小的升级。想法就是这样。如果摄录机高高挂在封闭的外壳中，则根本不可能快速更新固件。并且肯定会出现这样的需求：消除各种错误并改善功能将首次成为常规做法。因此，我想到了为MK实施自举程序的想法，并已经使用它通过RS-485远程更新固件。在这种情况下，非常需要双向交换。关于引导加载程序将是本文的单独部分。为了将MAX485（2和3脚）连接到此MK引脚，您需要对第一板和第二板进行少量更改。这些板通过环路电缆连接，环路电缆的连接器上有未使用的“ IRL”触点，用于背光控制。在第二块（主）板上，您需要拆焊R520电阻，而是将通过适配器板到ATmega128 MK的导线焊接到相应的输出上。在第一块板上，您需要拆焊并弯曲U202的2根和3根脚，将它们焊接在一起，并将其从布线中拉到1个连接器J302的自由输出。这些用于改变电路的操作如图所示。它将通过适配器板到达ATmega128 MK到相应的输出。在第一块板上，您需要拆焊并弯曲U202的2根和3根脚，将它们焊接在一起，并将其从布线中拉到1个连接器J302的自由输出。这些用于改变电路的操作如图所示。它将通过适配器板到达ATmega128 MK到相应的输出。在第一块板上，您需要拆焊并弯曲U202的2根和3根脚，将它们焊接在一起，并将其从布线中拉到1个连接器J302的自由输出。这些用于改变电路的操作如图所示。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/qu/20/oe/qu20oe_mzvupcc4mpsbtg4omwma.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 5.组织TRX线路，用于控制TX / RX MAX485。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ATmega128板上有两个UART接口。在这种情况下，您必须使用第二个接口（引脚27、28），因为引脚上的第一个接口（引脚2、3）与SPI编程器的接口组合在一起。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在董事会上，MK的几乎所有结论都涉及其中。事实证明未使用端口“ G”的结论。顺便说一下，有可能在MK的基础上以编程方式实现时钟。当主电源关闭时，它会使用电池来提供睡眠模式以计时。对于连接单独的低频石英甚至有结论。但是，我没有为此打扰，而是拍了一下DS1307。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下图显示了带有MK的电路板每个输出的目的。另外，有条件地标记了每个引脚的导线将在主板的哪一侧以及哪一侧进行焊接。也有必要提出一些意见。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/i0/fd/df/i0fddfrritx4bjzwqgsfl3bu1r4.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 6.与MK一起分配额外付款的结论。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+来自变焦和聚焦限位开关的信号不仅到达中断端口，而且到达ADC输入。事实是，即使在研究SD的阶段，我也注意到了这一功能。如果缩放或聚焦机制为“零”，则挂车的输出信号可以处于“中间”状态。为了更好地捕获此类罕见情况，我决定使用ADC。当然，这不是一种非常有效的方法，但是通过这样做，我很快就摆脱了有时在测试固件初始化阶段出现的问题。因此，我提高了算法的稳定性。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了以防万一，仅将I2C的SDA / SCL信号插入连接器，不要在此板子外部使用它们。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+用于控制ID的每个引脚的名称均根据实际连接进行签名。展望未来，连接数据终于在调试阶段得到了纠正。存在很多混乱，但是错误仅在于相位精确到相反的交替，而不在于顺序。 “ 4-1-2-3”（用于缩放）和“ 2-3-4-1”（用于对焦）以及“ 1-2-3-4”这两个选项是相同的并以此为基础。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在文章的末尾</font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（为了不丢脸）</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，展示了两张照片。第一个是便携式摄像机的底视图，其中是附加电路板的视图。第二个是从上方看的摄像机主机板上的视图，该摄像机带有密封的标准MK（更准确地说是微处理器），一堆跳线和其他鼻孔。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我在ISIS 7 Professional（Proteus）程序中编写了程序（固件）及其初步测试。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mt/qr/f7/mtqrf7iej-6e3adbtcg-bgghokq.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 7. Proteus中的项目视图。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+我安装了SPI调试器，而不是字符生成器和视频处理器的独特芯片（当然，它们不在Proteus中）。借助它们，可以方便地控制SPI通过MK发送的字节。但是，对这些字节的真正反应是直接在硬件上控制的。使用Proteus，您可以监视和调试来自真实DVR的PELCO-D命令。为此，您需要通过最简单的单向适配器RS485-&gt; RS232将DVR连接到计算机的COM端口。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后，我开始进行开发和建模。 Excel为此提供了很多帮助。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，您需要确定计时器及其配置。一个计时器-实现步进电机的旋转，并在按住按钮的同时实现按钮的重复操作。在通过菜单进行设置的过程中按住此按钮时，SD的操作将被排除。当您按住菜单外的缩放或聚焦控制按钮之一时，SD随相应的时间参数旋转。因此，没有冲突。我计划使用第二个计时器为SD实现PWM，但随着时间的流逝，我决定放弃它。的确，就我而言，当没有自动对焦时，就不需要PWM。此外，传动机构具有螺旋结构，因此，在静止状态下，您不能通过直流电“保持” SD，该机构不会在任何地方蠕动。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后，您需要根据数据表修改字符发生器的字符字母，并将其与标准字母ASCII进行比较。字符生成器的字母由128个字符组成，是最后一个字符的一半。例如，字符生成器中的西里尔字符完全不存在，但是有一些特殊的字符是其应用程序所特有的（太阳，沙漏，小矮人，笔记，电话等）。我制作了一个由256个元素组成的“ smb [256]”数组，并将其放置在EEPROM MK中。符号smb [i] = adr表示在字符生成器的地址adr处有一个带有ASCII码i的字符。并且如果符号i不在字符生成器的字母中，则数组元素的值引用地址为0x7E的“空格”。也就是说，数组中几乎一半的元素的值为“ 0x7E”。下图中的表格形式显示了此数组。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/yo/_b/_g/yo_b_gqswkjfk1smuefynrwgs0e.png"><br>
+<i>. 8.    ASCII    PD6464A.</i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接下来，您需要考虑如何通过ADC处理按钮。根据欧姆定律，单击按钮时很容易计算ADC输入端的电压值。此后，很容易计算间隔的边界，中间的边界将是相同的应力值。总共获得六个间隔：其中五个对应于每个按钮，一个对应于没有按下（没有按下按钮）。在硬件级别，ADC MK会定期分析按钮上的电压值。可以根据ADC时钟周期的计算来实现防反弹定时器。在调试阶段，程序的这一部分存在陷阱。我认为这不值得写细节。为了清楚地完成此功能，我不得不花很长时间。按钮识别功能位于ADC中断部分，其输出为按钮编号，降低标志和释放标志。在主程序循环中会进一步处理按钮。按钮轮询频率（ADC频率）为12000/128 = 93.75（kHz），其中128是最大可能的分频器。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后我根据一个或另一个PELCO-D波特率编译了一个UART配置的UART寄存器值UBRR1数组，可以通过菜单从设置列表中进行选择。</font><font style="vertical-align: inherit;">这些值可以使用MK数据表中的公式计算得出，也可以使用AVR向导自动配置器获得。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后，我开始对菜单进行建模。</font><font style="vertical-align: inherit;">这是编写程序的主要且耗时的阶段。</font><font style="vertical-align: inherit;">原则上，我不会重复标准固件的菜单，只是我决定将其复杂化为分层结构（本节中的部分）。</font><font style="vertical-align: inherit;">下面是我为自己制作的模型说明和菜单定义。</font></font><br>
+<br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">无法阅读</font></font></b>
+                        <div class="spoiler_text">     .<br>
+          .<br>
+      .<br>
+          .<br>
+       «MENU».<br>
+<br>
+    «»    .<br>
+    «»  «»       .<br>
+  «»       .<br>
+  «»       .<br>
+  (   )   ,         .<br>
+   « »,     .<br>
+<br>
+   :<br>
+ — ;<br>
+ — ;<br>
+ — ;<br>
+ — .<br>
+<br>
+    ,   ,   .<br>
+    &lt;&gt;.<br>
+     .<br>
+         "&lt;..&gt;".<br>
+      «».<br>
+      ,   .<br>
+        ( ) .<br>
+    "&lt;..&gt;"      .<br>
+        ,    .<br>
+           .<br>
+<br>
+      .<br>
+     .<br>
+        .<br>
+     "&lt;•&gt;" ( ).<br>
+     "&lt; &gt;" ().<br>
+      «».<br>
+<br>
+    .<br>
+           .<br>
+     «l*l» (,   «l»).<br>
+     «l l» (,   «l»).<br>
+        «».<br>
+<br>
+  ,       .<br>
+     .<br>
+           .<br>
+            .<br>
+       : «000», «00», «0».<br>
+        .<br>
+         : ": ".<br>
+  —      (    )       .<br>
+ ,   ,     «»  «».<br>
+    «»     1.<br>
+    «»     1.<br>
+<br>
+         .<br>
+         .<br>
+</div>
+                    </div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，菜单导航有点类似于通过“ Total Commander”浏览文件和文件夹。此菜单模型的实现代码不是很复杂，但是很麻烦。有两个关键变量：活动页面的编号和页面上活动位置的编号。对于这两个变量，两个“切换大小写”功能相互配合。这对功能涉及按下按钮“左”，“右”和“菜单”的过程。在每个位置（对于每个按钮，页面和当前项目）都会记录某些操作。每个菜单页面都有一个功能，可实现所有铭文和参数在屏幕上的显示。在实现页面输出功能之前，我曾在Excel中对其建模，正如他们所说的“按单元格”。因此，可以更清楚地显示屏幕字段上每个符号的单元格坐标，并且此信息在编程阶段必不可少。在下图中，作为示例，我给出了第9页的视图，在该视图上从列表中选择了PELCO-D波特率。页面上的界面元素是一个单选按钮。除此之外，第一段&lt;..&gt;将退出本节。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/c0/s1/uy/c0s1uyuaoh9dawm-bqpf5g4pmjg.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 9.在Excel中建模OSD。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+我还制作了一个数组，以反映每个页面上的点数。在按下向上和向下按钮的处理中使用。这样做是为了减少代码并避免使用切换大小写功能。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+按住按钮的同时重复进行虚拟按键是通过“开关状态”功能在计时器中断的主体中实现的，该功能可对整数变量（即标志）起作用。标志值对于特定页面和特定菜单项上的按钮的每个操作都是唯一的。仅在需要虚拟点击的位置，它才作为序列号分配给标志。同时，在“开关状态”功能内部（在计时器中断的主体中）放置了实现按钮操作的功能副本。为了节省内存，可以在对按钮处理功能的常规调用中放置“快捷方式”（链接）。这甚至更合理，但是那时我没有耐心考虑如何做得更好，因为我想尽快完成该项目。事实证明，ATmega128中的内存很大。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最后，我实现了“库”以与具有必要功能的视频处理器，字符发生器和RTC DS1307一起使用。之后，我确定了EEPROM MK的地址来存储该信息或该信息。前32个字节保留用于存储菜单设置信息。接下来的32个字节保留用于存储可在屏幕上显示或使用标准命令“ Pelco-D Write Char。更改”的文本。向屏幕。 ” EEPROM区域的后256个字节保留给字母使用（如上所述，将字符从ASCII转换为字符发生器的地址）。最后，接下来的128个字节保留用于存储缩放/聚焦的“预设”（模板）。由于缺乏自动对焦功能，我介绍了此功能。我在文章的开头就写了这个。总共32个模板。缩放或焦点的坐标以两个字节编码。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+另外，值得撰写有关SD管理的实施。通过调用定时器中断块中的功能StepF（）和StepZ（），可以实现SD的旋转。转速由该计时器的配置决定。并且上述功能的实现以最小的步骤（分别）实现了聚焦或缩放的提升。在变焦镜头和聚焦旋转期间，它们的最终位置受到控制。在程序中，最大焦点的位置和最小缩放的位置由常数（分别为280和-600）表示。但是最小焦点的位置和最大变焦的位置-以变量F_min和Z_max的形式（更确切地说是函数）。非矩形工作区域的右下角被切除，从而简化了此方法。为了计算F_min和Z_max的值，使用了分段定义的函数F_min（Z）和Z_max（F）。除了，当SD变焦在Z（变焦坐标）&gt; 500时正向旋转时，如果SD坐标的坐标&lt;（-180），则SD焦点同时沿相同方向旋转。也就是说，最大变焦位置原则上不受当前焦点位置的限制，而是限制为600。发生五角形区域的相应角边界时，两个SD同时旋转，并且此阶段的移动沿“切割面”发生（如果用图形解释），这很简单）从力学角度来看，这等效于上一篇文章中描述的过程，当在没有SD的情况下以及手动移动缩放节点和焦点节点时，路径末端的缩放节点会“拉”焦点节点。由于变焦坐标在聚焦坐标中占主导地位（这就是我考虑F（Z）依赖性的原因，但反之亦然），我并未开始在Step_F（）函数中实现类似的缩放“滚动”过程。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在原始固件中，缩放和焦点的更改速度具有固定值。这并不总是很方便。在我的固件中，我提供了变焦速度和聚焦速度的四个值（独立地），可以通过菜单以及分配给该功能的PELCO-D命令进行选择。根据方便在调试阶段预先选择这四个值，然后将它们输入到固件中。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+需要BD初始化函数init_MR（）来将缩放和聚焦机制绑定到坐标系。每次打开摄像机时，都会执行一次。她的工作算法大致如下。首先，假定变焦或聚焦在零点，并试图通过外部中断功能捕获来自限位开关的信号反弹。我将立即注意到，如果缩放或焦点为“零”（在光学挂车分区的边界），则挂车输出端的信号处于逻辑“ 0”和“ 1”之间的“中间”状态。这种情况不太可能发生，但不能排除。但是，中断功能不能解释诸如反弹之类的信号。这就是为什么我开始使用ADC MK来触发来自其两个空闲通道上的极限和缩放极限开关的信号的原因。所以，第一步是对来自限位开关的信号进行8位精度的“数字化”。这是通过单个模数转换完成的。值得记住的是，本例中的参考电压为5V，限位开关的逻辑电平“ 1”为3.3V。对于逻辑“ 0”，ADC值将为零，对于“ 1”-3.3 / 5 * 255 = 168。如果来自一个或另一个挂车的信号值落在例如2到165（采用模糊间隔）的范围内，则意味着相应的节点已经“为零”，并且可以停止该节点的初始化过程。否则，根据挂车信号的逻辑值（“ 0”或“ 1”），您需要确定节点位于哪一部分（一半）中。 SD的旋转方向将取决于此。 SD应该以这种方式旋转，这样相应的节点将移向“零”（限位开关）。因此，通过同时计算步数开始电动机驱动器的旋转，直到到达限位开关为止。一旦到达相应的限位开关（根据逻辑电平的差异确定外部中断的功能），电动机驱动器就会反向旋转。它将以相反的方向旋转相同的步数，从而返回到其原始位置。在退出初始化功能之前，具有相应符号的每个BD的步数值将被复制到相应的变量中。对于同一功能内的聚焦和变焦，上述过程是独立发生的（并非依次发生）。电机驱动器在初始化阶段的旋转速度由一个单独的常数确定，并且对应于SM可靠旋转的最大速度。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+考虑以下示例：在打开相机电源之前，变焦处于负区域，而焦点位于正区域。该图示意性地显示了步进电机初始化过程中点（Z; F）的轨迹。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/1p/59/6d/1p596dlrqriwqff1jh4jfrtvu-8.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 10.初始化缩放和聚焦的过程。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+点A是缩放和对焦的初始位置。两个节点的移动均以相同的速度（初始化速度）在“零”方向上发生。在点B，焦点达到零，因为它比缩放更接近零。然后将焦点反转。在C点，焦点完成初始化过程，返回到其原始位置。同时，变焦仍朝着“零”方向移动。在D点，它达到“零”并返回其原始位置（A点）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+除了init_MR（）初始化函数外，还有一个goto_zf（z，f）函数。</font><font style="vertical-align: inherit;">基于该名称，它旨在从一个预设切换到另一个预设，这是我在本文开头提到的。</font><font style="vertical-align: inherit;">过渡期间步进电机的旋转速度与初始化期间相同。</font><font style="vertical-align: inherit;">变焦和聚焦的过渡过程同时进行。</font><font style="vertical-align: inherit;">即，如果需要从点（z1； f1）到点（z2； f2），则开始两个SD的同时旋转。</font><font style="vertical-align: inherit;">例如，如果| f2-f1 | &lt;| z2-z1 |，则焦点SD将更早停止。</font><font style="vertical-align: inherit;">如下图所示。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fb/-y/ya/fb-yyanbovlb6i3pe6rxsfh0ax8.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。</font><font style="vertical-align: inherit;">11.选择预设时更改缩放和聚焦的过程。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在零标记限制器通过期间，在步进电机的整个操作时间内，相应的坐标为零。</font><font style="vertical-align: inherit;">尽管理论上无法做到这一点，但事实并非如此。</font><font style="vertical-align: inherit;">但是，实际上，SD仍存在1-2步的误差。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+值得补充的是，与原始固件不同，在我的情况下，当控制缩放和聚焦（通过按钮以及通过PELCO-D进行控制）时，我提供了逐步移动的可能性。其工作原理如下。当您单击4个按钮中的任何一个以控制缩放或聚焦时，相应的SD将旋转一级，从而最小化缩放或聚焦节点的移动。如果不松开按钮，则在短时间后步进电机将开始正常旋转。该延迟是根据经验预先选择的。此功能类似于按住按钮时的虚拟重复按下。由于此功能，消除了通过不良的Internet连接控制缩放或聚焦PELCO-D远程设备时“粘住”按钮的问题。更确切地说，机会是无礼的，并微调缩放或聚焦。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PELCO-D命令的解释器与用于通过PTZ切换负载的设备中的解释类似。之前，我在Habré上专门撰写了一篇有关该简单设备的小文章。与原始固件不同，缩放和聚焦控制命令完全是指按相应的按钮。也就是说，可以使用PELCO-D变焦和聚焦按钮“攀登”菜单。为了通过PELCO-D远程调用菜单，或更确切地说，按“ MENU”按钮，我将光圈打开按钮与它进行了比较，因为此相机型号未使用此功能。因此，有五个用于按下的基本PELCO-D命令以及五个用于释放按钮的基本命令。另外，正如我在整篇文章中随意写的那样，还处理了其他命令：“设置预设”，“清除预设”，“转到预设”，“写字符。要屏幕”，“清除屏幕”，“设置缩放速度”，“设置聚焦速度”。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果在菜单中激活了此选项，则与旧的VHS摄像机类似，带有RTC的日期和时间将显示在图像的左下角。另外，在菜单中，您可以选择输出格式，我也预先提供了该格式。同样在日期和时间旁边的屏幕上，可以显示星期几。除时钟外，缩放和焦点的当前坐标还作为其他信息显示在屏幕上。主要在调试阶段需要此选项。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我将向您介绍我实现的菜单的功能。随着时间的流逝，如有必要，将对菜单进行修改：可以删除某些功能，并添加一些功能。下图显示了我在SPlan中绘制的菜单结构以及页面视图。红色箭头-输入部分。蓝色箭头-从该部分退出。我没有在菜单的每一页上绘制蓝色箭头，例如，我仅绘制了两个。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rl/vs/mp/rlvsmpdeoixbmwlg-jmf2uwj51m.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。 12.屏幕菜单的结构。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我的菜单的某些部分与原始菜单的部分有些相似。首先，这是前两个部分：白平衡和曝光。在第三部分中，您可以指定PELCO-D摄像机的地址，然后从列表中选择数据速率（波特率）。第四部分专门介绍日期和时间。您可以设置日期，时间，星期几，选择四种显示格式之一，然后选择一种显示方法。第五部分-使用缩放和焦点的预设（模板），您可以在其中按数字进行调用以及擦除或覆盖。同样，在菜单的此部分中，您可以选择四种速度之一来更改焦点或缩放。第五部分允许您编辑视频处理器的参数，该参数位于类别3的字节9中。这是视频信号的突发分量的级别和取反，以及视频镜像。菜单的最后一部分用于调试。使用它，您可以将任何类别中任何字节的任何值写入视频处理器。该值可以十进制和二进制形式设置。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+现在我将对引导加载程序说几句话。正如我已经写过的，通过RS-485远程刷新摄像机需要引导加载程序。最初，我认为自己可以完全实现引导加载程序。但是，为了节省时间，我决定使用可以在Internet上找到的已经实现的现成下载器之一。而且，我从未使用过它们，只是在理论层面上对它们有一个想法。选择引导加载程序的重要标准之一是RS-485支持。通常，AVR下载器在UART RS-232上运行。支持RS-485的引导加载程序的不同之处仅在于，在MK侧分配了一个附加输出，用于在从MK到PC的数据传输过程中切换RS-485收发器（例如MAX485）。闪烁MK时，引导加载程序会将有关录制成功或失败的信息传输到计算机。第一个引导程序我发现，它不仅可以记录带有固件的MK的闪存，还可以记录EEPROM。除了写入之外，您还可以读取数据。但是这个带有汇编程序源代码的项目相当混乱，我不理解。此外，该引导加载程序的主要重点是能够分别刷新多个设备，而无需将它们与RS-485网络断开连接，而是通过先前缝入的地址访问每个设备。我不需要这些功能，因为我使用的是RS-485网络的不同拓扑，因此可以快速将摄像机从DVR切换到PC。第二个引导程序是German Chip45。源代码不在公共领域，可以从作者那里购买。取而代之的是，有数百个用于不同AVR MK，不同UART接口的HEX文件（如果有多个，例如本例），RS-485或RS-232可供选择。简而言之，适用于所有场合。同时，作者指出，在RS-485的情况下，TX / RX切换引脚是固定的，并且对应于控制器接口的XCK UART引脚，实际上在UART中不使用。在我的情况下，Atmega128 MK的第二个UART接口的XCK的第30针是PORTD.5，用于激活缩放和对焦限制开关。从原理上讲，不需要此功能，因为正如研究表明的那样，限位开关始终处于活动状态，正如我已经写过的那样。并且如有必要，您可以将此功能转移到任何其他自由输出MK。但是，无论如何，这个引导程序也没有给我留下深刻的印象，特别是因为我遇到了一个更有趣的中文设计的称为“ AVR Universal Bootloader”的引导程序。像Chip45一样，它只能写入，并且只能写入MK的闪存中。但是他有很多可能性，因此我坚决决定继续坚持下去。它作为带有C源代码的AVR Studio项目提供。由于我在CodeVisionAVR中工作，因此必须与WinAVR一起安装AVR Studio。为了获取引导加载程序固件的HEX文件，您需要通过对设备自己的配置和需要的源代码进行初步更改来编译项目。项目的编译包括启动一个bat文件（批处理文件），在其中写入编译命令。因此，不需要打开AVR Studio中的项目。可以手动（在程序员级别）或使用配置器来更改源代码。后者的作用是该实用程序的另一个窗口，该窗口也与Bootloader一起使用。在配置器中，您可以指定用于TX / RX RS-485切换的MK引脚，用于控制闪烁LED的MK引脚，用于进入引导加载程序的MK引脚，无法输入引导加载程序的方式，MK名称和频率等。此外，已知的标准HyperTerminal程序还可以用作在MK中加载用户程序（即与引导加载程序一起使用）的实用程序，它使用Xmodem协议下载固件。并且为了通过文本终端方便且直观地使用引导加载程序，配置器中提供了特殊功能“详细模式”。但是，尽管超级终端具有吸引力，但我还是决定使用引导加载程序随附的实用程序。事实是，在配置器中激活了便捷的Verbose功能后，通过终端工作，我遇到了以下情况。有时会发生以下情况：当线路中的数据流量“碰撞”时（两个设备均处于TX模式），其结果是摄录机中的MAX485变得非常热并且发生故障，或者不是完全失败，而只是RX部分（通过RS-485向摄像机传输数据） 。因此，我放弃了超级终端。还有一个不便之处。超级终端不适用于HEX文本文件，仅接受二进制文件。因此，我将不得不进行从十六进制到bin的附加转换。我生成引导加载程序的HEX文件后，我使用PonyProg程序和通常的SPI编程器将其缝制到MK中。结果，引导加载程序的工作方式如下。当您打开摄像机电源时，引导加载程序将立即被激活。他等待实用程序的连接一秒钟，然后主固件开始工作。如果成功建立连接，然后闪烁过程开始。同时，必须预先将RS-485线的另一端与DVR断开，并通过RS485 &lt;-&gt; RS232或RS485 &lt;-&gt; USB适配器连接到PC。顺便说一下，关于适配器。由于购买的适配器价格昂贵，因此出现了如何自己制作这样的适配器的问题。在互联网上闲逛，我发现了一个简单的RS485 &lt;-&gt; RS232适配器电路。如下图所示。它主要由著名的MAX232和MAX485微电路组成，TX / RX由来自计算机COM端口连接器第三输出的信号通过齐纳二极管电路进行切换。也就是说，MAX485由PC传输的数据流量切换。一切都是简单而巧妙的。RS232或RS485 &lt;-&gt; USB。顺便说一下，关于适配器。由于购买的适配器价格昂贵，因此出现了如何自己制作这样的适配器的问题。在互联网上闲逛，我发现了一个简单的RS485 &lt;-&gt; RS232适配器电路。如下图所示。它主要由著名的MAX232和MAX485微电路组成，TX / RX由来自计算机COM端口连接器第三输出的信号通过齐纳二极管电路进行切换。也就是说，MAX485由PC传输的数据流量切换。一切都是简单而巧妙的。RS232或RS485 &lt;-&gt; USB。顺便说一下，关于适配器。由于购买的适配器价格昂贵，因此出现了如何自己制作这样的适配器的问题。在互联网上闲逛，我发现了一个简单的RS485 &lt;-&gt; RS232适配器电路。如下图所示。它主要由著名的MAX232和MAX485微电路组成，TX / RX由来自计算机COM端口连接器第三输出的信号通过齐纳二极管电路进行切换。也就是说，MAX485由PC传输的数据流量切换。一切都是简单而巧妙的。它主要由著名的MAX232和MAX485微电路组成，TX / RX由来自计算机COM端口连接器第三输出的信号通过齐纳二极管电路进行切换。也就是说，MAX485由PC传输的数据流量切换。一切都是简单而巧妙的。它主要由著名的MAX232和MAX485微电路组成，TX / RX由来自计算机COM端口连接器第三输出的信号通过齐纳二极管电路进行切换。也就是说，MAX485由PC传输的数据流量切换。一切都是简单而巧妙的。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/dg/_j/xg/dg_jxg5vy5h-i32yee8szg8urho.png"><br>
+<i>. 13.   RS-232 &lt;-&gt; RS-485.</i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+掌握了引导加载程序之后，在业余时间，我决定研究便携式摄像机的光学系统。更确切地说，对于我来说有趣的是，变焦和聚焦值的组合将产生从镜头到被摄体的不同距离处的聚焦图像。让我提醒您，缩放和聚焦的各种相互取值的区域由五边形区域（几乎是矩形）描述。例如，从镜头到被摄物体的距离为10厘米。变焦的自变量（沿横坐标轴）的取值范围为-600至600.有必要在视频图像中镜头前面的被摄物体聚焦的每个变焦值上选择聚焦值。然后，您需要制作一张桌子。当然，对所有1200个缩放值进行排序没有任何意义，以相等的步长获取几十个值就足够了。为此，我选择了值50。在此步骤的每个缩放值（-600，-550，-500，...）下，我选择聚焦值并记录测量结果。我对镜头到被摄体的其他距离进行了类似的操作：50 cm，1 m，10 m，100 m，结果是我在Excel中显示的一系列曲线。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/5o/_4/qi/5o_4qikxragcwmdaeespjactaoi.png"><br>
+<i>. 14.  Z-F   .</i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+查看图表，我想提出很多意见。在最小变焦下，几乎任何距离的聚焦值都略小于``中间''（零）。距离为10 cm的粉红色曲线以约250的缩放值结束，该值对应于最小聚焦值。该曲线具有减小的特征并且向上凸。距离为1 m的红色曲线具有完全不同的形状。首先，它不是单调的，其次，关于凸性，存在拐点。距离为10 m和100 m的曲线具有相似的性质，顺便说一下，后者实际上是重合的，我已经提前知道了。因此，我测得的距离大约为10米和100米。摇摆了蓝色曲线半米的距离的原因-最初我不打算对其进行测量。我大致根据以下原则选择此距离：该原则是，尽可能使相应曲线的片段靠近该区域（切割）的拐角边界。事情就这样发生了：这个边界几乎触及了曲线的一部分。通常，值得注意的是，实际上没有使用区域的上半部分（正聚焦值）。唯一的例外是，从被摄物体到镜头的距离很远，并且变焦最大。但是，对于几乎所有距离（除了最近的距离，不到半米），在低变焦（150或更小）下，聚焦值几乎相同。一般而言，所有陈述的测量事实均应基于光学定律进行理论解释。但是目前，我还不知道这种镜片的设备。最大，我在光学领域遇到的是一个简单的两透镜折射望远镜的构造。在这种摄录机的情况下-我不了解光学原理。在输出中，只有两个移动节点不可用：焦点节点（负责焦点）和缩放节点。而且我不知道里面有多少个镜头。我假设有两个与这些移动节点相连。还要注意的是，在调整焦点时，即使相应的节点是固定的，缩放也会在视觉上发生轻微变化。连接到这些移动节点。还要注意的是，在调整焦点时，即使相应的节点是固定的，缩放也会在视觉上发生轻微变化。连接到这些移动节点。还要注意的是，在调整焦点时，即使相应的节点是固定的，缩放也会在视觉上发生轻微变化。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在本文的结尾，我们将继续进行便携式摄像机的实际测试。我决定不拍摄很多静态图片，而是立即上传整个视频。我通过设备记录了视频捕获，声音分别写入了录音机。原始分辨率为720 x576。将视频上传到YouTube后，其质量已发生明显变化。</font></font><br>
+<br>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/H4agAlZlWW8" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当您打开相机电源时，首先发生的是初始化缩放和聚焦在视频图像背景上的步进电机。此图像是黑白图像，没有AGC，因为尚未通过视频处理器初始化过程。在左下方，当前日期和时间将显示当前相机固件的编译日期和时间。在固件源代码中，我创建了位于HEX代码中固定地址的相应变量。假设在编译阶段，更准确地说是在编译阶段之后，将自动执行一个程序，该程序将从系统时间获取变量的值并将其插入到所需地址的HEX文件中。此外，仍然需要重新计算校验和。也许有一种更简单的方法。在视频示例中，这些变量等于零，因为我尚未实现此功能。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+SD初始化后，视频处理器将初始化，并在视频图像的背景上立即显示问候语。调整缩放和聚焦时，其坐标显示在右下方。在视频中，我演示了如何在图像的各个部分中使用保存和调用缩放和聚焦模板（预设）的功能。清除预设时，相应的变量获取值0xFFFF，它对应于值-1。原则上，此功能是多余的，可以将其排除。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在用于调试的菜单的最后一部分中，我演示了类别9字节3的记录。与该字节对应的功能在菜单的上一部分中，我对此进行了多次撰写。由于未从视频处理器读取字节的当前状态，因此我手动将其设置为“ 48”作为可接受的状态之一。之后，我更改了该字节的各个位，从而显示了“镜像”和“反向突发”功能。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在菜单倒数第二部分调整“突发”级别时，您会注意到一个易于修复的小固件错误。其他缺点-有时，当更新时间时，字符中会出现间隙。我认为这是由于摄像机内部电子设备的“弯曲”安装。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常，在操作相机时，会发现与菜单导航相关的一些小麻烦。</font><font style="vertical-align: inherit;">因此，很有可能随着时间的推移进行必要的修订。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+是的，我差点忘了。</font><font style="vertical-align: inherit;">如所承诺的，我带来了两张照片，说明摄录机在显影后变成了什么。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/m-/0-/ah/m-0-ahq2z2xqxpr988ndcfae5uu.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。</font><font style="vertical-align: inherit;">15.底部内部摄像机的更新视图。</font></font></i><br>
+<br>
+<img src="https://habrastorage.org/webt/gs/8_/bw/gs8_bwxf2yy1mqyrt2gmbgzoyu8.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">图。</font><font style="vertical-align: inherit;">16.顶部内部摄像机的更新视图。</font></font></i><br>
+<br></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN499534/index.html">Python后端服务开发指南</a></li>
+<li><a href="../zh-CN499536/index.html">Growbox作为认识自己的方法</a></li>
+<li><a href="../zh-CN499540/index.html">3D游戏渲染如何工作：纹理和纹理过滤</a></li>
+<li><a href="../zh-CN499542/index.html">顶级法卡波夫·青色</a></li>
+<li><a href="../zh-CN499544/index.html">在Google表格中学习神经网络</a></li>
+<li><a href="../zh-CN499548/index.html">面具-照顾别人还是对安全的幻想？</a></li>
+<li><a href="../zh-CN499550/index.html">生态系统低码解决方案</a></li>
+<li><a href="../zh-CN499556/index.html">MS Orleans上的游戏服务器-第3部分：摘要</a></li>
+<li><a href="../zh-CN499560/index.html">适用于Linux的Xswitcher布局校正器：第二步</a></li>
+<li><a href="../zh-CN499562/index.html">关于反射加速的文章未成功</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

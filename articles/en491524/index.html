@@ -1,0 +1,342 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍝 🧔🏻 ⛹🏻 Stas Afanasyev. Juno. Pipelines based on io.Reader / io.Writer. Part 2 🤽🏼 👨‍🌾 🤝</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="In the report, we will talk about the concept of io.Reader / io.Writer, why they are needed, how to implement them correctly and what pitfalls exist i...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Stas Afanasyev. Juno. Pipelines based on io.Reader / io.Writer. Part 2</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/ua-hosting/blog/491524/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In the report, we will talk about the concept of io.Reader / io.Writer, why they are needed, how to implement them correctly and what pitfalls exist in this regard, as well as about building pipelines based on standard and custom io.Reader / io.Writer implementations .</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rd/nv/uj/rdnvujcjwsukejxq_6a9syayawu.jpeg"><a name="habracut"></a><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Stas Afanasyev. </font><font style="vertical-align: inherit;">Juno. </font><font style="vertical-align: inherit;">Pipelines based on io.Reader / io.Writer. </font><font style="vertical-align: inherit;">Part 1</font></font></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Bug “on trust”</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Another nuance: in this implementation there is a “bagul”. </font><font style="vertical-align: inherit;">This bug is confirmed by the developers (I wrote to them about it). </font><font style="vertical-align: inherit;">Maybe someone knows what this “bagul” is? </font><font style="vertical-align: inherit;">It on the slide is the penultimate line: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/c9/kc/xj/c9kcxjodwjtycg7o2n62tfavto0.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is associated with too much trust in the wrapped Reader: if Reader returns a negative number of bytes, then the limit that we would like to get by the number of bytes subtracted increases. </font><font style="vertical-align: inherit;">And in some cases, this is a pretty serious bug that you can’t immediately understand.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I wrote in the issue: let's do something, let's fix it! And then a layer of problems was revealed ... First, they told me that if you add this check now here, you will have to add this check everywhere, and there are a dozen of these places. If we want to shift this to the client side, then we need to determine a number of rules by which the client will validate the data (and there may also be five or two of them). It turns out that all this needs to be copied. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I agree that this is not optimal. Then let's come to some consistent version! Why do we have one implementation of the standard library that does not trust anything, while others trust absolutely everything?</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, while I was writing my civic opinion, thinking it over, we closed the issue with comments - “We will not do anything. </font><font style="vertical-align: inherit;">Bye"! </font><font style="vertical-align: inherit;">They made me look like some kind of fool ... Politely, of course, you can’t find fault. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, we now have a problem. </font><font style="vertical-align: inherit;">It consists in the fact that it is not clear who should validate the data of the wrapped Reader. </font><font style="vertical-align: inherit;">Either the client, or we completely trust the contract ... We have one solution! </font><font style="vertical-align: inherit;">If there is time left, I will tell about it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's move on to the next case.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Teereader</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We looked at an example of how to wrap Reader data. The next example of pipes is to overtake Reader data in Writer. There are two situations. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First situation. We need to read the data from Reader, somehow copy it to Writer (transparently) and work with it as with Reader. There is an implementation of TeeReader for this. It is presented in the upper implementation snippet: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ef/rl/jy/efrljy0zmyzxqk-7cbsbdkqialw.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Works like the Tee team on Unix. I think many of you have heard about this.</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Note that this implementation checks the number of bytes that it reads from the wrapped Reader. See the conditions in the second line? Because when you write such an implementation, it is intuitively clear: in case of a negative number, you will get panic. And this is another place where we trust the wrapped Reader! I remind you that these are all standard libraries. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's move on to a case, for example, how to use it. What will we do on the lower snippet? We will download the robot.txt file from golang.org using the standard http client.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As you know, the http client returns a response structure to us, in which the Body field is an implementation of the Reader interface. </font><font style="vertical-align: inherit;">It should be clarified by saying that this is an implementation of the ReadCloser interface. </font><font style="vertical-align: inherit;">But ReadCloser is just an interface built from Reader and Closer. </font><font style="vertical-align: inherit;">That is, this is a Reader, which can, in general, be closed. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this example (in the lower snippet) we collect TeeReader, which will read data from this Body and write it to a file. </font><font style="vertical-align: inherit;">The creation of the file today, unfortunately, remained behind the scenes, because everything did not fit. </font><font style="vertical-align: inherit;">But, again, if you look at the dendrogram, the file type implements the Writer interface, that is, we can write to it. </font><font style="vertical-align: inherit;">It is obvious.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We assembled our TeeReader and read it using ReadAll. </font><font style="vertical-align: inherit;">Everything works as expected: we subtract the resulting Body, write it to a file, and see it in Assad out.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Beginner way</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The second situation. </font><font style="vertical-align: inherit;">We just need to read the data from Reader and write it to Writer. </font><font style="vertical-align: inherit;">The solution is obvious ... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When I just started working with Go, I solved such problems as on a slide: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/yu/yh/wx/yuyhwxfzki71ar1yp2myfgjffdc.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I located the buffer, filled it with data from Reader, and transferred the filled slice to Writer. </font><font style="vertical-align: inherit;">Everything is simple. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Two points. </font><font style="vertical-align: inherit;">Firstly, there is no guarantee that the entire Reader will be subtracted in one call to the Read method, because there may be data left (in a good way, this should be done in a loop). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The second point is that this path is not optimal. </font><font style="vertical-align: inherit;">Here is pretty boilerplate code that is written before us. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For this, there is a special family of helpers in the standard library - these are Copy, CopyN and CopyBuffer.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">io.Copy. </font><font style="vertical-align: inherit;">WriterTo and ReaderFrom</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+io.Copy basically does what it was on the previous slide: it allocates a default buffer of 32 KB and writes data from Reader to Writer (the signature of this Copy is shown on the upper snippet): </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/lx/wi/bd/lxwibd_hiz09op5baq0-d77ukrk.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In addition to this template routine, it also contains a series of tricky optimizations. </font><font style="vertical-align: inherit;">And before we talk about these optimizations, we need to get acquainted with two more interfaces:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WriterTo;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ReadFrom.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hypothetical situation. Your Reader works with a memory buffer. He has already relocated it, writes, reads something from there, that is, a place under it has already been relocated. You want to read this Reader somewhere from the outside. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We have already seen how this happens: a buffer is created, the buffer is passed, which is passed to the Read method; The Reader, which works with memory, throws it out of the replicated piece ... But this is no longer optimal - the place has been repositioned. Why do it again? </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/0h/sd/0b/0hsd0ba3ikgudka2q1ujxt9rtbc.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Somewhere 5-6 years ago (there is a link to the change list) two interfaces were made: WriteTo and ReadFrom, which are implemented locally. Reader implements WriteTo, and Writer implements ReadFrom. It turns out that Reader, having a slice with data already replicated, can avoid an additional location and accept Write To Writer methods and pass a buffer available inside.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is how the implementation of bytes.Buffer and bufio works. </font><font style="vertical-align: inherit;">And if you look at the dendrogram again, you will see that these two interfaces are not very popular. </font><font style="vertical-align: inherit;">They are just implemented for those types that work with the internal buffer - where the memory is already relocated. </font><font style="vertical-align: inherit;">This will not help you avoid eloquence every time, but only if you are already working with a relocated piece. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ReaderFrom works in a similar way (it is only implemented by Writer). </font><font style="vertical-align: inherit;">ReaderFrom reads the entire Reader, which comes as an argument to it (before EOF) and writes somewhere in the internal implementation of Writer.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CopyBuffer implementation</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This snippet shows the implementation of the copyBuffer helper. This non-exportable copyBuffer is used under the hood of io.Copy, CopyN, and CopyBuffer. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And here there is a small nuance that is worth mentioning. CopyN has recently been optimized - untied from this logic. This is exactly the optimization I spoke about earlier: before creating an additional buffer of 32 KB, a check is made - maybe the data source implements the WriterTo interface, and this additional buffer is not needed? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If this does not happen, we check: maybe Writer implements ReaderFrom to connect them without this intermediary? If this does not happen, the last hope remains: maybe we were given some sort of relocated buffer that we could use? </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/lz/yr/3q/lzyr3qrkehj5qudwoerwitlr6uq.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That's how io.Copy works.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There is one issue, which is a semi-proposal, a semi-bug - it is not clear what. </font><font style="vertical-align: inherit;">It has been hanging for a year and a half. </font><font style="vertical-align: inherit;">It sounds like this: CopyBuffer is semantically incorrect. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Unfortunately, there is no signature for this copyBuffer, but it looks exactly like this non-exportable method. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When you call copyBuffer in the hope of avoiding an additional location, pass some relocated slice byte there, the following logic works: if Reader or Writer have the WriterTo and ReaderFrom interfaces, then there is no guarantee that you will be able to avoid this location. </font><font style="vertical-align: inherit;">This was accepted as a proposal and promised to think about it in Go 2.0. </font><font style="vertical-align: inherit;">For now, you just need to know.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Work with io.Pipe. </font><font style="vertical-align: inherit;">PipeReader and pipeWriter</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Another case: you need to get data from Writer somehow in Reader. Pretty life case. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Imagine that you already have some data, they implement the Reader interface - everything is clear with this. You need to compress this data, “tweak” it and send it to S3. What is the nuance? .. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Who worked with the gzip type in the compess package knows that the gzip'er itself is just a proxy: it takes data into itself, implements the Writer interface, it writes the data, something will do to them, and then I have to drop them somewhere. On the constructor, it takes an implementation of the Writer interface.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Accordingly, here we need some kind of intermediate Writer, where we will drop the already compressed data that is archived in the first stage. Our next move is to upload this data to S3. And the standard AWS client accepts the io.Reader interface as a data source. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-u/ai/hl/-uaihlpfwlyjeil6iorgelvue2a.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The slide shows the pipeline - it shows how it looks: we need to overtake the data to overtake from Reader to Writer, from Writer to Reader. How to do it? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The standard library has a cool feature - io.Pipe. It returns two values: pipeReader and pipeWriter. This pair is inextricably linked. Imagine a “baby phone” in cups with ropes: it makes no sense to speak in one cup while no one is listening at the other end ...</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rf/zm/kj/rfzmkj2jivwatxxbukwdesrxvoe.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+What does this io.Pipe do? </font><font style="vertical-align: inherit;">It will not read until no one writes the data. </font><font style="vertical-align: inherit;">And vice versa, he will not write anything until no one reads this data at the other end. </font><font style="vertical-align: inherit;">Here is an example implementation: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fk/qa/ze/fkqazendof7z_uoop8kbfzmtxuk.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We will do the same here. </font><font style="vertical-align: inherit;">We will read the robot.txt file, which was read before, we will compress it using our gzip and send it to S3.</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">On the first line, a pair is created - pipeReader, pipeWriter. </font><font style="vertical-align: inherit;">Next, we must run at least one goroutine, which will read data from one end (a kind of pipe). </font><font style="vertical-align: inherit;">In this gorutin, run uploader with a data source (source - pipeReader).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In the next step, we need to compress the data. </font><font style="vertical-align: inherit;">We compress the data and write it to pipeWriter (it will be the other end of the pipe), and already running goroutine receives the data at the other end of the pipe and reads it. </font><font style="vertical-align: inherit;">When this whole sandwich is ready, all that remains is to set the wick on fire ...</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">See: io.Copy on the last line writes data from the Body to the gzip we created (i.e. from Reader to Writer). </font><font style="vertical-align: inherit;">All this works out as expected.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This example can be solved in another way. </font><font style="vertical-align: inherit;">If you use any implementation that implements both Reader and Writer. </font><font style="vertical-align: inherit;">You will first write data into it, and then read them. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It was a clear demonstration of how to work with io.Pipe.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Other implementations</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That's basically all for me. We come to interesting implementations that I would like to talk about. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ei/9n/wd/ei9nwdzzrqc7ynwdvghvlokaujo.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I did not say anything about MultiReader, nor about MultiWriter. And this is another cool implementation of the standard library, which allows you to connect different implementations. For example, MultiWriter writes to all Writers simultaneously, and MultiReader reads Readers sequentially. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Another implementation is called limio. It allows you to set a limit for subtraction. You can set the speed in bytes per second at which your Reader needs to be read. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Another interesting implementation is just a visualization of the reading progress - the Progress bar (from some dude). It is called ioprogress. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Why did I say all this? What did I mean by that?</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ha/eq/hq/haeqhquljxa3dyvbxvhpdgn0cvu.jpeg"><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If you suddenly need to implement the Reader and Writer interfaces, do it right. </font><font style="vertical-align: inherit;">There is no single decision yet who is responsible for the implementation - we will assume that everyone trusts the contract. </font><font style="vertical-align: inherit;">So you need to abide by it impeccably.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If your case is working with a repositioned buffer, do not forget about the ReaderFrom and WriterTo interfaces.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If you are at a dead end and you need examples - see the standard library, there are many cool implementations that you can rely on. </font><font style="vertical-align: inherit;">There is documentation there.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">If something is completely incomprehensible to you, then feel free to write issues. </font><font style="vertical-align: inherit;">The guys there are adequate, respond quickly, very politely and competently help you.</font></font></li>
+</ul><br>
+<img src="https://habrastorage.org/webt/vf/0y/cy/vf0ycy0f6kuyuyuygxoulwpy538.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That’s all for me. </font><font style="vertical-align: inherit;">Thank you for coming!</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Questions</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Question from the audience (B): - I have a simple question, I guess. Please tell us about some use-cases from life: which were used and why? You said that Reader / Writer returns the length that it read. Have you ever experienced any problems with this; when did you demand to read (not just ReadAll exists), but something didn’t work? </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - I must honestly admit that I never had such cases, because I always worked with implementations of the standard library. But hypothetically, such a situation, of course, is possible. As for specific cases, we often collect multilayer pipes, and if you hypothetically allow such a bug, the whole pipe will fall apart ... </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- This is not quite a bug. Let’s then tell you about my little experience. I had a problem with Booking.com: they used the driver that I wrote, and they had a problem - something was not working. There is a standard binary protocol that we did; locally, everything works well, everyone is fine, but it turned out that they have a very bad network with a data center. Then Reader didn’t really return everything (bad network cards, something else). </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - But if he did not return everything, then he should not have returned the sign of the end (end), and the client should come again. Under the contract that is described, Reader should not ... Let's just say that Reader, of course, decides when he wants to come, when he does not want, however, if he wants to read everything, he must wait for EOF. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AT:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“But that is precisely because of the connection.” This is exactly the problem that occurred in the standard net package. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - And he returned the EOF? </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - He did not return everything - he simply did not read everything. I told him: "Read the next 20 bytes." He reads. And I do not read everything. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - Hypothetically, this is possible, because it is just an interface that describes a communication protocol. It is necessary to watch and specifically disassemble the case. Here I can only answer you that the client, in theory, should have come again if he did not receive everything he wanted. You asked him for a slice of 20 bytes, he subtracted 15 for you, but EOF didn’t come - you should go again ... </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - There is io.ReadFull for this situation. It is specially designed to read the slice to the end. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- Yes. I did not say anything about ReadFull. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - This is a completely normal situation when Read does not fill in the entire slice. You need to be prepared for this. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - This is a very expected case! </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - Thanks for the report - it was interesting. I use Readers in a small, simple proxy that reads http and writes the other way. I use Close Reader to solve one problem - to close what I read all the time. Do I need to blindly trust a contract? You said that there could be problems. Or add additional checks? It is theoretically possible that something will not come completely on this site. Do I need to do these additional checks and not trust the contract? </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- I would say this: if your application is tolerant of these errors (for example, if you fully trust the contract), then maybe not. But if you would not like to get a “panic” in yourself (as I showed on negative reading in byte.Buffer), then I would still check. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But this is “up to you.” What can I recommend to you? I think just weigh the pros and cons. What happens if you suddenly get a negative number of bytes? </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - Thanks for the report. Unfortunately, I don’t know anything in Go. If a “panic” has occurred, is there any way to intercept this information and get information on what, where, how to be biased, to avoid problems on Friday night? </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - Yes. The Recover mechanism allows you to "catch" a panic and bring it out without falling, relatively speaking. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/q_/xq/37/q_xq37jx6hjicmvwwhfhqdmyl7e.jpeg"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AT:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- How do your recommendations for using implementations of Writer and Reader are consistent with the errors that are returned when implementing web sockets. I won’t give a concrete example, but is end of file always used there? As far as I remember, the message ends with some other meanings ... </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - This is a good question, because I just have nothing to answer. Must watch! If EOF does not come, then the client, if he wants to get everything, must go again. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - How long was the pipe able to assemble? Are there any internal beliefs that pipe is not worth collecting more than five participants, or with branches? How long did you manage to build a tree from these pipes (Read, Write)? </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- In my practice, about five consecutive calls are optimal, because it’s harder to debug, keep in mind what flows and where it goes. Pretty branchy structure is obtained. But I would say somewhere 5-7 maximum. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - 5-7 - this is in which case? </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - This is reading, for example, some data. You need to pledge, and what you log in, you need to trim. Pledged - then you read this data - you need to send it back to some storage (well, hypothetically). In any storage that the Writer interface implements. With this pipe, 5-6 steps occur, although at one of the steps it still branches off to the side, and you continue to work with Reader. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AT:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- According to the Beginner way, you had an interesting slide. Can you indicate another 2-3 interesting points that were there, but now it’s better not to do them, but to do it differently now? </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - With that slide, I wanted to show exactly how to do it without the need to read Reader. It never crossed my mind that something like the Beginner way ... This is probably the main mistake, the main pattern that should be avoided when working with Readers. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Presenter: - I would add on my own that it is very important for a beginner to read all the documentation of the io package, on all the interfaces that are there, and understand them. Because in fact there are a lot of them, and you often start to do something of your own, although it already exists there and is correctly implemented (“right” - taking into account all the features). </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Question of the leader: - How to live further?</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - Good question! I promised to tell if we have time. As a result of the discussion of the bug, LimitedReader came up with the following decision: to make a Reader- “condom” in a sense, which protects against external threats, wrap some Reader that you do not trust — do not let any infection inside your system. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And in this Reader, you implement all the checks that you cannot do: for example, negative reading, experiments with the number of bytes (let's say you sent a slice of 10 bytes, and you got 15 back - how to react to this?) ... In this Reader and you can implement a set of such checks. I said: “Maybe let's add to the standard library, because it would be useful for everyone to use”?</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I was given the answer that there seems to be no sense in this - this is a simple thing that you can implement yourself. All. We live on. We trust the contract guys. But I would not trust. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/gj/e0/_c/gje0_c2o6hhots_d3d5hvnfhgnm.jpeg"><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Q:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - When we work with Readers, Writers and there is an opportunity to run into a gzip “bomb” ... How much do we trust in ReadAll and WriteAll? Or, nevertheless, implement buffer reading and work only with the buffer? </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CA:</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- ReadAll itself uses only bytes.Buffer under the hood. </font><font style="vertical-align: inherit;">When you want to use this or that thing, it is advisable for you to get in and see how these "guts" are implemented. </font><font style="vertical-align: inherit;">Again, it depends on your requirements: if you are intolerant of such errors that I showed, you need to see if what comes from the wrapped Reader is checked. </font><font style="vertical-align: inherit;">If it is not checked, use, for example, bufio (there it is all checked). </font><font style="vertical-align: inherit;">Or do what I just said: a certain proxy Reader, which according to your list of requirements will check this data and either return it to the client or return it to the client.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ye/of/v1/yeofv1zmhlx3zoyv26wsh5mxway.jpeg"><br>
+<br>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/kuyjuGk1USY" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A bit of advertising :)</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thank you for staying with us. Do you like our articles? Want to see more interesting materials? Support us by placing an order or recommending to your friends </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">cloud-based VPS for developers from $ 4.99</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , a </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">unique analog of entry-level servers that was invented by us for you: </font></font></b> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The whole truth about VPS (KVM) E5-2697 v3 (6 Cores) 10GB DDR4 480GB SSD 1Gbps from $ 19 or how to divide the server?</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (options are available with RAID1 and RAID10, up to 24 cores and up to 40GB DDR4). </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Dell R730xd 2 times cheaper at the Equinix Tier IV data center in Amsterdam?</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Only we have </font></font><b><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2 x Intel TetraDeca-Core Xeon 2x E5-2697v3 2.6GHz 14C 64GB DDR4 4x960GB SSD 1Gbps 100 TV from $ 199</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in the Netherlands!</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Dell R420 - 2x E5-2430 2.2Ghz 6C 128GB DDR3 2x960GB SSD 1Gbps 100TB - from $ 99! </font></font></b></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Read about</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> How to Build Infrastructure Bldg. </font><font style="vertical-align: inherit;">class c using Dell R730xd E5-2650 v4 servers costing 9,000 euros for a penny?</font></font></a></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en491510/index.html">Create your image with pure CentOS 8.1 in the Amazon cloud</a></li>
+<li><a href="../en491512/index.html">Why Mr. Robot is the best series about the IT industry</a></li>
+<li><a href="../en491518/index.html">News from the world of OpenStreetMap No. 501 (02/18/2020/24/02/2020)</a></li>
+<li><a href="../en491520/index.html">Convert xls to xlsx and xml in C #</a></li>
+<li><a href="../en491522/index.html">Why do women live longer</a></li>
+<li><a href="../en491528/index.html">My experience is conducting 1000 interviews. Synopsis of the report by Yegor Bugaenko</a></li>
+<li><a href="../en491530/index.html">Once again about 433 MHz transmitters and receivers</a></li>
+<li><a href="../en491532/index.html">Laravel + Docker + Gitlab. Where to begin</a></li>
+<li><a href="../en491534/index.html">A Brief Guide to Using GDB</a></li>
+<li><a href="../en491536/index.html">YouTube - Error. Please try again later. Playback ID: <...></a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

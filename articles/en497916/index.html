@@ -1,0 +1,409 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>♓️ 👨🏻‍💻 🧑🏿‍🤝‍🧑🏾 Extending procedural macros with WASM 🈸 🚃 🥠</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="As part of continuing my research on various aspects of procedural macros, I want to share an approach to expanding their capabilities. Let me remind ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Extending procedural macros with WASM</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/497916/"><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">As part of continuing my research on various aspects of procedural macros, I want to share an approach to expanding their capabilities. </font><font style="vertical-align: inherit;">Let me remind you that procedural macros allow you to add a metaprogramming element to the language and thereby significantly simplify routine operations, such as serialization or query processing. </font><font style="vertical-align: inherit;">At their core, macros are compiler plugins that compile before building the rack in which they are used. </font><font style="vertical-align: inherit;">Such macros have some significant drawbacks.</font></font></p><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Difficulty supporting such macros in the IDE. </font><font style="vertical-align: inherit;">In fact, you need to somehow teach the code analyzer to compile, load and execute these macros on their own, taking into account all the features. </font><font style="vertical-align: inherit;">This is a very non-trivial task.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Since macros are self-sufficient and know nothing about each other, there is no way to compose macros, which could sometimes be useful.</font></font></li>
+</ul><a name="habracut"></a><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">As for solving the first problem, </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">experiments</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> are being conducted </font><font style="vertical-align: inherit;">with compilation of all procedural macros into WASM modules, which will make it possible in the future to completely refuse to compile them on the target machine, and at the same time to solve the problem with their support in the IDE.</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">As for the second problem, in this article I’m just going to talk about my approach to solving this problem. </font><font style="vertical-align: inherit;">In fact, we need a macro that can use the attributes to load some additional macros and combine them into a pipeline. </font><font style="vertical-align: inherit;">In the simplest case, you can simply imagine something like this:</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Suppose we have some macro </font></font><code>TextMessage</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">that displays traits for a given type </font></font><code>ToString</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">and </font></font><code>FromStr</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">using some codec as a textual representation. </font><font style="vertical-align: inherit;">Different types of messages may have a different codec, and their complete list may expand over time, and each codec may have its own unique set of attributes.</font></font></p><br>
+<pre><code class="rust hljs"><span class="hljs-meta">#[derive(Debug, Serialize, Deserialize, PartialEq, TextMessage)]</span>
+<span class="hljs-meta">#[text_message(codec = <span class="hljs-meta-string">"serde_json"</span>, params(pretty))]</span>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">FooMessage</span></span> {<font></font>
+    name: <span class="hljs-built_in">String</span>,<font></font>
+    description: <span class="hljs-built_in">String</span>,<font></font>
+    value: <span class="hljs-built_in">u64</span>,<font></font>
+}</code></pre><br>
+<p>    ,          .            <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">libloading</a>,               IDE.             ,         <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><code>syn</code></a>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><code>quote</code></a>,      ,    .<br>
+          WASM ,    .       .</p><br>
+<h2 id="vybiraem-podhod-k-realizacii">   </h2><br>
+<p>   ,       <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">watt</a>          WASM ,         .    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">watt</a>    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><code>proc-macro2</code></a>,        . ,     <code>darling</code>      <code>proc-macro2</code>,      .</p><br>
+<p>   ,      <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><code>proc-macro2</code></a>,    WASM<br>
+  -   .  ,      <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">wasmtime</a>,     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">bytecodealliance</a>,      ,  Mozilla, Intel  RedHat.   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">wasmtime</a>     ,     ,  ,          </p><br>
+<h2 id="vzaimodeystvie-mezhdu-hostom-i-targetom">    </h2><br>
+<p><em><strong>Disclaimer</strong>:  wasmtime   ,   <br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"> </a>   ,         ,    .          WASM ,         .</em></p><br>
+<p>!</p><br>
+<p>,        ,   ,    WASM ,  .           .</p><br>
+<p>                :</p><br>
+<pre><code class="rust hljs"><span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">implement_codec</span></span>(input: TokenStream) -&gt; TokenStream;</code></pre><br>
+<p>          ,       ,       .   <code>TokenStream</code>       ,          :</p><br>
+<pre><code class="rust hljs"><span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">implement_codec</span></span>(input: &amp;<span class="hljs-built_in">str</span>) -&gt; <span class="hljs-built_in">String</span>;</code></pre><br>
+<p>  ,        ,    <br>
+     ,        :</p><br>
+<p>    <del>  ,        ,        !</del>  WASM    ,         ,     ,  ,   .<br>
+   ,    ,           ,      .            ,                   ,       ,      ,     ,   .      :               .</p><br>
+<pre><code class="rust hljs"><span class="hljs-meta">#[no_mangle]</span>
+<span class="hljs-keyword">pub</span> <span class="hljs-keyword">unsafe</span> <span class="hljs-keyword">extern</span> <span class="hljs-string">"C"</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">toy_alloc</span></span>(size: <span class="hljs-built_in">i32</span>) -&gt; <span class="hljs-built_in">i32</span> {
+    <span class="hljs-keyword">let</span> size_bytes: [<span class="hljs-built_in">u8</span>; <span class="hljs-number">4</span>] = size.to_le_bytes();
+    <span class="hljs-keyword">let</span> <span class="hljs-keyword">mut</span> buf: <span class="hljs-built_in">Vec</span>&lt;<span class="hljs-built_in">u8</span>&gt; = <span class="hljs-built_in">Vec</span>::with_capacity(size <span class="hljs-keyword">as</span> <span class="hljs-built_in">usize</span> + size_bytes.len());
+    <span class="hljs-comment">//  4  -     ,      </span>
+    <span class="hljs-comment">// .</span><font></font>
+    buf.extend(size_bytes.iter());<font></font>
+    to_host_ptr(buf)<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">unsafe</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">to_host_ptr</span></span>(<span class="hljs-keyword">mut</span> buf: <span class="hljs-built_in">Vec</span>&lt;<span class="hljs-built_in">u8</span>&gt;) -&gt; <span class="hljs-built_in">i32</span> {
+    <span class="hljs-keyword">let</span> ptr = buf.as_mut_ptr();
+    <span class="hljs-comment">//      ,   "",  </span>
+    <span class="hljs-comment">//       .</span><font></font>
+    mem::forget(buf);<font></font>
+    ptr <span class="hljs-keyword">as</span> *<span class="hljs-keyword">mut</span> c_void <span class="hljs-keyword">as</span> <span class="hljs-built_in">usize</span> <span class="hljs-keyword">as</span> <span class="hljs-built_in">i32</span><font></font>
+}<font></font>
+<font></font>
+<span class="hljs-meta">#[no_mangle]</span>
+<span class="hljs-keyword">pub</span> <span class="hljs-keyword">unsafe</span> <span class="hljs-keyword">extern</span> <span class="hljs-string">"C"</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">toy_free</span></span>(ptr: <span class="hljs-built_in">i32</span>) {
+    <span class="hljs-keyword">let</span> ptr = ptr <span class="hljs-keyword">as</span> <span class="hljs-built_in">usize</span> <span class="hljs-keyword">as</span> *<span class="hljs-keyword">mut</span> <span class="hljs-built_in">u8</span>;
+    <span class="hljs-keyword">let</span> <span class="hljs-keyword">mut</span> size_bytes = [<span class="hljs-number">0u8</span>; <span class="hljs-number">4</span>];<font></font>
+    ptr.copy_to(size_bytes.as_mut_ptr(), <span class="hljs-number">4</span>);
+    <span class="hljs-comment">//       ,    </span>
+    <span class="hljs-comment">//  .</span>
+    <span class="hljs-keyword">let</span> size = <span class="hljs-built_in">u32</span>::from_le_bytes(size_bytes) <span class="hljs-keyword">as</span> <span class="hljs-built_in">usize</span>;
+    <span class="hljs-comment">//  ,     ""   `to_host_ptr`  </span>
+    <span class="hljs-comment">//          </span>
+    <span class="hljs-comment">//    .</span>
+    <span class="hljs-built_in">Vec</span>::from_raw_parts(ptr, size, size);<font></font>
+}</code></pre><br>
+<p> ,        ,     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><code>wasm_bindgen</code></a>.</p><br>
+<p>     WASM     .        ,            .</p><br>
+<pre><code class="rust hljs"><span class="hljs-meta">#[no_mangle]</span>
+<span class="hljs-keyword">pub</span> <span class="hljs-keyword">unsafe</span> <span class="hljs-keyword">extern</span> <span class="hljs-string">"C"</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">implement_codec</span></span>(<font></font>
+    item_ptr: <span class="hljs-built_in">i32</span>,<font></font>
+    item_len: <span class="hljs-built_in">i32</span>,<font></font>
+) -&gt; <span class="hljs-built_in">i32</span> {
+    <span class="hljs-keyword">let</span> item = str_from_raw_parts(item_ptr, item_len);
+    <span class="hljs-keyword">let</span> item = TokenStream::from_str(&amp;item).expect(<span class="hljs-string">"Unable to parse item"</span>);<font></font>
+<font></font>
+    <span class="hljs-comment">//     ,   .</span>
+    <span class="hljs-comment">// `fn(item: TokenStream) -&gt; TokenStream`</span>
+    <span class="hljs-keyword">let</span> tokens = codec::implement_codec(item);
+    <span class="hljs-keyword">let</span> out = tokens.to_string();<font></font>
+<font></font>
+    to_host_buf(out)<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">pub</span> <span class="hljs-keyword">unsafe</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">str_from_raw_parts</span></span>&lt;<span class="hljs-symbol">'a</span>&gt;(ptr: <span class="hljs-built_in">i32</span>, len: <span class="hljs-built_in">i32</span>) -&gt; &amp;<span class="hljs-symbol">'a</span> <span class="hljs-built_in">str</span> {
+    <span class="hljs-keyword">let</span> slice = std::slice::from_raw_parts(ptr <span class="hljs-keyword">as</span> *<span class="hljs-keyword">const</span> <span class="hljs-built_in">u8</span>, len <span class="hljs-keyword">as</span> <span class="hljs-built_in">usize</span>);<font></font>
+    std::<span class="hljs-built_in">str</span>::from_utf8(slice).unwrap()<font></font>
+}</code></pre><br>
+<p>       ,      WASM .</p><br>
+<pre><code class="rust hljs">
+<span class="hljs-keyword">pub</span> <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">WasmMacro</span></span> {<font></font>
+    module: Module,<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">impl</span> WasmMacro {
+    <span class="hljs-comment">//    .</span>
+    <span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">from_file</span></span>(file: <span class="hljs-keyword">impl</span> <span class="hljs-built_in">AsRef</span>&lt;Path&gt;) -&gt; anyhow::<span class="hljs-built_in">Result</span>&lt;<span class="hljs-keyword">Self</span>&gt; {
+        <span class="hljs-comment">//    WASM ,    .</span>
+        <span class="hljs-keyword">let</span> store = Store::default();
+        <span class="hljs-keyword">let</span> module = Module::from_file(&amp;store, file)?;
+        <span class="hljs-literal">Ok</span>(<span class="hljs-keyword">Self</span> { module })<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">//     `fun`   ,   </span>
+    <span class="hljs-comment">//     TokenStream  .</span>
+    <span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">proc_macro_derive</span></span>(<font></font>
+        &amp;<span class="hljs-keyword">self</span>,<font></font>
+        fun: &amp;<span class="hljs-built_in">str</span>,<font></font>
+        item: TokenStream,<font></font>
+    ) -&gt; anyhow::<span class="hljs-built_in">Result</span>&lt;TokenStream&gt; {
+        <span class="hljs-comment">//    ,   TokenStream  ,</span>
+        <span class="hljs-comment">//      .</span>
+        <span class="hljs-keyword">let</span> item = item.to_string();<font></font>
+<font></font>
+        <span class="hljs-comment">//    ,     .</span>
+        <span class="hljs-keyword">let</span> instance = Instance::new(&amp;<span class="hljs-keyword">self</span>.module, &amp;[])?;
+        <span class="hljs-comment">//      ,     </span>
+        <span class="hljs-comment">//   `implement_codec`.</span>
+        <span class="hljs-keyword">let</span> proc_macro_attribute_fn = instance<font></font>
+            .get_export(fun)<font></font>
+            .ok_or_else(|| anyhow!(<span class="hljs-string">"Unable to find `{}` method in the export table"</span>, fun))?<font></font>
+            .func()<font></font>
+            .ok_or_else(|| anyhow!(<span class="hljs-string">"export {} is not a function"</span>, fun))?<font></font>
+            .get2::&lt;<span class="hljs-built_in">i32</span>, <span class="hljs-built_in">i32</span>, <span class="hljs-built_in">i32</span>,&gt;()?;<font></font>
+<font></font>
+        <span class="hljs-comment">//      WASM   </span>
+        <span class="hljs-comment">// ,      .</span>
+        <span class="hljs-keyword">let</span> item_buf = WasmBuf::from_host_buf(&amp;instance, item);
+        <span class="hljs-comment">//            </span>
+        <span class="hljs-keyword">let</span> (item_ptr, item_len) = item_buf.raw_parts();
+        <span class="hljs-comment">//          </span>
+        <span class="hljs-comment">//      TokenStream. </span>
+        <span class="hljs-keyword">let</span> ptr = proc_macro_attribute_fn(item_ptr, item_len).unwrap();
+        <span class="hljs-comment">//       .</span>
+        <span class="hljs-keyword">let</span> res = WasmBuf::from_raw_ptr(&amp;instance, ptr);
+        <span class="hljs-keyword">let</span> res_str = std::<span class="hljs-built_in">str</span>::from_utf8(res.as_ref())?;
+        <span class="hljs-comment">//       TokenStream   .</span><font></font>
+        TokenStream::from_str(&amp;res_str)<font></font>
+            .map_err(|_| anyhow!(<span class="hljs-string">"Unable to parse token stream"</span>))<font></font>
+    }<font></font>
+}</code></pre><br>
+<p>     <code>WasmBuf</code> :      ,<br>
+    ,    <code>toy_alloc</code>. <br>
+   ,       .</p><br>
+<pre><code class="rust hljs"><span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">WasmBuf</span></span>&lt;<span class="hljs-symbol">'a</span>&gt; {
+    <span class="hljs-comment">//    ,  ,    .</span>
+    offset: <span class="hljs-built_in">usize</span>,
+    <span class="hljs-comment">//    .</span>
+    len: <span class="hljs-built_in">usize</span>,
+    <span class="hljs-comment">//    ,    </span>
+    instance: &amp;<span class="hljs-symbol">'a</span> Instance,
+    <span class="hljs-comment">//    ,    .</span>
+    memory: &amp;<span class="hljs-symbol">'a</span> Memory,<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">const</span> WASM_PTR_LEN: <span class="hljs-built_in">usize</span> = <span class="hljs-number">4</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">impl</span>&lt;<span class="hljs-symbol">'a</span>&gt; WasmBuf&lt;<span class="hljs-symbol">'a</span>&gt; {
+    <span class="hljs-comment">//    :     `toy_alloc`</span>
+    <span class="hljs-comment">//    .</span>
+    <span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">new</span></span>(instance: &amp;<span class="hljs-symbol">'a</span> Instance, len: <span class="hljs-built_in">usize</span>) -&gt; <span class="hljs-keyword">Self</span> {
+        <span class="hljs-keyword">let</span> memory = Self::get_memory(instance);
+        <span class="hljs-comment">//       .</span>
+        <span class="hljs-keyword">let</span> offset = Self::toy_alloc(instance, len);<font></font>
+<font></font>
+        <span class="hljs-keyword">Self</span> {<font></font>
+            offset: offset <span class="hljs-keyword">as</span> <span class="hljs-built_in">usize</span>,<font></font>
+            len,<font></font>
+            instance,<font></font>
+            memory,<font></font>
+        }<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">//      ,     ,</span>
+    <span class="hljs-comment">//      ,      .</span>
+    <span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">from_host_buf</span></span>(instance: &amp;<span class="hljs-symbol">'a</span> Instance, bytes: <span class="hljs-keyword">impl</span> <span class="hljs-built_in">AsRef</span>&lt;[<span class="hljs-built_in">u8</span>]&gt;) -&gt; <span class="hljs-keyword">Self</span> {
+        <span class="hljs-keyword">let</span> bytes = bytes.as_ref();
+        <span class="hljs-keyword">let</span> len = bytes.len();<font></font>
+<font></font>
+        <span class="hljs-keyword">let</span> <span class="hljs-keyword">mut</span> wasm_buf = Self::new(instance, len);
+        <span class="hljs-comment">//        .</span><font></font>
+        wasm_buf.as_mut().copy_from_slice(bytes);<font></font>
+        wasm_buf<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">//       ,    </span>
+    <span class="hljs-comment">// .            </span>
+    <span class="hljs-comment">//         .</span>
+    <span class="hljs-comment">//      `toy_alloc`  ,    4</span>
+    <span class="hljs-comment">//     .</span>
+    <span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">from_raw_ptr</span></span>(instance: &amp;<span class="hljs-symbol">'a</span> Instance, offset: <span class="hljs-built_in">i32</span>) -&gt; <span class="hljs-keyword">Self</span> {
+        <span class="hljs-keyword">let</span> offset = offset <span class="hljs-keyword">as</span> <span class="hljs-built_in">usize</span>;
+        <span class="hljs-keyword">let</span> memory = Self::get_memory(instance);<font></font>
+<font></font>
+        <span class="hljs-keyword">let</span> len = <span class="hljs-keyword">unsafe</span> {
+            <span class="hljs-comment">//      .</span>
+            <span class="hljs-keyword">let</span> buf = memory.data_unchecked();<font></font>
+<font></font>
+            <span class="hljs-keyword">let</span> <span class="hljs-keyword">mut</span> len_bytes = [<span class="hljs-number">0</span>; WASM_PTR_LEN];
+            <span class="hljs-comment">//      .</span><font></font>
+            len_bytes.copy_from_slice(&amp;buf[offset..offset + WASM_PTR_LEN]);<font></font>
+            <span class="hljs-built_in">u32</span>::from_le_bytes(len_bytes)<font></font>
+        };<font></font>
+<font></font>
+        <span class="hljs-keyword">Self</span> {<font></font>
+            offset,<font></font>
+            len: len <span class="hljs-keyword">as</span> <span class="hljs-built_in">usize</span>,<font></font>
+            memory,<font></font>
+            instance,<font></font>
+        }<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">//         .</span>
+    <span class="hljs-comment">//     ,       4 .</span><font></font>
+<font></font>
+    <span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">as_ref</span></span>(&amp;<span class="hljs-keyword">self</span>) -&gt; &amp;[<span class="hljs-built_in">u8</span>] {
+        <span class="hljs-keyword">unsafe</span> {
+            <span class="hljs-keyword">let</span> begin = <span class="hljs-keyword">self</span>.offset + WASM_PTR_LEN;
+            <span class="hljs-keyword">let</span> end = begin + <span class="hljs-keyword">self</span>.len;<font></font>
+<font></font>
+            &amp;<span class="hljs-keyword">self</span>.memory.data_unchecked()[begin..end]<font></font>
+        }<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">as_mut</span></span>(&amp;<span class="hljs-keyword">mut</span> <span class="hljs-keyword">self</span>) -&gt; &amp;<span class="hljs-keyword">mut</span> [<span class="hljs-built_in">u8</span>] {
+        <span class="hljs-keyword">unsafe</span> {
+            <span class="hljs-keyword">let</span> begin = <span class="hljs-keyword">self</span>.offset + WASM_PTR_LEN;
+            <span class="hljs-keyword">let</span> end = begin + <span class="hljs-keyword">self</span>.len;<font></font>
+<font></font>
+            &amp;<span class="hljs-keyword">mut</span> <span class="hljs-keyword">self</span>.memory.data_unchecked_mut()[begin..end]<font></font>
+        }<font></font>
+    }    <font></font>
+}</code></pre><br>
+<p>    ,     .</p><br>
+<pre><code class="rust hljs"><span class="hljs-keyword">impl</span> <span class="hljs-built_in">Drop</span> <span class="hljs-keyword">for</span> WasmBuf&lt;<span class="hljs-symbol">'_</span>&gt; {
+    <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">drop</span></span>(&amp;<span class="hljs-keyword">mut</span> <span class="hljs-keyword">self</span>) {<font></font>
+        Self::toy_free(<span class="hljs-keyword">self</span>.instance, <span class="hljs-keyword">self</span>.len);<font></font>
+    }<font></font>
+}</code></pre><br>
+<h2 id="sobiraem-vse-vmeste">  </h2><br>
+<p>          ,  <br>
+ WASM    ,   .</p><br>
+<pre><code class="rust hljs"><span class="hljs-meta">#[proc_macro_derive(TextMessage, attributes(text_message))]</span>
+<span class="hljs-keyword">pub</span> <span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">text_message</span></span>(input: TokenStream) -&gt; TokenStream {
+    <span class="hljs-keyword">let</span> input: DeriveInput = parse_macro_input!(input);<font></font>
+<font></font>
+    <span class="hljs-keyword">let</span> attrs = TextMessageAttrs::from_raw(&amp;input.attrs)<font></font>
+        .expect(<span class="hljs-string">"Unable to parse text message attributes."</span>);<font></font>
+<font></font>
+    <span class="hljs-comment">//        codecs,   </span>
+    <span class="hljs-comment">//    . </span>
+    <span class="hljs-keyword">let</span> codec_dir = Path::new(&amp;std::env::var(<span class="hljs-string">"CARGO_MANIFEST_DIR"</span>)<font></font>
+        .unwrap())<font></font>
+        .join(<span class="hljs-string">"codecs"</span>);
+    <span class="hljs-keyword">let</span> plugin_name = <span class="hljs-built_in">format!</span>(<span class="hljs-string">"{}_text_codec.wasm"</span>, attrs.codec);
+    <span class="hljs-keyword">let</span> codec_path = codec_dir.join(plugin_name);<font></font>
+<font></font>
+    <span class="hljs-keyword">let</span> wasm_macro = WasmMacro::from_file(codec_path)<font></font>
+        .expect(<span class="hljs-string">"Unable to load wasm module"</span>);<font></font>
+<font></font>
+    wasm_macro<font></font>
+        .proc_macro_derive(<font></font>
+            <span class="hljs-string">"implement_codec"</span>,<font></font>
+            input.into_token_stream().into(),<font></font>
+        )<font></font>
+        .expect(<span class="hljs-string">"Unable to apply proc_macro_attribute"</span>)<font></font>
+}</code></pre><br>
+<p> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"></a>      .   ,      WASM ,      .</p><br>
+<pre><code class="rust hljs"><span class="hljs-meta">#[derive(Debug, Serialize, Deserialize, PartialEq, TextMessage)]</span>
+<span class="hljs-comment">//   ,  WASM      .</span>
+<span class="hljs-meta">#[text_message(codec = <span class="hljs-meta-string">"serde_json"</span>, params(pretty))]</span>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">FooMessage</span></span> {<font></font>
+    name: <span class="hljs-built_in">String</span>,<font></font>
+    description: <span class="hljs-built_in">String</span>,<font></font>
+    value: <span class="hljs-built_in">u64</span>,<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">fn</span> <span class="hljs-title">main</span></span>() {
+    <span class="hljs-keyword">let</span> msg = FooMessage {<font></font>
+        name: <span class="hljs-string">"Linus Torvalds"</span>.to_owned(),<font></font>
+        description: <span class="hljs-string">"The Linux founder."</span>.to_owned(),<font></font>
+        value: <span class="hljs-number">1</span>,<font></font>
+    };<font></font>
+<font></font>
+    <span class="hljs-keyword">let</span> text = msg.to_string();
+    <span class="hljs-built_in">println!</span>(<span class="hljs-string">"{}"</span>, text);
+    <span class="hljs-keyword">let</span> msg2 = text.parse().unwrap();<font></font>
+<font></font>
+    <span class="hljs-built_in">assert_eq!</span>(msg, msg2);<font></font>
+}</code></pre><br>
+<h2 id="vyvody"></h2><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">While this is more like a trolley from a loaf of bread, but on the other hand it is a small but wonderful demonstration of the principle itself. </font><font style="vertical-align: inherit;">Such macros become open to expansion. </font><font style="vertical-align: inherit;">We no longer need to rewrite the original procedural macro to change or expand its behavior. </font><font style="vertical-align: inherit;">And if you use the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">registry of modules</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> for WASM, then you can distribute such modules like cargo crates.</font></font></p></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en497900/index.html">SMR (tiled) hard drives without indicating the presence of SMR went to sales channels</a></li>
+<li><a href="../en497904/index.html">UX-research of RBS: our experience, mistakes and discoveries</a></li>
+<li><a href="../en497908/index.html">The end of the hype: What awaits the Scala language next</a></li>
+<li><a href="../en497910/index.html">Voice assistants will help drivers not get distracted while driving: in fact - not always and not for everyone</a></li>
+<li><a href="../en497912/index.html">HackTheBox. Walkthrough Mango. NoSQL injection and LPE via JJS</a></li>
+<li><a href="../en497918/index.html">DevOps tools are not just for DevOps. The process of building a test automation infrastructure from scratch</a></li>
+<li><a href="../en497920/index.html">Reuters: 5 possible scenarios for economic recovery after a coronavirus pandemic</a></li>
+<li><a href="../en497922/index.html">The only sure way to upload and download files in Selenium tests</a></li>
+<li><a href="../en497928/index.html">OData babel plugin</a></li>
+<li><a href="../en497930/index.html">Sinclair zx80 / ​​zx81 emulation</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

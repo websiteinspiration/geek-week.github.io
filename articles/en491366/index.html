@@ -1,0 +1,173 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏾‍🤝‍👨🏽 🎫 👨🏻‍🍳 PostgreSQL Antipatterns: fighting hordes of the “dead” 👆🏼 🗺️ 🌃</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The features of the internal PostgreSQL mechanisms allow it to be very fast in some situations and not so fast in others. Today we will dwell on the c...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQL Antipatterns: fighting hordes of the “dead”</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/491366/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The features of the internal PostgreSQL mechanisms allow it to be very fast in some situations and not so fast in others. </font><font style="vertical-align: inherit;">Today we will dwell on the classic example of a conflict between how the DBMS works and what the developer does with it - </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">UPDATE vs MVCC principles</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Briefly plot from an </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">excellent article</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">When a line is modified with the UPDATE command, two operations are actually performed: DELETE and INSERT. </font><font style="vertical-align: inherit;">In the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">current version of the line</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , xmax is set equal to the number of the transaction that performed UPDATE. </font><font style="vertical-align: inherit;">Then a </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">new version of</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> the same line is created; </font><font style="vertical-align: inherit;">its xmin value matches the xmax value of the previous version.</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Some time after the completion of this transaction, the old or new version, depending on which </font></font><code>COMMIT/ROOLBACK</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, will be recognized as </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“dead” (dead tuples)</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> when passing </font></font><code>VACUUM</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">through the table and cleaned. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/li/dw/rf/lidwrftvhlmkueb4c8rak38feh4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But this will not happen right away, but problems with the “dead” can be acquired very quickly - with multiple or </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mass updates of records</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in a large table, and a little later, faced with a situation that </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">VACUUM will not be able to help</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 1: I Like To Move It</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suppose your method on business logic works for itself, and suddenly realizes that it would be necessary to update the field X in some record:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span> tbl <span class="hljs-keyword">SET</span> X = &lt;newX&gt; <span class="hljs-keyword">WHERE</span> pk = $<span class="hljs-number">1</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Then, as it progresses, it finds out that the Y field should be updated too:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span> tbl <span class="hljs-keyword">SET</span> Y = &lt;newY&gt; <span class="hljs-keyword">WHERE</span> pk = $<span class="hljs-number">1</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+... and then also Z - why trifle something?</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span> tbl <span class="hljs-keyword">SET</span> Z = &lt;newZ&gt; <span class="hljs-keyword">WHERE</span> pk = $<span class="hljs-number">1</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+How many versions of this record now have in the database? </font><font style="vertical-align: inherit;">Yeah, 4 pieces! </font><font style="vertical-align: inherit;">Of these, one is relevant, and 3 will have to pick up [auto] VACUUM for you. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Do not do like this! </font><font style="vertical-align: inherit;">Use the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">update of all fields in one request</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - almost always the logic of the method can be changed like this:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span> tbl <span class="hljs-keyword">SET</span> X = &lt;newX&gt;, Y = &lt;newY&gt;, Z = &lt;newZ&gt; <span class="hljs-keyword">WHERE</span> pk = $<span class="hljs-number">1</span>;</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 2: Use IS DISTINCT FROM, Luke!</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, you still wanted to </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">update many, many records in the table</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (during the use of a script or converter, for example). </font><font style="vertical-align: inherit;">And something like this flies into the script:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span> tbl <span class="hljs-keyword">SET</span> X = &lt;newX&gt; <span class="hljs-keyword">WHERE</span> pk <span class="hljs-keyword">BETWEEN</span> $<span class="hljs-number">1</span> <span class="hljs-keyword">AND</span> $<span class="hljs-number">2</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In approximately this form, a query is encountered quite often and almost always not to fill in an empty new field, but to correct some errors in the data. </font><font style="vertical-align: inherit;">Moreover, the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">correctness of already existing data is not taken into account at all</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - but in vain! </font><font style="vertical-align: inherit;">That is, the record is being rewritten, even if it was exactly what I wanted - why? </font><font style="vertical-align: inherit;">Correct:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span> tbl <span class="hljs-keyword">SET</span> X = &lt;newX&gt; <span class="hljs-keyword">WHERE</span> pk <span class="hljs-keyword">BETWEEN</span> $<span class="hljs-number">1</span> <span class="hljs-keyword">AND</span> $<span class="hljs-number">2</span> <span class="hljs-keyword">AND</span> X <span class="hljs-keyword">IS</span> <span class="hljs-keyword">DISTINCT</span> <span class="hljs-keyword">FROM</span> &lt;newX&gt;;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Many people are not aware of the existence of such a wonderful operator, so here is a cheat sheet for </font></font><b><code>IS DISTINCT FROM</code></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">other logical operators to help:</font></font><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/js/a3/ci/jsa3ciwigwxqvlfcpyk0vs-zwqk.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+... and a little about operations on complex </font></font><code>ROW()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">expressions:</font></font><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/xn/3q/4t/xn3q4tiidkye-tdj7-uebntop7a.png"></div><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"># 3: I’ll recognize my dear by ... blocking</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Run </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">two identical parallel processes</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , each of which is aimed at the recording mark, that it is "in operation":</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span> tbl <span class="hljs-keyword">SET</span> processing = <span class="hljs-literal">TRUE</span> <span class="hljs-keyword">WHERE</span> pk = $<span class="hljs-number">1</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Even if these processes substantively do things independent of each other, but within the framework of one ID, on this request the second client will “lock up” until the first transaction is completed. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Solution # 1</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : the task is reduced to the previous one. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Just add again </font></font><b><code>IS DISTINCT FROM</code></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">:</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span> tbl <span class="hljs-keyword">SET</span> processing = <span class="hljs-literal">TRUE</span> <span class="hljs-keyword">WHERE</span> pk = $<span class="hljs-number">1</span> <span class="hljs-keyword">AND</span> processing <span class="hljs-keyword">IS</span> <span class="hljs-keyword">DISTINCT</span> <span class="hljs-keyword">FROM</span> <span class="hljs-literal">TRUE</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this form, the second request will simply not change anything in the database, there it is already “everything is as it should” - therefore, blocking will not occur. </font><font style="vertical-align: inherit;">Further, the fact of the “non-existence" of the record is already processed in the applied algorithm. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Decision number 2</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : advisory locks </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A big topic for a separate article in which you can read about the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">methods of application and the "rake" of recommendation locks</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Solution # 3</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : without [d] smart calls </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But exactly, exactly, you should have </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">simultaneous work with the same record</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ? </font><font style="vertical-align: inherit;">Or did you still mess up with client-side business logic call algorithms, for example? </font><font style="vertical-align: inherit;">And if you think about it? ..</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en491348/index.html">Online Testing - Are You Serious?</a></li>
+<li><a href="../en491350/index.html">Android mitap at Redmadrobot April 30th</a></li>
+<li><a href="../en491356/index.html">Big Data in the service of the Ministry of Health or how modern technologies help fight the disease</a></li>
+<li><a href="../en491358/index.html">The Witcher pay with a minted coin - we analyze the main song from the series The Witcher in English</a></li>
+<li><a href="../en491362/index.html">March 6th Java Digest</a></li>
+<li><a href="../en491372/index.html">Robot Operating System Meetup - 2020 will be held in Moscow on April 18-19, 2020</a></li>
+<li><a href="../en491376/index.html">Study study</a></li>
+<li><a href="../en491382/index.html">Google Income Taxes in Belarus</a></li>
+<li><a href="../en491384/index.html">Information Security Automated incident response platform</a></li>
+<li><a href="../en491388/index.html">Get away from jQuery to Svelte, as it were</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

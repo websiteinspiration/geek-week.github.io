@@ -1,0 +1,297 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚲 🍻 🕺 Hash + cache: stream processing optimization 🤗 ↩️ 📽️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="What should I do if I want to write down a lot of “facts” in the database of a much larger volume than it can withstand? First, of course, we bring th...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Hash + cache: stream processing optimization</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/498830/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">What should I do if I want to write down a lot of “facts” in the database of a much larger volume than it can withstand? First, of course, we bring the data to a more economical </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">normal form</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and get “dictionaries”, which </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">we will write once</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . But how to do it most effectively? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is exactly the question we faced when developing </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">monitoring and analysis of PostgreSQL server logs</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , when other </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">methods of optimizing the record in the database</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> were exhausted.</font></font><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/0y/34/cp/0y34cps5t4nqozitxa0xb7urypm.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We’ll </font><font style="vertical-align: inherit;">
+make a reservation right away that our collectors are running </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Node.js</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , so we don’t interact with processor registers and caches in any way. </font><font style="vertical-align: inherit;">And the option of using "hundred" or external caching services / databases gives too much delay for </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">incoming streams of several hundred Mbps</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Therefore, we try to </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">cache everything in RAM</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , specifically in the memory of the JavaScript process. </font><font style="vertical-align: inherit;">About how to organize this more efficiently, and we will go further.</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Availability Caching</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Our main task is to make sure that the only instance of any object gets into the database. These are the repeatedly repeated original texts of SQL queries, templates of </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">plans for their implementation</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , nodes of these plans — in short, some </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">text blocks</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Historically, as an identifier we used a </font></font><code>UUID</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-value, which was obtained as a result of direct calculation of the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MD5 hash</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> from the text of the object. After that, we check the availability of such a hash in the local </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"dictionary" in the process memory</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and if it is not there, only then we write to the database in the "dictionary" table.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is, we do not need to store the original text value itself (and sometimes it takes tens of kilobytes) - just the very </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fact of the presence of the corresponding hash</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in the dictionary </font><font style="vertical-align: inherit;">is enough </font><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Key Dictionary</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Such a dictionary can be kept in </font></font><code>Array</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, and used </font></font><code>Array.includes()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to check for availability, but this is quite redundant - the search degrades (at least in previous versions of V8) linearly from the size of the array, O (N). </font><font style="vertical-align: inherit;">And in modern implementations, despite all the optimizations, it loses at a speed of 2-3%. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Therefore, in the pre-ES6 era, storage was the traditional solution </font></font><code>Object</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, with stored values ​​as keys. </font><font style="vertical-align: inherit;">But everyone assigned the values ​​of the keys what he wanted - for example </font></font><code>Boolean</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">,:</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">var</span> dict = {};<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">function</span> <span class="hljs-title">has</span>(<span class="hljs-params">key</span>) </span>{
+  <span class="hljs-keyword">return</span> dict[key] !== <span class="hljs-literal">undefined</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">function</span> <span class="hljs-title">add</span>(<span class="hljs-params">key</span>) </span>{<font></font>
+  dict[key] = <span class="hljs-literal">true</span>;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But it’s quite obvious that we are clearly storing the excess here - the very value of the key that no one needs. But what if it is not stored at all? So the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Set object</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> appeared </font><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tests show that searching with help is </font></font><code>Set.has()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">approximately 20-25% faster than key verification c </font></font><code>Object</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. But this is not his only advantage. Since we store less, then </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">we should need less memory</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - and this directly affects performance when it comes to hundreds of thousands of such keys. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, </font></font><code>Object</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in which there are 100 UUID keys in a text representation, it occupies </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">6,216 bytes</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in memory </font><font style="vertical-align: inherit;">: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/1e/n6/ge/1en6gefozucw86wki6odp-j3ria.png"><br>
+<br>
+<code>Set</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">with the same contents - </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2,632 bytes</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ri/59/cb/ri59cbgqbmmbqhivlopro2gspuu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is, it </font></font><code>Set</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">works faster and at the same time takes</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.5 times less memory</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - the winner is obvious.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We optimize the storage of UUID keys</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In general, in the nature of distributed systems, UUID keys are quite common - </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in our VLSI</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> they are, at a minimum, used to identify documents and regulations in </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">electronic document management</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , people in </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">messaging</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , ... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now let's take a closer look at the picture above - each UUID is the key stored in the hex representation “costs” us </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">56 bytes of memory</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . But we have hundreds of thousands of them, so it’s reasonable to ask: “Is it possible to have less?” </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First, recall that the UUID is a 16-byte identifier. Essentially a piece of binary data. And for transmission by email, for example, binary data is encoded in </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">base64</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - try to apply it:</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">let</span> str = Buffer.from(uuidstr, <span class="hljs-string">'hex'</span>).toString(<span class="hljs-string">'base64'</span>);</code></pre><br>
+<img src="https://habrastorage.org/webt/pd/jc/ks/pdjckslsoycw92xnx4moahgmweg.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Already 48 bytes each is better, but imperfect. </font><font style="vertical-align: inherit;">Let's try translating the hexadecimal representation directly into a string:</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">let</span> str = Buffer.from(uuidstr, <span class="hljs-string">'hex'</span>).toString(<span class="hljs-string">'binary'</span>);</code></pre><br>
+<img src="https://habrastorage.org/webt/6i/nn/_5/6inn_5k8y3pnogatsv-r5ntrdzo.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Instead of 56 bytes per key - 40 bytes, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">saving almost 30%</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> !</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Master, worker - where to store dictionaries?</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Considering that the vocabulary data from the workers intersect quite strongly, we made the storage of the dictionaries and writing them to the database in the master process, and the transfer of data from the workers through </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the IPC message mechanism</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, a significant portion of the master’s time was spent on </font></font><code>channel.onread</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- that is, processing the receipt of packets with "dictionary" information from child processes:</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sd/kr/nr/sdkrnrm1c_amswktwm57kl3qsfo.png"><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Dual Set Write Barrier</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now let's think for a second - the workers send and send the master the same vocabulary data (basically these are the plan templates and the repeating request bodies), he parses them with his sweat and ... does nothing, because they have already been sent to the database before ! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So if we </font></font><code>Set</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“protected” the database from re-recording from the master with a dictionary, why not use the same approach to “protect” the master from being transferred from the worker? .. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Actually, that was done, and </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">reduced the direct costs of</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> servicing the exchange channel </font><b><font style="vertical-align: inherit;">three times</font></b><font style="vertical-align: inherit;"> : </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/y1/h4/aj/y1h4ajs-o3hdg1xfoyf9j_kflpc.png"><br>
+<br>
+<img src="https://habrastorage.org/webt/vl/be/na/vlbenalj_sd_2jk36xdkhaouhp8.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But now the workers do seem to do more work - store dictionaries and filter by them? </font><font style="vertical-align: inherit;">Or not? .. In fact, they began to work significantly less, since the transfer of large volumes (even via IPC!) Is not cheap.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/dz/7k/mb/dz7kmbdj5jnirhajahmwrpcwzfw.png"></div><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nice bonus</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As the wizard now began to receive a much smaller amount of information, it began to allocate much less memory for these containers - which means that the time spent on the Garbage Collector’s work decreased significantly, which positively affected the latency of the system as a whole.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/fg/af/el/fgafel26_6der0h-knhglqckt8k.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Such a scheme provides protection against repeated entries at the collector level, but what if we have several collectors? </font><font style="vertical-align: inherit;">Only the trigger with will help here </font></font><code>INSERT ... ON CONFLICT DO NOTHING</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Speed ​​up hash calculation</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In our architecture, the entire log stream from one PostgreSQL server is processed by one worker. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is, one server is one task for the worker. In this case, the loading of workers is balanced by the purpose of the server tasks so that the CPU consumption by the workers of all collectors is approximately the same. This is a separate service dispatcher. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+“On average,” each worker handles dozens of tasks that produce approximately the same total load. However, there are servers that significantly surpass the rest in the number of log entries. And even if the dispatcher leaves this task the only one on the worker, its download is much higher than the others:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ol/p1/9a/olp19ahpqzn4e5aaek0oyg1tjt0.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We removed the CPU profile of this worker: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/2q/zk/fs/2qzkfsaqceti_tietxizjhfmioi.png" alt="image"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On the top lines, the calculation of MD5 hashes. </font><font style="vertical-align: inherit;">And they are really calculated a huge amount - for the entire stream of incoming objects.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">xxHash</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+How to optimize this part, except for these hashes, we can not? </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We decided to try another hash function - </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">xxHash</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which implements </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Extremely fast non-cryptographic hash algorithm</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">And the module for Node.js is </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">xxhash-addon</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which uses the latest version of the xxHash 0.7.3 library with the new XXH3 algorithm. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Check by running each option on a set of rows of different lengths:</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">const</span> crypto = <span class="hljs-built_in">require</span>(<span class="hljs-string">'crypto'</span>);
+<span class="hljs-keyword">const</span> { XXHash3, XXHash64 } = <span class="hljs-built_in">require</span>(<span class="hljs-string">'xxhash-addon'</span>);
+<span class="hljs-keyword">const</span> hasher3 = <span class="hljs-keyword">new</span> XXHash3(<span class="hljs-number">0xDEADBEAF</span>);
+<span class="hljs-keyword">const</span> hasher64 = <span class="hljs-keyword">new</span> XXHash64(<span class="hljs-number">0xDEADBEAF</span>);<font></font>
+<font></font>
+<span class="hljs-keyword">const</span> buf = Buffer.allocUnsafe(<span class="hljs-number">16</span>);
+<span class="hljs-keyword">const</span> getBinFromHash = <span class="hljs-function">(<span class="hljs-params">hash</span>) =&gt;</span> buf.fill(hash, <span class="hljs-string">'hex'</span>).toString(<span class="hljs-string">'binary'</span>);<font></font>
+<font></font>
+<span class="hljs-keyword">const</span> funcs = {
+  <span class="hljs-attr">xxhash64</span> : <span class="hljs-function">(<span class="hljs-params">str</span>) =&gt;</span> hasher64.hash(Buffer.from(str)).toString(<span class="hljs-string">'binary'</span>)<font></font>
+, <span class="hljs-attr">xxhash3</span>  : <span class="hljs-function">(<span class="hljs-params">str</span>) =&gt;</span> hasher3.hash(Buffer.from(str)).toString(<span class="hljs-string">'binary'</span>)<font></font>
+, <span class="hljs-attr">md5</span>      : <span class="hljs-function">(<span class="hljs-params">str</span>) =&gt;</span> getBinFromHash(crypto.createHash(<span class="hljs-string">'md5'</span>).update(str).digest(<span class="hljs-string">'hex'</span>))<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-keyword">const</span> check = <span class="hljs-function">(<span class="hljs-params">hash</span>) =&gt;</span> {
+  <span class="hljs-keyword">let</span> log = [];
+  <span class="hljs-keyword">let</span> cnt = <span class="hljs-number">10000</span>;
+  <span class="hljs-keyword">while</span> (cnt--) log.push(crypto.randomBytes(cnt).toString(<span class="hljs-string">'hex'</span>));<font></font>
+<font></font>
+  <span class="hljs-built_in">console</span>.time(hash);<font></font>
+  log.forEach(funcs[hash]);<font></font>
+  <span class="hljs-built_in">console</span>.timeEnd(hash);<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-built_in">Object</span>.keys(funcs).forEach(check);
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Results:</font></font><br>
+<pre><code class="plaintext hljs">xxhash64 : 148.268ms<font></font>
+xxhash3  : 108.337ms<font></font>
+md5      : 317.584ms<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">expected</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , xxhash3 was </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">much faster than MD5</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ! </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It remains to check for resistance to collisions. </font><font style="vertical-align: inherit;">Sections of the dictionary tables are being created for us every day, so outside the boundaries of the day we can safely allow the intersection of hashes. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But just in case, they checked with a margin in the interval of three days - </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">not a single conflict</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> that suits us more than suits.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Hash Replacement</font></font></h4><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/3d/rz/ga/3drzgasyjhevujtp-etsjcwlnz8.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But we simply cannot take and exchange old UUID fields in the dictionary tables for a new hash, because both the database and the existing frontend wait for objects to continue to be identified by UUID. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Therefore, we will add </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">one more cache</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to the collector </font><font style="vertical-align: inherit;">- for already calculated MD5. Now it will be a </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Map</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , in which the keys are xxhash3, the values ​​are MD5. For identical lines, we do not recount the “expensive” MD5 again, but take it from the cache:</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">const</span> getHashFromBin = <span class="hljs-function">(<span class="hljs-params">bin</span>) =&gt;</span> Buffer.from(bin, <span class="hljs-string">'binary'</span>).toString(<span class="hljs-string">'hex'</span>);
+<span class="hljs-keyword">const</span> dictmd5 = <span class="hljs-keyword">new</span> <span class="hljs-built_in">Map</span>();
+<span class="hljs-keyword">const</span> getmd5 = <span class="hljs-function">(<span class="hljs-params">data</span>) =&gt;</span> {
+  <span class="hljs-keyword">const</span> hash = xxhash(data);
+  <span class="hljs-keyword">let</span> md5hash = dictmd5.get(hash);
+  <span class="hljs-keyword">if</span> (!md5hash) {<font></font>
+    md5hash = md5(data);<font></font>
+    dictmd5.set(hash, getBinFromHash(md5hash));<font></font>
+    <span class="hljs-keyword">return</span> md5hash;<font></font>
+  }<font></font>
+  <span class="hljs-keyword">return</span> getHashFromBin(md5hash);<font></font>
+};<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We remove the profile - the fraction of the time for computing hashes has decreased markedly, cheers! </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/el/5q/ce/el5qcei3ahbakyyerswutw2rulk.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So now we count xxhash3, then check the MD5 cache and get the desired MD5, and then check the dictionary cache - if this md5 is not there, then send it to the database for writing. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Something too many checks ... Why check the dictionary cache if you have already checked the MD5 cache? </font><font style="vertical-align: inherit;">It turns out that all dictionary caches are no longer needed and it’s enough to have only one cache - for MD5, with which all the basic operations will be performed: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/wl/e_/uc/wle_ucs0o22wpxmrjlg_2sokzvm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As a result, we replaced the check in several “object” dictionaries with one MD5 cache, and the resource-intensive operation of calculating MD5 is Hash is performed only for new entries, using the much more efficient xxhash for the incoming stream. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+thank</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kilor</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> for help in preparing the article.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en498816/index.html">The truth first of all, or why the system needs to be designed based on the database device</a></li>
+<li><a href="../en498820/index.html">Some more tricky questions on .NET and C #</a></li>
+<li><a href="../en498822/index.html">Development and creation from scratch of an arcade machine for four players</a></li>
+<li><a href="../en498826/index.html">SIL and Salesforce</a></li>
+<li><a href="../en498828/index.html">How table salt and proteins will increase implant survival</a></li>
+<li><a href="../en498832/index.html">Overview of the possibilities of Qt Creator 4.12 and QBS 1.16 for programming microcontrollers</a></li>
+<li><a href="../en498834/index.html">33 online mitaps of the week. Choose one or have time for everything?</a></li>
+<li><a href="../en498836/index.html">[Infographics] Top 50 gaming franchises with revenue of over a billion</a></li>
+<li><a href="../en498840/index.html">The bot monitors and controls the computer via telegrams</a></li>
+<li><a href="../en498842/index.html">Moderation of comments: And yet, can we trust users?</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
