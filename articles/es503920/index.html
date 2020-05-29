@@ -1,0 +1,215 @@
+<!doctype html>
+<html class="no-js" lang="es">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔓 👨🏻‍🏭 🚚 Cómo probamos los sistemas de micrófonos en STM32: la experiencia de los desarrolladores de dispositivos Yandex 🤴🏾 👵🏻 👩🏻‍⚕️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hola, soy Gennady "Crail" Kruglov del equipo de soluciones de hardware de Yandex. 
+ 
+ La selección de micrófonos para la matriz de micrófonos es una p...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Cómo probamos los sistemas de micrófonos en STM32: la experiencia de los desarrolladores de dispositivos Yandex</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/503920/"><img src="https://habrastorage.org/webt/dg/ni/vr/dgnivrsbkyzydcn6d-uvht3oygc.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hola, soy Gennady "Crail" Kruglov del equipo de soluciones de hardware de Yandex. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La selección de micrófonos para la matriz de micrófonos es una parte compleja e interesante de nuestro trabajo: probamos modelos con varios parámetros, experimentamos con varias configuraciones de matriz y mejoramos los algoritmos de procesamiento de sonido. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Es conveniente que los desarrolladores que crean algoritmos de reducción de ruido y eco no solo procesen datos sin procesar que se tomaron previamente de un dispositivo en el laboratorio, sino que también interactúen, por ejemplo, con una nueva matriz de micrófono en tiempo real conectándola a su computadora portátil.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Parece simple solo a primera vista. </font><font style="vertical-align: inherit;">En este artículo explicaré cómo resolvimos el problema de transferir el sonido de siete micrófonos con una interfaz PDM a una computadora a través de USB, qué matices de hardware y software encontramos y cómo superarlos (spoiler: este enfoque puede adaptarse para matrices con la cantidad de micrófonos ≤ 8 ) </font><font style="vertical-align: inherit;">Al final de la publicación, compartiré un enlace a la transmisión, donde mostraré el proceso de desarrollo en el microcontrolador STM32 y hablaré sobre la próxima serie.</font></font><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Formulación del problema</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Un poco de historia: para crear un haz controlado de sensibilidad, para el primer Yandex.Station, se seleccionó un circuito con siete micrófonos (analógicos), para la versión Mini, con cuatro (ya digitales). Para otros productos, se consideran varias configuraciones, pero aún así la matriz de siete micrófonos para nosotros es básica, clásica. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entonces, dado: siete micrófonos digitales, la necesidad de probarlos. Encontrar: no es demasiado difícil de implementar y una forma flexible de interactuar con ellos. Es lógico dividir la tarea en dos: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. Obtener datos de los micrófonos. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2. Enviarlos a una computadora.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+En el dispositivo terminado, cuando el usuario contacta a Alice, las señales de los micrófonos digitales se envían directamente al procesador central (es más correcto llamarlo SoC - System-on-Chip, pero el "procesador" es más familiar y conveniente), tiene suficiente potencia para procesarlas. Pero para los algoritmos de depuración es mucho más conveniente llevar estos datos directamente a la computadora del desarrollador. La forma más fácil es conectarse a través de USB: por lo tanto, la placa debe tener un microcontrolador con la unidad adecuada. Nos encanta el controlador STM32, pero es imposible enviar el flujo de sonido desde los micrófonos directamente a él: no hay una unidad de recepción de señal PDM (modulación de densidad de pulso), la interfaz de salida de los micrófonos digitales.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Otra opción es conectar la placa del micrófono a la placa de depuración del fabricante del SoC utilizado. </font><font style="vertical-align: inherit;">Pero esta decisión está vinculada a Linux alsamixer, y sus parámetros afectan fuertemente el resultado de convertir PDM a PCM. </font><font style="vertical-align: inherit;">Estos bloques pueden diferir no solo para procesadores de diferentes fabricantes, sino incluso para dos modelos del mismo proveedor. </font><font style="vertical-align: inherit;">Les recuerdo que necesitábamos una solución simple, transparente y predecible.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Solución de hardware</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Acepte la incapacidad del STM32 para aceptar PDM multicanal. Se podría usar el bloque SPI para recibir una señal PDM, pero solo se puede conectar un micrófono a un bus SPI. Trabajamos con el controlador STM32L476RC, donde solo hay tres de estos buses. Complejidad adicional: la señal PDM es de bastante alta frecuencia, es necesario hacer su diezmado, promediación, procesamiento, filtrado; para siete micrófonos esta tarea es bastante complicada.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como estamos hablando de una placa de depuración, y no de un prototipo para la producción en masa, nos centraremos en un chip especializado TSDP18xx. Hace todo lo necesario: genera las frecuencias y señales necesarias para PDM, promedia y procesa la señal PDM, la convierte en una señal I2S. Más precisamente, TDM (multiplexación por división de tiempo), porque el bus I2S asume dos canales, y si conduce más a través de los mismos cables, ya no es correcto llamarlo I2S. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+La ventaja de este enfoque es que todo el trabajo de preparación y promediación es realizado por TSDP. Menos: todos los algoritmos están estrechamente conectados dentro de este microcircuito, y no se pueden cambiar. En particular, no puede ajustar el volumen modificando los parámetros de promedio. Pero para la depuración, esto no es crítico.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mire sus manos: hay siete micrófonos, ocho canales en el microcircuito. El que no se usa, la salida todavía está allí, por lo que en el futuro por simplicidad hablaré sobre la transmisión de audio de ocho canales. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entonces, elevamos el TDM de ocho canales a STM32, obtenemos una transmisión de audio de ocho canales. Cómo se mueven los datos: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/w1/pe/40/w1pe40wix4cok_xc_xmaslgas3a.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+SAI - Unidad de hardware STM32 para trabajar con I2S / TDM. Es muy flexible y le permite implementar muchas opciones de protocolo. Pero debido a esto, es fácil confundirse con los requisitos para las frecuencias. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El árbol del reloj merece una mirada más cercana. Un resonador de cuarzo de 12 MHz está conectado al microcontrolador. Dividimos esta frecuencia antes de aplicar a los bloques PLL por 3 y obtenemos 4 MHz. Entonces funciona así:</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. Sería bueno aumentar la frecuencia del núcleo para mantenerse al día con todo: por ejemplo, el máximo para este controlador es 80 MHz. Usamos el primer bloque PLL: multiplicamos 4 MHz por 40 y dividimos entre 2. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2. USB requiere 48 MHz. Para hacer esto, use el segundo bloque PLL: multiplique 4 MHz por 24 y divida entre 2. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3. Acerca de los micrófonos. Nuestros tableros de prueba utilizan una frecuencia de muestreo de Fs = 16 kHz, un estándar adoptado en el campo del reconocimiento de voz. Desde la frecuencia inicial de 4 MHz, debe obtener algo que se pueda convertir en frecuencias de trama de bus TDM de 16 kHz (también conocido como LRCK, también conocido como FCK, también conocido como FrameSync). En este caso: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+[frecuencia de sincronización de bits (BCLK, BitClk, Sync, SCK)] = Fs ∙ [número de canales] ∙ [número de bits por canal] </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Es decir: SCK = 16 kHz ∙ 8 ∙ 16 = 2048 kHz.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+4. La hoja de datos indica que la relación entre el reloj maestro y la frecuencia de muestreo Fs es la siguiente: MasterClock = 16 kHz ∙ Divisor MCLK ∙ 256. Aquí 256 es una constante, y el divisor se puede establecer en el registro. </font><font style="vertical-align: inherit;">Verifiquemos el esquema: para la funcionalidad necesaria, existen coeficientes para dividir la frecuencia PLL entre 7 o 17: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/qk/9n/zo/qk9nzo9zysl0dsggr-la2lux9-m.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+para resumir el problema: debe seleccionar un conjunto de factores y divisores PLL y SAI para obtener una frecuencia de muestreo de 16 kHz y una frecuencia de bits de 128 veces más. </font><font style="vertical-align: inherit;">Como el conjunto tenía un divisor obligatorio por 7 (o 17), no funcionó para obtener exactamente el resultado deseado. </font><font style="vertical-align: inherit;">Tuve que construir una tabla de multiplicadores y divisores para obtener 24.571 MHz. </font><font style="vertical-align: inherit;">Dividiendo esta frecuencia por 6 (MCLK Divider), y luego por 256 (constante), finalmente, obtenemos un número lo suficientemente cercano a 16 kHz. </font><font style="vertical-align: inherit;">Ahora explicaré por qué esto es tan importante.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Operación USB</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+USB utiliza un tipo de transferencia isócrono para trabajar con datos multimedia: en este caso, se garantiza un cierto ancho de banda y un valor de retraso en el bus USB. La entrega de datos no está garantizada: si un paquete llega con una falla, se considerará perdido. Esto se debe a límites de tiempo estrictos: no hay forma de volver a preguntar.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Con el tipo de transferencia isócrona a velocidad USB FullSpeed ​​(es de 12 Mbit / s; es a esta velocidad que el bloque USB STM32 puede funcionar) la computadora llega al dispositivo para obtener datos cada milisegundo: después de este período de tiempo, debe recopilar los datos acumulados. Permítanme recordarles los introductorios: la frecuencia de muestreo es de 16 kHz, 8 canales, cada canal requiere dos bytes, porque el sonido es de dieciséis bits. Total 16000 ∙ 2 ∙ 8/1000 = 256 bytes por milisegundo. El tamaño de un paquete para un tipo de transmisión isócrono puede alcanzar 1023 bytes, por lo que no hay problemas en este momento.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Entonces, el tamaño del paquete es de 256 bytes. Parece que todo está bien. Dieciséis veces recibimos datos en TDM, los colocamos en el búfer, llegó USB, le damos un paquete, repetimos ... Pero esto solo sucede en un mundo ideal. El problema es que, por un lado, tenemos 16 kHz imperfectos (un poco menos), y como resultado, los datos llegan en un poco menos de una vez cada milisegundo. Por otro lado, el milisegundo de la computadora también flota, ya que está ocupada: cuando pudo, entonces vino. Es decir, la frecuencia de sondeo del micrófono difiere de 16 kHz (pero siempre la misma), y el milisegundo USB también difiere en longitud (la diferencia, lo más probable, es flotante: resulta un poco más, luego un poco menos que un milisegundo ideal).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+¿Por qué es esto un problema? Puedes perder el paquete. Probablemente sea innecesario explicar que los datos completos son necesarios para la depuración correcta de los algoritmos. Cómo se pierde el paquete: acumularon 256 bytes de resultados, los pusieron en el búfer y continuaron la medición. Llegó una computadora, tomó los primeros 256, todavía seguimos midiendo. La computadora volvió a aparecer, pero la medición aún no se ha completado: la computadora se fue con un paquete vacío. Luego terminamos de llenar el búfer y comenzamos a llenar otro, el siguiente, hasta que la computadora vuelva a llegar. La computadora toma solo el último paquete; como resultado, se pierde un paquete. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/of/o0/ol/ofo0olk2bqjbjtm5keb0upd58xo.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+El problema es, de hecho, conocido. Hay tres enfoques para tratarlo:</font></font><br>
+<br>
+<ul>
+<li><b></b>.            USB.    —    .   «» —   .   USB          .       ,     ,   (  ,  16 ),       .        ,          .</li>
+<li><b></b>.             .</li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Asíncrono</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> es lo mejor para esta tarea. </font><font style="vertical-align: inherit;">El dispositivo tiene un generador de frecuencia estable. </font><font style="vertical-align: inherit;">La frecuencia de muestreo se mantiene exactamente igual sin referencia a USB. </font><font style="vertical-align: inherit;">En este caso, debe transferir datos al dispositivo para que no haya discrepancias significativas.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Todo esto se ha discutido más de una vez en Internet para el caso de la reproducción desde una computadora al altavoz a través de un dispositivo con un codificador digital a analógico, donde el dispositivo como retroalimentación le indica cuántos períodos de muestreo han llegado desde que se recibió el último paquete. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/4m/xx/ng/4mxxngiif53s98nf0v08vuuyds0.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pero nuestra tarea es lo contrario, la depuración requiere recibir datos de los micrófonos a una computadora, y la cuestión de grabar una señal de los micrófonos a una computadora solo se menciona en el mejor de los casos. </font><font style="vertical-align: inherit;">¿Por qué no hacer lo mismo: introducir comentarios de la computadora? </font><font style="vertical-align: inherit;">Hay una opción más fácil.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ahi esta</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Utilizamos la adición frecuente de muestras y dos memorias intermedias para almacenar datos para enviar. 16 veces por milisegundo agregamos al búfer seleccionado la siguiente muestra. En algún momento, se produce una interrupción: USB tomó el paquete anterior. Si el búfer n. ° 1 está lleno, cambia al búfer n. ° 2. Cuando llega el USB para el siguiente paquete, ya está preparado. Envíe el búfer número 2 y vuelva al número 1.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ob/td/0m/obtd0mcd2tzmv8iut7w7-5_vpzc.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+USB viene para datos en diferentes momentos, el paquete incluye un número diferente de muestras. Puede llegar a ser más o menos de dieciséis, por lo que existe la posibilidad de superar un paquete de 256 bytes de tamaño, es mejor dejar espacio para maniobrar. Sea 384 = 256 + 128: esto dará un margen de medio milisegundo, es decir, perdonará la fase de nado de la señal USB en un 50%; dicho margen debería ser más que suficiente. Total: a veces se envían más o menos 256 bytes, pero nunca un paquete vacío, lo que evita la pérdida de datos. Es decir, el problema de las irregularidades se resolvió aumentando el paquete, a costa de aumentar parte del ancho de banda del bus asignado para nuestro dispositivo y reducir esta parte para otros dispositivos.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Con esto, la entrega de datos a la computadora llegó a su fin. </font><font style="vertical-align: inherit;">Los desarrolladores pueden depurarse, y puede hacer preguntas en los comentarios si algún tipo de paquete de datos no fue suficiente para una comprensión completa.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mis transmisiones y el próximo episodio.</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Últimamente fluí dos veces desde el laboratorio de soldadura de mi casa. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Al principio</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> solo mostré el proceso de soldadura y dije qué dispositivos uso. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">La segunda serie</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> se dedicó al desarrollo en el STM32. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Las corrientes continúan. </font><font style="vertical-align: inherit;">Este viernes a las 19:00, mi colega del equipo de desarrollo de soluciones de hardware Andrey Laptev organizará un análisis en línea de Yandex.Stations Mini: muestre el interior y comparta historias de producción. </font><font style="vertical-align: inherit;">Para más diversión, Andrey atornillará la batería a la columna; no todo es lo mismo, funciona desde el cable. </font><font style="vertical-align: inherit;">En la final, recibirá una guía que le permitirá repetir esta experiencia usted mismo o crear un diseño más interesante. </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=es&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Regístrate</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">para ver la corriente </font><font style="vertical-align: inherit;">Recibirá una carta con un archivo para el calendario y un recordatorio en el día de emisión. </font><font style="vertical-align: inherit;">¡Gracias por leer!</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../es503906/index.html">LabVIEW NXG - Tipos de datos simples y coerción de tipos</a></li>
+<li><a href="../es503908/index.html">Llamar a bibliotecas compartidas desde Similink</a></li>
+<li><a href="../es503910/index.html">Experimentos en personas que han ido a "udalenka"</a></li>
+<li><a href="../es503916/index.html">Aprender a comerciar en el intercambio. Primera parte: configurar un entorno de prueba</a></li>
+<li><a href="../es503918/index.html">Gestión de paquetes con módulos Go: una guía pragmática</a></li>
+<li><a href="../es503922/index.html">¿Por qué la UE erradica las paredes de las galletas?</a></li>
+<li><a href="../es503924/index.html">Descripción general del escáner 3D intraoral Medit i500</a></li>
+<li><a href="../es503926/index.html">Quién es quién en el ecosistema de pagos 2020. Parte 2</a></li>
+<li><a href="../es503928/index.html">Aerosol VS riego: ¿cuál es mejor y hay alguna diferencia?</a></li>
+<li><a href="../es503932/index.html">Estoy cansado del hecho de que los vendedores comunes se hacen pasar por desarrolladores y deshonran a la industria. Empeoran el mundo</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,215 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🕵🏽 🚅 🙆 How we test microphone systems on STM32: the experience of Yandex device developers 🏏 🏳️ 🕋</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hi, I’m Gennady “Crail” Kruglov from the Yandex hardware solutions team. 
+ 
+ The selection of microphones for the microphone matrix is ​​a complex and...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>How we test microphone systems on STM32: the experience of Yandex device developers</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/503920/"><img src="https://habrastorage.org/webt/dg/ni/vr/dgnivrsbkyzydcn6d-uvht3oygc.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hi, I’m Gennady “Crail” Kruglov from the Yandex hardware solutions team. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The selection of microphones for the microphone matrix is ​​a complex and interesting part of our work: we test models with various parameters, experiment with various matrix configurations, and improve sound processing algorithms. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It’s convenient for developers who create echo and noise reduction algorithms to not only process raw data that were previously taken from a device in the laboratory, but also to interact, for example, with a new microphone matrix in real time by connecting it to their laptop.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It seems uncomplicated only at first glance. </font><font style="vertical-align: inherit;">In this article I will explain how we solved the problem of transferring sound from seven microphones with a PDM interface to a computer via USB, what hardware and software nuances we encountered and how to overcome them (spoiler: this approach can be adapted for matrices with the number of microphones ≤ 8 ) </font><font style="vertical-align: inherit;">At the end of the post I will share a link to the stream, where I show the development process on the STM32 microcontroller, and talk about the next series.</font></font><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Formulation of the problem</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A little background: to create a controlled beam of sensitivity, for the first Yandex.Station, a circuit with seven microphones (analog) was selected, for the Mini version - with four (already digital). For other products, various configurations are considered, but still the seven-microphone matrix for us is basic, classic. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, given: seven digital microphones, the need to test them. Find: not too difficult to implement and flexible way to interact with them. It is logical to divide the task into two: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. Get data from microphones. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2. Send them to a computer.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the finished device, when the user contacts Alice, the signals from digital microphones are sent directly to the central processor (it is more correct to call it SoC - System-on-Chip, but the “processor” is more familiar and convenient), it has sufficient power to process them. But for debugging algorithms it is much more convenient to get this data directly to the developer's computer. The easiest way is to connect via USB: thus, the board must have a microcontroller with the appropriate unit. We love the STM32 controller, but it is impossible to send the sound stream from the microphones directly to it: there is no PDM signal reception unit (pulse density modulation) - the output interface of digital microphones.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Another option is to connect the microphone board to the debug board from the manufacturer of the SoC used. </font><font style="vertical-align: inherit;">But this decision is tied to Linux alsamixer, and its parameters strongly affect the result of converting PDM to PCM. </font><font style="vertical-align: inherit;">These blocks may differ not only for processors from different manufacturers, but even for two models of the same vendor. </font><font style="vertical-align: inherit;">I remind you that we needed a simple solution, transparent and predictable.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Hardware solution</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Accept the inability of the STM32 to accept multi-channel PDM. One could use the SPI block to receive a PDM signal, but only one microphone can be connected to one SPI bus. We work with the STM32L476RC controller, where there are only three such buses. Additional complexity: the PDM signal is quite high-frequency, it is necessary to do its decimation, averaging, processing, filtering - for seven microphones this task is quite complicated.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Since we are talking about a debug board, and not a prototype for mass production, we will focus on a specialized chip TSDP18xx. It does everything necessary: ​​it generates the necessary frequencies and signals for PDM, averages and processes the PDM signal, turns it all into an I2S signal. More precisely, TDM (Time Division Multiplexing), because the I2S-bus assumes two channels, and if you drive more through the same wires, it is no longer quite correct to call it I2S. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The advantage of this approach is that all the work on preparation and averaging is undertaken by TSDP. Minus - all algorithms are tightly wired inside this microcircuit, and they cannot be changed. In particular, you cannot adjust the volume by modifying the averaging parameters. But for debugging, this is not critical.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Watch your hands: there are seven microphones, eight channels on the microcircuit. The one that is not used, the output is still there, so in the future for simplicity I will talk about the eight-channel audio stream. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, we raise the eight-channel TDM to STM32, we get an eight-channel audio stream. How data moves: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/w1/pe/40/w1pe40wix4cok_xc_xmaslgas3a.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+SAI - STM32 hardware unit for working with I2S / TDM. It is very flexible and allows you to implement many protocol options. But because of this, it is easy to get confused in the requirements for frequencies. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The clock tree deserves a closer look. A 12 MHz quartz resonator is connected to the microcontroller. We divide this frequency before applying to the PLL blocks by 3 and get 4 MHz. Then it works like this:</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1. It would be nice to make the core frequency higher to keep up with everything: for example, the maximum for this controller is 80 MHz. We use the first PLL block: we multiply 4 MHz by 40 and divide by 2. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2. USB requires 48 MHz. To do this, use the second PLL block: multiply 4 MHz by 24 and divide by 2. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3. About microphones. Our test boards use a sampling frequency of Fs = 16 kHz, a standard adopted in the field of speech recognition. From the initial frequency of 4 MHz you need to get something that can be turned into 16 kHz TDM bus frame frequencies (aka LRCK, aka FCK, aka FrameSync). In this case: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+[frequency of bit synchronization (BCLK, BitClk, Sync, SCK)] = Fs ∙ [number of channels] ∙ [number of bits per channel] </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is: SCK = 16 kHz ∙ 8 ∙ 16 = 2048 kHz.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+4. The datasheet indicates that the ratio between Master Clock and sampling rate Fs is as follows: MasterClock = 16 kHz ∙ Divider MCLK ∙ 256. Here 256 is a constant, and the divisor can be set in the register. </font><font style="vertical-align: inherit;">Let's check the scheme - for the necessary functionality there are coefficients for dividing the PLL frequency by 7 or 17: </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/qk/9n/zo/qk9nzo9zysl0dsggr-la2lux9-m.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To summarize the problem: you need to select such a set of PLL and SAI factors and dividers to get a sampling frequency of 16 kHz and a bit frequency of 128 times more. </font><font style="vertical-align: inherit;">Since the set had an obligatory divisor by 7 (or 17), it did not work to get exactly the desired result. </font><font style="vertical-align: inherit;">I had to build a table of multipliers and dividers to get 24.571 MHz. </font><font style="vertical-align: inherit;">Dividing this frequency by 6 (MCLK Divider), and then by 256 (constant), finally, we get a number close enough to 16 kHz. </font><font style="vertical-align: inherit;">Now I will explain why this is so important.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">USB operation</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+USB uses an isochronous type of transfer to work with multimedia data: in this case, a certain bandwidth and delay value are guaranteed on the USB bus. Data delivery is not guaranteed: if a packet arrives with a failure, then it will be considered lost. This is due to strict time limits: there is no way to ask again.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+With the isochronous type of transfer at USB FullSpeed ​​speed (it's 12 Mbit / s; it is at this speed that the STM32 USB block can work) the computer comes to the device for data every millisecond: after this period of time, it should collect the accumulated data. Let me remind you the introductory ones: the sampling frequency is 16 kHz, 8 channels, each channel requires two bytes, because the sound is sixteen-bit. Total 16000 ∙ 2 ∙ 8/1000 = 256 bytes per millisecond. The size of one packet for an isochronous type of transmission can reach 1023 bytes, so there are no problems at this point.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, the packet size is 256 bytes. It would seem that all is well. Sixteen times received data on TDM, put into the buffer, USB came, we give it a packet, we repeat ... But this only happens in an ideal world. The problem is that on the one hand we have imperfect 16 kHz (a little less), and as a result, the data comes in a little less than once every millisecond. On the other hand, the millisecond of the computer also floats, since it is busy: when it could, then it came. That is, the microphone polling frequency differs from 16 kHz (but always the same), and the USB millisecond also differs in length (the difference, most likely, is floating: it turns out a little more, then a little less than an ideal millisecond).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Why is this a problem? You can lose the package. It is probably unnecessary to explain that complete data is necessary for the correct debugging of the algorithms. How the packet is lost: they accumulated 256 bytes of results, put them in the buffer, and continued the measurement. A computer came, took the first 256, we still continue to measure. The computer came again, but the measurement has not yet been completed - the computer left with an empty package. Then we finish filling the buffer and start filling out another one, the next one, until the computer arrives again. The computer takes only the last packet; as a result, one packet is lost. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/of/o0/ol/ofo0olk2bqjbjtm5keb0upd58xo.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The problem is, in fact, known. There are three approaches to dealing with it:</font></font><br>
+<br>
+<ul>
+<li><b></b>.            USB.    —    .   «» —   .   USB          .       ,     ,   (  ,  16 ),       .        ,          .</li>
+<li><b></b>.             .</li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Asynchronous</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> is the best for this task. </font><font style="vertical-align: inherit;">The device has a stable frequency generator. </font><font style="vertical-align: inherit;">The sampling rate is maintained exactly the same without reference to USB. </font><font style="vertical-align: inherit;">In this case, you need to transfer data to the device so that there are no significant discrepancies.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All this has been discussed more than once on the Internet for the case of playback from a computer to the speaker through a device with a digital-to-analog coder, where the device as a feedback tells you how many sampling periods have come since the last packet was received. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/4m/xx/ng/4mxxngiif53s98nf0v08vuuyds0.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But our task is the opposite, debugging requires receiving data from microphones to a computer, and the question of recording a signal from microphones to a computer is only mentioned at best. </font><font style="vertical-align: inherit;">Why not do the same: introduce feedback from the computer? </font><font style="vertical-align: inherit;">There is an easier option.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">There he is</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We use the frequent addition of samples and two buffers to store data for sending. 16 times per millisecond we add to the selected buffer the next sample. At some point in time, an interruption occurs: USB took the previous packet. If buffer No. 1 is full, it switches to buffer No. 2. When USB arrives for the next packet, it is already prepared. Send buffer number 2 and switch back to number 1.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ob/td/0m/obtd0mcd2tzmv8iut7w7-5_vpzc.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+USB comes for data at different points in time, the package includes a different number of samples. It can turn out to be more and less than sixteen, so there is a chance to exceed a packet of 256 bytes in size, it is better to leave space for maneuver. Let it be 384 = 256 + 128: this will give a margin of half a millisecond, that is, it will forgive the swimming phase of the USB signal by 50% - such a margin should be more than enough. Total: sometimes more or less 256 bytes are sent, but never an empty packet, which avoids data loss. That is, the problem of unevenness was solved by increasing the package, at the cost of increasing part of the bus bandwidth allocated for our device and reducing this part for other devices.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On this, the delivery of data to the computer came to an end. </font><font style="vertical-align: inherit;">Developers can be debugged, and you can ask questions in the comments if some kind of data packet was not enough for a complete understanding.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">My streams and the next episode</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Lately I streamed twice from my home soldering lab. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">At first I</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> just showed the soldering process and told which devices I use. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The second series</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> was just devoted to development on the STM32. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Streams continue. </font><font style="vertical-align: inherit;">This Friday at 19:00, my colleague from the hardware solutions development team Andrey Laptev will arrange an online analysis of Yandex.Stations Mini - show the insides and share production histories. </font><font style="vertical-align: inherit;">For more fun, Andrey will screw the battery to the column - not all the same, work from the wire. </font><font style="vertical-align: inherit;">In the final, you will receive a guide that will allow you to repeat this experience yourself or come up with a more interesting design. </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sign up</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">to watch the stream. </font><font style="vertical-align: inherit;">You will receive a letter with a file for the calendar and a reminder on the air day. </font><font style="vertical-align: inherit;">Thank you for reading!</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en503906/index.html">LabVIEW NXG - Simple Data Types and Type Coercion</a></li>
+<li><a href="../en503908/index.html">Call shared libraries from Similink</a></li>
+<li><a href="../en503910/index.html">Experiments on people who have gone to "udalenka"</a></li>
+<li><a href="../en503916/index.html">Learning to trade on the exchange. Part one: setting up a test environment</a></li>
+<li><a href="../en503918/index.html">Managing Packages with Go Modules: A Pragmatic Guide</a></li>
+<li><a href="../en503922/index.html">Why the EU eradicates cookie walls</a></li>
+<li><a href="../en503924/index.html">Overview of the Intraoral 3D Scanner Medit i500</a></li>
+<li><a href="../en503926/index.html">Who is who in the payment ecosystem 2020. Part 2</a></li>
+<li><a href="../en503928/index.html">Aerosol VS irrigation: which is better, and is there a difference?</a></li>
+<li><a href="../en503932/index.html">I'm tired of the fact that ordinary sellers impersonate developers and dishonor the industry. They make the world worse</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

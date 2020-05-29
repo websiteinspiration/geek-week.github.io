@@ -1,0 +1,667 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍼 🕝 👨🏼‍🎓 Programming a game for an embedded device on ESP32: drive, battery, sound 🏰 👧🏾 ❎</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Start: assembly system, input, display .
+ 
+ Part 4: drive
+ Odroid Go has a microSD card slot, which will be useful for downloading resources (sprites,...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Programming a game for an embedded device on ESP32: drive, battery, sound</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/503876/"><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/44b/800/42e/44b80042e94aa2f2da9da2d2296461ad.jpg" alt="image"></div><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Start: assembly system, input, display</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Part 4: drive</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Odroid Go has a microSD card slot, which will be useful for downloading resources (sprites, sound files, fonts), and possibly even to save the state of the game. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The card reader is connected via SPI, but IDF makes it easy to interact with the SD card by abstracting SPI calls and using standard </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">POSIX</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> functions </font><font style="vertical-align: inherit;">like </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fopen</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fread</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fwrite</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . All of this is based on the </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">FatFs</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> library </font><font style="vertical-align: inherit;">, so the SD card must be formatted in the standard FAT format.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is connected to the same SPI bus as the LCD, but uses a different chip selection line. </font><font style="vertical-align: inherit;">When we need to read or write to the SD card (and this does not happen very often), the SPI driver will switch the CS signal from the display to the SD card reader, and then perform the operation. </font><font style="vertical-align: inherit;">This means that while sending data to the display, we cannot perform any operations with the SD card, and vice versa. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At the moment we are doing everything in one thread and are using blocking transmission via SPI to the display, so there can be no simultaneous transactions with the SD card and with the LCD display. </font><font style="vertical-align: inherit;">In any case, there is a high probability that we will load all resources at launch time.</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Modification of ESP-IDF</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If we try to initialize the interface of the SD card after the initialization of the display, we will encounter a problem that makes it impossible to load Odroid Go. </font><font style="vertical-align: inherit;">ESP-IDF v4.0 does not support shared access to the SPI bus when used with an SD card. </font><font style="vertical-align: inherit;">Recently, developers have added this functionality, but it is not yet in a stable release, so we will make a small modification to the IDF ourselves. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Comment out the line 303 </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">esp-idf / components / driver / sdspi_host.c</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> :</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-comment">// Initialize SPI bus</span>
+<span class="hljs-keyword">esp_err_t</span> ret = spi_bus_initialize((<span class="hljs-keyword">spi_host_device_t</span>)slot, &amp;buscfg,<font></font>
+    slot_config-&gt;dma_channel);<font></font>
+<span class="hljs-keyword">if</span> (ret != ESP_OK) {<font></font>
+    ESP_LOGD(TAG, <span class="hljs-string">"spi_bus_initialize failed with rc=0x%x"</span>, ret);
+    <span class="hljs-comment">//return ret;</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After making this change, we will still see an error during initialization, but it will no longer cause the ESP32 to restart, because the error code does not propagate above.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Initialization</font></font></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/57f/4f8/b0f/57f4f8b0fcca66e243637eeb68b39ff7.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/554/eae/9ec/554eae9ec4a3e850eb44e817e8b7b181.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We need to tell IDF which ESP32 pins are connected to the MicroSD reader so that it correctly configures the underlying SPI driver, which actually communicates with the reader. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The general notes </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">VSPI.XXXX</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> are again used in the </font><strong><font style="vertical-align: inherit;">diagram</font></strong><font style="vertical-align: inherit;"> , but we can go through them to the actual contact numbers on ESP32. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Initialization is similar to LCD initialization, but instead of the general SPI configuration structure, we use </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sdspi_slot_config_t</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which is intended for an SD card connected via the SPI bus. We configure the corresponding contact numbers and card mount properties in the FatFS system. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+IDF documentation does not recommend using the </font><strong><font style="vertical-align: inherit;">esp_vfs_fat_sdmmc_mount</font></strong><font style="vertical-align: inherit;"> function</font></font><strong><font style="vertical-align: inherit;"></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">in the code of the finished program. This is a wrapper function that performs a lot of operations for us, but so far it works quite normally, and probably nothing will change in the future. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"/ sdcard"</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> parameter of </font><font style="vertical-align: inherit;">this function sets the virtual mount point of the SD card, which we will then use as a prefix when working with files. If we had a file named “test.txt” on our SD card, the path we would use to link to it would be “/sdcard/test.txt”. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After the initialization of the interface of the SD card, the interaction with the files is trivial: we can simply use standard calls to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">POSIX</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> functions </font><font style="vertical-align: inherit;">, which is very convenient.</font></font><br>
+<br>
+<blockquote>     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow">   8.3</a>,              .    ,   <b>fopen</b>   .        <b>make menuconfig</b>,       ,     <b>8.3</b>.</blockquote><br>
+<h2></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/d94/62f/94a/d9462f94aeec7fbdce989e34967e637d.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I created </font><font style="vertical-align: inherit;">a 64x64 sprite </font><font style="vertical-align: inherit;">in </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Aseprite</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (terrible) that uses only two colors: completely black (pixel disabled) and completely white (pixel enabled). Aseprite does not have the option to save RGB565 color or export as a raw bitmap (i.e. without compression and image headers), so I exported the sprite to a temporary PNG format. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Then, using </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ImageMagick, I</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> converted the data to a PPM file, which turned the image into raw uncompressed data with a simple header. Next, I opened the image in a hex editor, deleted the header and converted the 24-bit color to 16-bit, deleting all occurrences </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0x000000</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0x0000</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , and all occurrences </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xFFFFFF</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xFFFF</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">The byte order here is not a problem, because </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0x0000</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xFFFF</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> do not change when changing the byte order. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The raw file can be downloaded </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">from here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<pre><code class="cpp hljs">FILE* spriteFile = fopen(<span class="hljs-string">"/sdcard/key"</span>, <span class="hljs-string">"r"</span>);<font></font>
+assert(spriteFile);<font></font>
+<font></font>
+<span class="hljs-keyword">uint16_t</span>* sprite = (<span class="hljs-keyword">uint16_t</span>*)<span class="hljs-built_in">malloc</span>(<span class="hljs-number">64</span> * <span class="hljs-number">64</span> * <span class="hljs-keyword">sizeof</span>(<span class="hljs-keyword">uint16_t</span>));<font></font>
+<font></font>
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i = <span class="hljs-number">0</span>; i &lt; <span class="hljs-number">64</span>; ++i)<font></font>
+{<font></font>
+	<span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> j = <span class="hljs-number">0</span>; j &lt; <span class="hljs-number">64</span>; ++j)<font></font>
+	{<font></font>
+		fread(sprite, <span class="hljs-keyword">sizeof</span>(<span class="hljs-keyword">uint16_t</span>), <span class="hljs-number">64</span> * <span class="hljs-number">64</span>, spriteFile);<font></font>
+	}<font></font>
+}<font></font>
+<font></font>
+fclose(spriteFile);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First, we open the </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">key</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> file </font><font style="vertical-align: inherit;">containing raw bytes and read it into the buffer. </font><font style="vertical-align: inherit;">In the future, we will load sprite resources differently, but for a demo this is quite enough.</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">int</span> spriteRow = <span class="hljs-number">0</span>;
+<span class="hljs-keyword">int</span> spriteCol = <span class="hljs-number">0</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> row = y; row &lt; y + <span class="hljs-number">64</span>; ++row)<font></font>
+{<font></font>
+	spriteCol = <span class="hljs-number">0</span>;<font></font>
+<font></font>
+	<span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> col = x; col &lt; x + <span class="hljs-number">64</span>; ++col)<font></font>
+	{<font></font>
+		<span class="hljs-keyword">uint16_t</span> pixelColor = sprite[<span class="hljs-number">64</span> * spriteRow + spriteCol];<font></font>
+<font></font>
+		<span class="hljs-keyword">if</span> (pixelColor != <span class="hljs-number">0</span>)<font></font>
+		{<font></font>
+			gFramebuffer[row * LCD_WIDTH + col] = color;<font></font>
+		}<font></font>
+<font></font>
+		++spriteCol;<font></font>
+	}<font></font>
+<font></font>
+	++spriteRow;<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To draw a sprite, we iteratively traverse its contents. </font><font style="vertical-align: inherit;">If the pixel is white, then we draw it in the color selected by the buttons. </font><font style="vertical-align: inherit;">If it is black, then we consider it a background and do not draw.</font></font><br>
+<br>
+<div class="oembed"><div><div style="left: 0; width: 100%; height: 0; position: relative; padding-bottom: 56.25%;"><video controls="" style="top: 0; left: 0; width: 100%; height: 100%; position: absolute;"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Your browser does not support HTML5 video.</font></font><source src="https://austinmorlan.com/posts/embedded_game_programming_4/media/sprite_drawing.mp4" type="video/mp4"></video></div></div></div><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">My phone’s camera is very color distorted. </font><font style="vertical-align: inherit;">And sorry for shaking her. </font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To test the recording of the image, we will move the key to some place on the screen, change its color, and then write the frame buffer to the SD card so that it can be viewed on the computer.</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">if</span> (input.menu)<font></font>
+{<font></font>
+	<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span>* snapFilename = <span class="hljs-string">"/sdcard/framebuf"</span>;<font></font>
+<font></font>
+	ESP_LOGI(LOG_TAG, <span class="hljs-string">"Writing snapshot to %s"</span>, snapFilename);<font></font>
+<font></font>
+	FILE* snapFile = fopen(snapFilename, <span class="hljs-string">"wb"</span>);<font></font>
+	assert(snapFile);<font></font>
+<font></font>
+		fwrite(gFramebuffer, <span class="hljs-keyword">sizeof</span>(gFramebuffer[<span class="hljs-number">0</span>]), LCD_WIDTH * LCD_HEIGHT, snapFile);<font></font>
+	}<font></font>
+<font></font>
+	fclose(snapFile);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pressing the Menu key saves the contents of the frame buffer to a file called </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">framebuf</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">This will be a raw frame buffer, so the pixels will still remain in RGB565 format with the byte order reversed. </font><font style="vertical-align: inherit;">We can again use ImageMagick to convert this format to PNG to view it on a computer.</font></font><br>
+<br>
+<pre><code class="cpp hljs">convert -depth <span class="hljs-number">16</span> -size <span class="hljs-number">320</span>x240+<span class="hljs-number">0</span> -endian msb rgb565:FRAMEBUF snap.png</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Of course, we can implement reading / writing to BMP / PNG format and get rid of all this fuss with ImageMagick, but this is just a demo code. </font><font style="vertical-align: inherit;">So far I have not decided which file format I want to use for storing sprites.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/0bd/09c/e66/0bd09ce669a61276676a87b01c15e6f2.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here he is! </font><font style="vertical-align: inherit;">The Odroid Go frame buffer is displayed on the desktop computer.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">References</font></font></h2><br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Odroid go schematic</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ESP-IDF Documentation: SDMMC</font></font></a></li>
+</ul><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Part 5: battery</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Odroid Go has a lithium-ion battery, so we can create a game that you can play on the go. </font><font style="vertical-align: inherit;">This is a tempting idea for someone who played the first Gameboy as a child. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Therefore, we need a way to request the battery level of the Odroid Go. </font><font style="vertical-align: inherit;">The battery is connected to the contact on the ESP32, so we can read the voltage to have an approximate idea of ​​the remaining operating time.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scheme</font></font></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/1f2/ceb/13b/1f2ceb13bf408d8773f22047464e4e66.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The diagram shows </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO36</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> connected to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">VBAT</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> voltage after being pulled to ground through a resistor. Two resistors ( </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">R21</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">R23</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) form a voltage divider similar to that used on the cross of the gamepad; the resistors again have the same resistance so that the voltage is half the original. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Due to the voltage divider, </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO36</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> will read a voltage equal to half </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">VBAT</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . This is probably done because the ADC contacts on the ESP32 cannot read the high voltage of the lithium-ion battery (4.2 V at maximum charge). Be that as it may, this means that to get the true voltage, you need to double the voltage read from the ADC (ADC).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When reading the value of </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO36,</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> we get a digital value, but lose the analog value it represents. We need a way to interpret a digital value with an ADC in the form of a physical analog voltage. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+IDF allows you to calibrate the ADC, which tries to give a voltage level based on the reference voltage. This reference voltage ( </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Vref</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) is 1100 mV by default, but due to physical characteristics, each device is slightly different. ESP32 in Odroid Go has a manually defined Vref, “flashed” in eFuse, which we can use as a more accurate Vref.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The procedure will be as follows: first, we will configure the ADC calibration, and when we want to read the voltage, we will take a certain number of samples (for example, 20) to calculate the average readings; then we use the IDF to convert these readings to voltage. Calculation of the average eliminates noise and gives more accurate readings. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Unfortunately, there is no linear connection between voltage and battery charge. When the charge decreases, the voltage drops, when it increases, it rises, but in an unpredictable way. All that can be said: if the voltage is below about 3.6 V, then the battery is discharged, but it is surprisingly difficult to accurately convert the voltage level into a percentage of the battery charge.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For our project, this is not particularly important. </font><font style="vertical-align: inherit;">We can implement a rough approximation to let the player know about the need to quickly charge the device, but we will not suffer, trying to get the exact percentage.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Status LED</font></font></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/b52/0ad/2d6/b520ad2d63e2a4c59924debb6c3613bc.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+On the front panel under the Odroid Go screen there is a blue LED (LED), which we can use for any purpose. You can show them that the device is turned on and working, but in this case, when playing in the dark, a bright blue LED will shine in your face. Therefore, we will use it to indicate a low battery charge (although I would prefer a red or amber color for this). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To use the LED, you need to set </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO2</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> as an output, and then apply a high or low signal to it to turn the LED on and off. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I think that a 2 kΩ </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">resistor</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ( </font><strong><font style="vertical-align: inherit;">current limiting resistor</font></strong><font style="vertical-align: inherit;"> ) will be enough so that we do not burn the LED and supply too much current from the GPIO pin.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The LED has a rather low resistance, so if 3.3 V is applied to it, then we will burn it by changing the current. </font><font style="vertical-align: inherit;">To protect against this, a resistor is usually connected in series with the LED. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, the current limiting resistors for LEDs are usually much less than 2 kΩ, so I do not understand why the </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">R7</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> resistor </font><font style="vertical-align: inherit;">is such a resistance.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Initialization</font></font></h2><br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">static</span> <span class="hljs-keyword">const</span> <span class="hljs-keyword">adc1_channel_t</span> BATTERY_READ_PIN = ADC1_GPIO36_CHANNEL;
+<span class="hljs-keyword">static</span> <span class="hljs-keyword">const</span> <span class="hljs-keyword">gpio_num_t</span> BATTERY_LED_PIN = GPIO_NUM_2;<font></font>
+<font></font>
+<span class="hljs-keyword">static</span> <span class="hljs-keyword">esp_adc_cal_characteristics_t</span> gCharacteristics;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Odroid_InitializeBatteryReader</span><span class="hljs-params">()</span>
+</span>{
+	<span class="hljs-comment">// Configure LED</span><font></font>
+	{<font></font>
+		<span class="hljs-keyword">gpio_config_t</span> gpioConfig = {};<font></font>
+<font></font>
+		gpioConfig.mode = GPIO_MODE_OUTPUT;<font></font>
+		gpioConfig.pin_bit_mask = <span class="hljs-number">1U</span>LL &lt;&lt; BATTERY_LED_PIN;<font></font>
+<font></font>
+		ESP_ERROR_CHECK(gpio_config(&amp;gpioConfig));<font></font>
+	}<font></font>
+<font></font>
+	<span class="hljs-comment">// Configure ADC</span><font></font>
+	{<font></font>
+		adc1_config_width(ADC_WIDTH_BIT_12);<font></font>
+    	adc1_config_channel_atten(BATTERY_READ_PIN, ADC_ATTEN_DB_11);<font></font>
+    	adc1_config_channel_atten(BATTERY_READ_PIN, ADC_ATTEN_DB_11);<font></font>
+<font></font>
+    	<span class="hljs-keyword">esp_adc_cal_value_t</span> type = esp_adc_cal_characterize(<font></font>
+    		ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, <span class="hljs-number">1100</span>, &amp;gCharacteristics);<font></font>
+<font></font>
+    	assert(type == ESP_ADC_CAL_VAL_EFUSE_VREF);<font></font>
+    }<font></font>
+<font></font>
+	ESP_LOGI(LOG_TAG, <span class="hljs-string">"Battery reader initialized"</span>);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First we set the GPIO LED as an output so that we can switch it if necessary. </font><font style="vertical-align: inherit;">Then we configure the ADC pin, as we did in the case of a cross - with a bit width of 12 and minimal attenuation. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">esp_adc_cal_characterize</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> performs calculations for us to characterize the ADC so that we can later convert the digital readings into physical stress.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Battery Read</font></font></h2><br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">uint32_t</span> <span class="hljs-title">Odroid_ReadBatteryLevel</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{
+	<span class="hljs-keyword">const</span> <span class="hljs-keyword">int</span> SAMPLE_COUNT = <span class="hljs-number">20</span>;<font></font>
+<font></font>
+<font></font>
+	<span class="hljs-keyword">uint32_t</span> raw = <span class="hljs-number">0</span>;<font></font>
+<font></font>
+	<span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> sampleIndex = <span class="hljs-number">0</span>; sampleIndex &lt; SAMPLE_COUNT; ++sampleIndex)<font></font>
+	{<font></font>
+		raw += adc1_get_raw(BATTERY_READ_PIN);<font></font>
+	}<font></font>
+<font></font>
+	raw /= SAMPLE_COUNT;<font></font>
+<font></font>
+<font></font>
+	<span class="hljs-keyword">uint32_t</span> voltage = <span class="hljs-number">2</span> * esp_adc_cal_raw_to_voltage(raw, &amp;gCharacteristics);<font></font>
+<font></font>
+	<span class="hljs-keyword">return</span> voltage;<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We take twenty raw samples of the ADC from the contact of the ADC, and then divide them to get the average value. As mentioned above, this helps to reduce the noise of the readings. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Then we use </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">esp_adc_cal_raw_to_voltage</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to convert the raw value to the real voltage. Due to the voltage divider mentioned above, we double the return value: the read value will be half the actual battery voltage. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Instead of coming up with tricky ways to convert this voltage to a percentage of the battery charge, we will return a simple voltage. Let the calling function decide for itself what to do with the voltage - whether to turn it into a percentage of the charge, or simply interpret it as a high or low value.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The value is returned in millivolts, so the calling function needs to perform the appropriate conversion. </font><font style="vertical-align: inherit;">This prevents float overflow.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LED setting</font></font></h2><br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Odroid_EnableBatteryLight</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{<font></font>
+	gpio_set_level(BATTERY_LED_PIN, <span class="hljs-number">1</span>);<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Odroid_DisableBatteryLight</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{<font></font>
+	gpio_set_level(BATTERY_LED_PIN, <span class="hljs-number">0</span>);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+These two simple functions are enough to use the LED. </font><font style="vertical-align: inherit;">We can either turn on or turn off the light. </font><font style="vertical-align: inherit;">Let the calling function decide when to do it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We could create a task that would periodically monitor the battery voltage and accordingly switch the status of the LED, but I’d better interrogate the battery voltage in our main cycle, and then decide how to set the battery voltage from there.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Demo</font></font></h2><br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">uint32_t</span> batteryLevel = Odroid_ReadBatteryLevel();<font></font>
+<font></font>
+<span class="hljs-keyword">if</span> (batteryLevel &lt; <span class="hljs-number">3600</span>)<font></font>
+{<font></font>
+	Odroid_EnableBatteryLight();<font></font>
+}<font></font>
+<span class="hljs-keyword">else</span><font></font>
+{<font></font>
+	Odroid_DisableBatteryLight();<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We can simply request the battery level in the main cycle, and if the voltage is below the threshold value, turn on the LED, indicating the need for charging. </font><font style="vertical-align: inherit;">Based on the materials studied, I can say that 3600 mV (3.6 V) is a good sign of a low charge of lithium-ion batteries, but the batteries themselves are complex.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">References</font></font></h2><br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Odroid go schematic</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ESP-IDF Documentation: ADC</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Battery characteristics</font></font></a></li>
+</ul><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Part 6: sound</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The final step to getting a complete interface to all Odroid Go hardware is to write a sound layer. Having finished with this, we can begin to move towards a more general programming of the game, less related to programming for Odroid. All interaction with peripherals will be performed through the </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Odroid</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> functions </font><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Due to my lack of experience with sound programming and the lack of good documentation on the part of IDF, when working on a project, the implementation of sound took the most time. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ultimately, not so much code was required to play the sound. Most of the time was spent on how to convert the audio data to the desired ESP32 and how to configure the ESP32 audio driver to match the hardware configuration.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Digital Sound Basics</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Digital sound consists of two parts: </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">recording</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">playback</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Record</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To record sound on a computer, we first need to convert it from the space of a continuous (analog) signal into the space of a discrete (digital) signal. </font><font style="vertical-align: inherit;">This task is accomplished using an </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">analog-to-digital converter (ADC)</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (which we talked about when we worked with the cross in Part 2). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The ADC receives a </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sample of the</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> incoming wave and digitizes the value, which can then be saved to a file.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Play</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A digital sound file can be returned from digital to analog space using a </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Digital-to-Analog Converter (DAC)</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">DAC can reproduce values ​​only in a certain range. </font><font style="vertical-align: inherit;">For example, an 8-bit DAC with a 3.3 V source can output analog voltages in the range from 0 to 3.3 mV in 12.9 mV steps (3.3 V divided by 256). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The DAC takes digital values ​​and converts them back to voltage, which can be transmitted to an amplifier, speaker, or any other device capable of receiving an analog audio signal.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sampling rate</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When recording analog sound through the ADC, samples are taken at a certain frequency, and each sample is a “snapshot” of the sound signal at a point in time. This parameter is called </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the sampling frequency</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and is measured in </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hertz</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The higher the sampling frequency, the more accurately we recreate the frequencies of the original signal. </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The Nyquist-Shannon (Kotelnikov) theorem</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> states (in simple terms) that the sampling frequency should be twice the highest signal frequency we want to record. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The human ear can hear approximately in the range </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">from 20 Hz to 20 kHz</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , so the sampling frequency of </font><strong><font style="vertical-align: inherit;">44.1 kHz is</font></strong><font style="vertical-align: inherit;"> most often used to recreate high-quality music</font></font><strong><font style="vertical-align: inherit;"></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, which is slightly more than twice the maximum frequency that the human ear can recognize. This ensures that a complete set of instrument frequencies and voice will be recreated. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, each sample takes up space in the file, so we cannot select the maximum sampling rate. However, if you do not sample fast enough, you can lose important information. The sampling frequency selected should depend on the frequencies present in the recreated sound. </font></font><br>
+<br>
+<em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Playback should be performed at the same sampling frequency as the source, otherwise the sound and its duration will be different.</font></font></em><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suppose ten seconds of sound were recorded at a sampling frequency of 16 kHz. </font><font style="vertical-align: inherit;">If you play it with a frequency of 8 kHz, then its tone will be lower, and the duration will be twenty seconds. </font><font style="vertical-align: inherit;">If you play it with a sampling frequency of 32 kHz, then the audible tone will be higher, and the sound itself will last five seconds. </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">This video shows the difference in sample rates with examples.</font></font></a><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Bit depth</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Sampling frequency is only half the equation. The sound also has a </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bit depth</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , that is, the number of bits per sample. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When the ADC captures a sample of an audio signal, it must convert this analog value to digital, and the range of captured values ​​depends on the number of bits used. 8 bits (256 values), 16 bits (65,526 values), 32 bits (4,294,967,296 values), etc. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The number of bits per sample is related to the </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dynamic range of the</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> sound, i.e. with the loudest and quietest parts. The most common bit depth for music is 16 bits. </font></font><br>
+<br>
+<em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">During playback, it is necessary to provide the same bit depth as the source, otherwise the sound and its duration will change.</font></font></em><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For example, you have an audio file with four samples stored as 8 bits: [0x25, 0xAB, 0x34, 0x80]. </font><font style="vertical-align: inherit;">If you try to play them as if they were 16-bit, you will get only two samples: [0x25AB, 0x3480]. </font><font style="vertical-align: inherit;">This will not only lead to incorrect values ​​of sound samples, but also halve the number of samples, and hence the duration of the sound. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is also important to know the format of the samples. </font><font style="vertical-align: inherit;">8-bit unsigned, 8-bit unsigned, 16-bit unsigned, 16-bit unsigned, etc. </font><font style="vertical-align: inherit;">Usually 8-bit are unsigned, and 16-bit are signed. </font><font style="vertical-align: inherit;">If they are confused, the sound will be greatly distorted. </font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">This video shows the bit depth difference with examples.</font></font></a><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Wav files</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Most often, raw audio data on a computer is stored in </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">the WAV format</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which has a simple header that describes the audio format (sampling frequency, bit depth, size, etc.), followed by the audio data itself. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The sound is not compressed at all (unlike formats like MP3), so we can easily play it without the need for a codec library. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The main problem with WAV files is that due to the lack of compression, they can be quite large. File size is directly related to the duration, sampling rate, and bit depth. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Size = Duration (in seconds) x Sampling Rate (samples / s) x Bit Depth (bit / sample)</font></font></strong><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The sampling frequency affects the file size the most, so the easiest way to save space is to select a sufficiently low value. </font><font style="vertical-align: inherit;">We will create an old-school sound, so a low sampling frequency suits us.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I2S</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ESP32 has peripherals, due to which it is relatively simple to provide an interface with audio equipment: </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Inter-IC Sound (I2S)</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The I2S protocol is quite simple and consists of only three signals: a clock signal, a choice of channels (left or right), and also the data line itself. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The clock frequency depends on the sampling frequency, bit depth and number of channels. Beats are replaced for each bit of data, therefore, for proper sound reproduction, you must set the clock frequency accordingly. </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Clock frequency = Sampling frequency (samples / s) x Bit depth (bits / sample) x Number of channels</font></font></strong><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The ESP32 microcontroller I2S driver has two possible modes: it can either output data to the contacts connected to an external I2S receiver, which can decode the protocol and transfer data to the amplifier, or it can transfer data to the internal ESP32 DAC outputting an analog signal that can be transmitted to amplifier. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Odroid Go does not have any I2S decoder on the board, so we will have to use the internal 8-bit ESP32 DAC, that is, we must use 8-bit sound. </font><font style="vertical-align: inherit;">The device has two DACs, one connected to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO25</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , the other to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO26</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The procedure looks like this:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We transfer audio data to the I2S driver</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I2S driver sends audio data to 8-bit internal DAC</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The internal DAC outputs an analog signal</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The analog signal is transmitted to the sound amplifier</font></font></li>
+<li>      </li>
+<li>  </li>
+</ol><br>
+<h2></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/2d9/d93/a8e/2d9d93a8ed6eceb35846c0f31e336ec9.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If we look at the audio </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">circuit</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> in </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">the Odroid Go circuit</font></a><font style="vertical-align: inherit;"> , we will see two GPIO pins ( </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO25</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO26</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) connected to the inputs of the sound amplifier ( </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PAM8304A</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO25 is</font></font></strong><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+also connected to the signal </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ SD of the</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> amplifier, that is, the contact that turns the amplifier on or off (low signal means shutdown). The amplifier outputs are connected to one speaker ( </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">P1</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Remember that </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO25</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO26</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> are outputs of 8-bit ESP32 DACs, that is, one DAC is connected to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN-</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and the other to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN +</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN-</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN +</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> are</font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">differential inputs of the</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> sound amplifier. Differential inputs are used to reduce noise caused by </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">electromagnetic interference</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Any noise present in one signal will also be present in another. One signal is subtracted from another, which eliminates noise. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If you look at the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">specification of the sound amplifier</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , then it has a </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Typical Applications Circuit</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which is the manufacturer’s recommended way to use the amplifier.</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/044/d2a/323/044d2a323366c5ddb3c3b87f918bf5f9.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+He recommends connecting </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN-</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to ground, </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN +</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to the input signal, and </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ SD</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> to the on / off signal. If there is a noise of 0.005 V, then with </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN- </font></font></strong><font style="vertical-align: inherit;"></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0V + 0.005V</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> will be read </font><font style="vertical-align: inherit;">, and with </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN +</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">VIN + 0.005V</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . The input signals must be subtracted from each other and get the true signal value ( </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">VIN</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) without noise. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+However, the designers of Odroid Go did not use the recommended configuration. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Once again looking at the Odroid Go circuit, we see that the designers connected the DAC output to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN-</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and that the same DAC output is connected to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ SD</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ SD</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- This is a shutdown signal with an active low level, so for the amplifier to work, you need to set a high signal. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This means that to use the amplifier, we must not use the </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO25</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> as a DAC, but as a GPIO output with an always high signal. However, in this case, a high signal is set to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN-</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which is not recommended by the specification of the amplifier (it must be grounded). Then we must use the DAC connected to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO26</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , since our I2S output must be fed to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN +</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . This means that we will not achieve the necessary noise reduction, because </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IN- is</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> not connected to ground. Soft noise constantly emanates from the speakers.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We need to ensure the correct configuration of the I2S driver, because we want to use only the DAC connected to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO26</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">If we used a DAC connected to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO25</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , it would constantly switch the amplifier off signal, and the sound would be terrible. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In addition to this weirdness, when using an 8-bit internal DAC, the I2S driver in the ESP32 requires 16-bit samples to be transmitted to it, but sends only the high byte to the 8-bit DAC. </font><font style="vertical-align: inherit;">Therefore, we need to take our 8-bit sound and paste it into a twice as large buffer, while the buffer will be half empty. </font><font style="vertical-align: inherit;">Then we pass it to the I2S driver and it passes the DAC the high byte of each sample. </font><font style="vertical-align: inherit;">Unfortunately, this means that we have to “pay” for 16 bits, but we can only use 8 bits.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Multitasking</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Unfortunately, the game cannot work on one core, as I originally wanted, because there seems to be a bug in the I2S driver. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The I2S driver must use DMA (like the SPI driver), that is, we could just initiate the transfer of I2S, and then continue our work while the I2S driver is transmitting audio data. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But instead, the CPU is blocked for the duration of the sound, which is completely unsuitable for the game. Imagine that you press the jump button, and then the player’s sprite pauses its movement for 100 ms while the jump sound is playing.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To solve this problem, we can take advantage of the fact that there are two cores on board the ESP32. </font><font style="vertical-align: inherit;">We can create a task (i.e. a thread) in the second core, which will deal with sound reproduction. </font><font style="vertical-align: inherit;">Thanks to this, we can transfer the pointer to the sound buffer from the main task of the game to the sound task, and the sound task initiates the transfer of I2S and is blocked for the duration of the sound playback. </font><font style="vertical-align: inherit;">But the main task on the first core (with input processing and rendering) will continue to execute without blocking.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Initialization</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Knowing this, we can properly initiate the I2S driver. </font><font style="vertical-align: inherit;">To do this, you need only a few lines of code, but the difficulty is to find out what parameters you need to set for proper sound reproduction.</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">static</span> <span class="hljs-keyword">const</span> <span class="hljs-keyword">gpio_num_t</span> AUDIO_AMP_SD_PIN = GPIO_NUM_25;<font></font>
+<font></font>
+<span class="hljs-keyword">static</span> QueueHandle_t gQueue;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">void</span> <span class="hljs-title">PlayTask</span><span class="hljs-params">(<span class="hljs-keyword">void</span> *arg)</span>
+</span>{
+	<span class="hljs-keyword">for</span>(;;)<font></font>
+	{<font></font>
+		QueueData data;<font></font>
+<font></font>
+		<span class="hljs-keyword">if</span> (xQueueReceive(gQueue, &amp;data, <span class="hljs-number">10</span>))<font></font>
+		{<font></font>
+			<span class="hljs-keyword">size_t</span> bytesWritten;<font></font>
+			i2s_write(I2S_NUM_0, data.buffer, data.length, &amp;bytesWritten, portMAX_DELAY);<font></font>
+			i2s_zero_dma_buffer(I2S_NUM_0);<font></font>
+		}<font></font>
+<font></font>
+		vTaskDelay(<span class="hljs-number">1</span> / portTICK_PERIOD_MS);<font></font>
+	}<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Odroid_InitializeAudio</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{
+	<span class="hljs-comment">// Configure the amplifier shutdown signal</span><font></font>
+	{<font></font>
+		<span class="hljs-keyword">gpio_config_t</span> gpioConfig = {};<font></font>
+<font></font>
+		gpioConfig.mode = GPIO_MODE_OUTPUT;<font></font>
+		gpioConfig.pin_bit_mask = <span class="hljs-number">1U</span>LL &lt;&lt; AUDIO_AMP_SD_PIN;<font></font>
+<font></font>
+		ESP_ERROR_CHECK(gpio_config(&amp;gpioConfig));<font></font>
+<font></font>
+		gpio_set_level(AUDIO_AMP_SD_PIN, <span class="hljs-number">1</span>);<font></font>
+	}<font></font>
+<font></font>
+	<span class="hljs-comment">// Configure the I2S driver</span><font></font>
+	{<font></font>
+		<span class="hljs-keyword">i2s_config_t</span> i2sConfig= {};<font></font>
+<font></font>
+		i2sConfig.mode = I2S_MODE_MASTER | I2S_MODE_TX | I2S_MODE_DAC_BUILT_IN;<font></font>
+		i2sConfig.sample_rate = <span class="hljs-number">5012</span>;<font></font>
+		i2sConfig.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;<font></font>
+		i2sConfig.communication_format = I2S_COMM_FORMAT_I2S_MSB;<font></font>
+		i2sConfig.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;<font></font>
+		i2sConfig.dma_buf_count = <span class="hljs-number">8</span>;<font></font>
+		i2sConfig.dma_buf_len = <span class="hljs-number">64</span>;<font></font>
+<font></font>
+		ESP_ERROR_CHECK(i2s_driver_install(I2S_NUM_0, &amp;i2sConfig, <span class="hljs-number">0</span>, <span class="hljs-literal">NULL</span>));<font></font>
+		ESP_ERROR_CHECK(i2s_set_dac_mode(I2S_DAC_CHANNEL_LEFT_EN));<font></font>
+	}<font></font>
+<font></font>
+	<span class="hljs-comment">// Create task for playing sounds so that our main task isn't blocked</span><font></font>
+	{<font></font>
+		gQueue = xQueueCreate(<span class="hljs-number">1</span>, <span class="hljs-keyword">sizeof</span>(QueueData));<font></font>
+		assert(gQueue);<font></font>
+<font></font>
+		BaseType_t result = xTaskCreatePinnedToCore(&amp;PlayTask, <span class="hljs-string">"I2S Task"</span>, <span class="hljs-number">1024</span>, <span class="hljs-literal">NULL</span>, <span class="hljs-number">5</span>, <span class="hljs-literal">NULL</span>, <span class="hljs-number">1</span>);<font></font>
+		assert(result == pdPASS);<font></font>
+	}<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First, we configure </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IO25</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (which is connected to the amplifier’s turn-off signal) as an output so that it can control the sound amplifier, and apply a high signal to it to turn on the amplifier. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Next, we configure and install the I2S driver itself. </font><font style="vertical-align: inherit;">I will parse each part of the configuration line by line, because each of the lines requires explanation:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mode</font></font><ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">we set the driver as a master (controlling the bus), a transmitter (because we transfer data to the recipients), and configure it to use the built-in 8-bit DAC (because the Odroid Go board does not have an external DAC).</font></font></li>
+</ul></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sample_rate</font></font><ul>
+<li>    5012,      ,   ,      .   ,      ,          .    -,           2500 .</li>
+</ul></li>
+<li>bits_per_sample<ul>
+<li>  ,    ESP32  8-,   I2S ,      16    ,   8     .</li>
+</ul></li>
+<li>communication_format<ul>
+<li>      ,   ,   -   ,   8-      16- .</li>
+</ul></li>
+<li>channel_format<ul>
+<li> GPIO,    <strong>IN+</strong>   —  <strong>IO26</strong>,       «»   I2S.  ,  I2S      ,      <strong>IO25</strong>,      ,          .</li>
+</ul></li>
+<li>dma_buf_count  dma_buf_len<ul>
+<li>  DMA-   ( )  ,        ,   ,        IDF.       ,     .</li>
+</ul></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Then we create a queue - this is the way FreeRTOS sends data between tasks. We put data in the queue of one task and extract it from the queue of another task. Create a struct called </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">QueueData</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> that combines the pointer to the sound buffer and the length of the buffer into a single structure that can be queued. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Next, create a task that runs on the second core. We connect it to the </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PlayTask</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> function </font><font style="vertical-align: inherit;">, which performs sound playback. The task itself is an endless loop that constantly checks to see if there is any data in the queue. If they are, she sends them to the I2S driver so that they can be played. It will block the </font><strong><font style="vertical-align: inherit;">i2s_write</font></strong><font style="vertical-align: inherit;"> call</font></font><strong><font style="vertical-align: inherit;"></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, and this suits us, because the task is performed on a separate kernel from the main thread of the game. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A call to </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">i2s_zero_dma_buffer</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> is required so that after playback is complete there are no sounds left from the speakers. </font><font style="vertical-align: inherit;">I do not know if this is a bug of the I2S driver or the expected behavior, but without it, after the sound buffer has finished playing, the speaker emits a garbage signal.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Play sound</font></font></h2><br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Odroid_PlayAudio</span><span class="hljs-params">(<span class="hljs-keyword">uint16_t</span>* buffer, <span class="hljs-keyword">size_t</span> length)</span>
+</span>{<font></font>
+	QueueData data = {};<font></font>
+<font></font>
+	data.buffer = buffer;<font></font>
+	data.length = length;<font></font>
+<font></font>
+	xQueueSendToBack(gQueue, &amp;data, portMAX_DELAY);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Due to the fact that the entire configuration has already been completed, the call to the sound buffer playback function itself is extremely simple, because the main work is done in another task. </font><font style="vertical-align: inherit;">We put the pointer to the buffer and the length of the buffer into the </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">QueueData</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> structure </font><font style="vertical-align: inherit;">, and then put it in the queue used by the </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PlayTask</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> function </font><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Because of this pattern of operation, one sound buffer must complete playback before it can start the second buffer. </font><font style="vertical-align: inherit;">Therefore, if a jump and shooting occur simultaneously, the first sound will be played before the second, and not simultaneously with it. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Most likely, in the future I will mix different frame sounds into the sound buffer that is transmitted to the I2S driver. </font><font style="vertical-align: inherit;">This will allow you to play multiple sounds at the same time.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Demo</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We will generate our own sound effects using </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">jsfxr</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , a tool specifically designed to generate the type of game sounds we need. </font><font style="vertical-align: inherit;">We can directly set the sampling frequency and bit depth, and then output the WAV file. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I created a simple jump sound effect that resembles the sound of Mario's jump. </font><font style="vertical-align: inherit;">It has a sampling frequency of 5012 (as we configured during initialization) and a bit depth of 8 (because the DAC is 8-bit).</font></font><br>
+<br>
+<div class="oembed"><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://austinmorlan.com/posts/embedded_game_programming_6/media/jump.wav</font></font></a></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Instead of parsing the WAV file directly in the code, we will do something similar to what we did to load the sprite in the demo of Part 4: we will remove the WAV header from the file using the hex editor. Thanks to this, the file read from the SD card will be only raw data. Also, we will not read the duration of the sound, we will write it in the code. In the future, we will load sound resources differently, but this is enough for the demo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The raw file can be downloaded </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">from here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-comment">// Load sound effect</span>
+<span class="hljs-keyword">uint16_t</span>* soundBuffer;
+<span class="hljs-keyword">int</span> soundEffectLength = <span class="hljs-number">1441</span>;<font></font>
+{<font></font>
+	FILE* soundFile = fopen(<span class="hljs-string">"/sdcard/jump"</span>, <span class="hljs-string">"r"</span>);<font></font>
+	assert(soundFile);<font></font>
+<font></font>
+	<span class="hljs-keyword">uint8_t</span>* soundEffect = <span class="hljs-built_in">malloc</span>(soundEffectLength);<font></font>
+	assert(soundEffect);<font></font>
+<font></font>
+	soundBuffer = <span class="hljs-built_in">malloc</span>(soundEffectLength*<span class="hljs-number">2</span>);<font></font>
+	assert(soundBuffer);<font></font>
+<font></font>
+	fread(soundEffect, soundEffectLength, <span class="hljs-number">1</span>, soundFile);<font></font>
+<font></font>
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i = <span class="hljs-number">0</span>; i &lt; soundEffectLength; ++i)<font></font>
+    {<font></font>
+        <span class="hljs-comment">// 16 bits required but only MSB is actually sent to the DAC</span>
+        soundBuffer[i] = (soundEffect[i] &lt;&lt; <span class="hljs-number">8u</span>);<font></font>
+    }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We load the 8-bit data into the 8-bit </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">soundEffect</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> buffer </font><font style="vertical-align: inherit;">, and then copy this data into the 16-bit </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">soundBuffer</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> buffer </font><font style="vertical-align: inherit;">, where the data will be stored in the high eight bits. </font><font style="vertical-align: inherit;">I repeat - this is necessary because of the features of the IDF implementation. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Having created a 16-bit buffer, we can play the sound of a click of a button. </font><font style="vertical-align: inherit;">It would be logical to use the volume button for this.</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">int</span> lastState = <span class="hljs-number">0</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">for</span> (;;)<font></font>
+{<font></font>
+	[...]<font></font>
+<font></font>
+	<span class="hljs-keyword">int</span> thisState = input.volume;<font></font>
+<font></font>
+	<span class="hljs-keyword">if</span> ((thisState == <span class="hljs-number">1</span>) &amp;&amp; (thisState != lastState))<font></font>
+	{<font></font>
+		Odroid_PlayAudio(soundBuffer, soundEffectLength*<span class="hljs-number">2</span>);<font></font>
+	}<font></font>
+<font></font>
+	lastState = thisState;<font></font>
+<font></font>
+	[...]<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We monitor the state of the button so that accidentally, with one click of the button, </font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Odroid_PlayAudio is</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> not accidentally </font><strong><font style="vertical-align: inherit;">called</font></strong><font style="vertical-align: inherit;"> several times.</font></font><br>
+<br>
+<div class="oembed"><div><div style="left: 0; width: 100%; height: 0; position: relative; padding-bottom: 56.25%;"><video controls="" style="top: 0; left: 0; width: 100%; height: 100%; position: absolute;"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Your browser does not support HTML5 video.</font></font><source src="https://austinmorlan.com/posts/embedded_game_programming_6/media/demo.mp4" type="video/mp4"></video></div></div></div><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Source</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All source code is </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">here</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">References</font></font></h2><br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Odroid go schematic</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Audio Amplifier Datasheet</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ESP-IDF Documentation: DAC</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ESP-IDF Documentation: I2S</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WAVE File Format</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Video: Bit Depth Explanation</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Video: Sample Rate Explanation</font></font></a></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en503858/index.html">The book "Terraform: infrastructure at the code level"</a></li>
+<li><a href="../en503860/index.html">Setting up the neural network environment Mask R-CNN</a></li>
+<li><a href="../en503862/index.html">Psychological problems as a payment for success in creating breakthrough products</a></li>
+<li><a href="../en503864/index.html">Flavors Organization at Flutter</a></li>
+<li><a href="../en503866/index.html">Published Roadmap development Zextras Suite for 2020</a></li>
+<li><a href="../en503880/index.html">How I learned not to worry and loved machine vision</a></li>
+<li><a href="../en503884/index.html">How to learn to work asynchronously</a></li>
+<li><a href="../en503888/index.html">AdaBoost Algorithm</a></li>
+<li><a href="../en503890/index.html">The Tale of How I Configured Azure AD B2C on React and React Native Part 1 (Tutorial)</a></li>
+<li><a href="../en503892/index.html">Mitap: Quarantine, Go away</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
