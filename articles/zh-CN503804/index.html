@@ -1,0 +1,383 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😄 🐂 🧛 关于如何为数据库创建时间机器并意外编写漏洞利用的故事 🖕🏻 👦🏻 🖐️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="美好的一天，哈伯。
+ 
+ 您是否曾经想过如何更改数据库中的时间？简单？好吧，在某些情况下，是的，这很容易-linux date命令和其他东西都在帽子里。如果只需要在一个数据库实例中更改时间（如果服务器上有多个实例），则可以吗？对于单个数据库进程？和？恩，就是这样，我的朋友，这就是重点。有人会说这是另...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>关于如何为数据库创建时间机器并意外编写漏洞利用的故事</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/503804/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">美好的一天，哈伯。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您是否曾经想过如何更改数据库中的时间？</font><font style="vertical-align: inherit;">简单？</font><font style="vertical-align: inherit;">好吧，在某些情况下，是的，这很容易-linux date命令和其他东西都在帽子里。</font><font style="vertical-align: inherit;">如果只需要在一个数据库实例中更改时间（如果服务器上有多个实例），则可以吗？</font><font style="vertical-align: inherit;">对于单个数据库进程？</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和？</font><font style="vertical-align: inherit;">恩，就是这样，我的朋友，这就是重点。</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有人会说这是另一件事，与现实无关，这是定期在哈布雷上发表的。</font><font style="vertical-align: inherit;">但是不，任务是非常实际的，并且由生产必要性（代码测试）决定。</font><font style="vertical-align: inherit;">尽管我同意，但是测试用例可能非常奇怪-请检查代码在将来的某个特定日期的行为。</font><font style="vertical-align: inherit;">在本文中，我将详细研究如何解决此任务，同时还简要介绍了组织测试和开发代表Oracle基础的过程。</font><font style="vertical-align: inherit;">长时间阅读之前，请放松并要求养猫。</font></font><br>
+<a name="habracut"></a><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">背景</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们从简短的介绍开始，以说明为什么这样做是必要的。正如已经宣布的，我们在数据库中实现编辑时编写测试。完成这些测试的系统是在零的开始（或可能在开始之前）开发的，因此所有业务逻辑都在数据库内部，并以pl / sql语言的存储过程形式编写。是的，这给我们带来了痛苦和痛苦。但这是遗产，您必须忍受它。在代码和表格模型中，可以指定系统内部参数随时间变化的方式，换句话说，可以设置活动的起始日期和适用日期。要走的很远-最近增值税率的变化就是一个生动的例子。这样就可以预先检查系统中的此类更改，具有此类更改的数据库需要在将来转移到某个日期，表中的代码参数将在“当前时刻”变为活动状态。并且由于受支持系统的特性，您不能使用仅在测试会话开始时使用语言更改当前系统日期的返回值的模拟测试。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，我们确定了原因，然后需要确定</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如何实现</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">目标。</font><font style="vertical-align: inherit;">为此，我将回顾一下为开发人员构建测试平台的选项以及每个测试会话的开始方式。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">石器时代</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+曾几何时，当树木很小而大型机很大时，只有一台服务器可供开发，并且它也在进行测试。</font><font style="vertical-align: inherit;">原则上，所有这些对每个人都足够（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">640K对每个人都足够！</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+缺点：要执行更改时间的任务，必须涉及许多相关部门-系统管理员（从root更改subd服务器上的时间），DBMS管理员（数据库重新启动），程序员（有必要通知您，时间会发生变化，因为部分代码停止工作，例如，先前为调用api方法而发出的Web令牌不再有效，这可能会令人感到惊讶），测试人员（测试自己）...当您将时间返回到现在时一切都以相反的顺序重复。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">中世纪</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+随着时间的流逝，该部门的开发人员数量不断增加，并且在某个时候，一台服务器已不再足够。主要是由于不同的开发人员想要更改相同的pl / sql程序包并对其进行测试（即使不更改时间）。越来越多的愤慨听到：“多久！足够忍受这个！工厂给工人，土地给农民！每个程序员都有一个数据库！”但是，如果您有几个TB的产品数据库，并且有50-100个开发人员，那么老实说，这种要求不是很现实。仍然每个人都希望测试和开发基础在结构和表内数据方面都不会大大落后于销售。因此，有一个单独的服务器用于测试，我们称其为生产前。它是由2台相同的服务器构建的，在那里进行的销售是从RMAN bucks恢复数据库，耗时约2-2.5天。恢复后，数据库对个人数据和其他重要数据进行匿名处理，并将来自测试应用程序的负载应用于此服务器（以及程序员本身始终与最近还原的服务器一起工作）。使用通过corosync（pacemaker）支持的群集ip-resource确保了所需服务器的工作。当每个人都在使用活动服务器时，在第二个节点上，数据库恢复将再次开始，并在2-3天后再次更改位置。使用通过corosync（pacemaker）支持的群集ip-resource确保了所需服务器的工作。当每个人都在使用活动服务器时，在第二个节点上，数据库恢复将再次开始，并在2-3天后再次更改位置。使用通过corosync（pacemaker）支持的群集ip-resource确保了所需服务器的工作。当每个人都在使用活动服务器时，在第二个节点上，数据库恢复将再次开始，并在2-3天后再次更改位置。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+明显的缺点是：您需要2台服务器，并且资源（主要是磁盘）是prod的2倍。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+优点：时变操作和测试-它可以在第二台服务器上执行，此时开发人员可以在主服务器上开展业务。</font><font style="vertical-align: inherit;">仅当数据库准备就绪且测试环境的停机时间最少时，才进行服务器更改。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">科技进步时代</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当我们切换到11g第2版数据库时，我们了解到Oracle以CloneDB的名义提供的一项有趣的技术。最重要的是，产品数据库备份（有产品数据文件的直接位副本）存储在特殊的服务器上，然后该服务器通过DNFS（直接NFS）将这组数据文件发布到几乎任何数量的服务器上，并且您不需要在服务器上拥有一个因为实现了“写时复制”方法，所以使用相同数量的磁盘：数据库使用网络共享与来自备份服务器的数据文件共享数据，以读取表中的数据，并将更改写入开发服务器本身上的本地数据文件。定期对服务器执行“将截止期限归零”，以便本地数据文件不会增长太多，并且位置也不会结束。更新服务器时，表中的数据也会被个性化，在这种情况下，所有表更新都属于本地数据文件，并且这些表是从本地服务器读取的，所有其他表都是通过网络读取的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+缺点：仍然有2台服务器（以确保更新的顺利进行，并最大程度地减少了使用者的停机时间），但是现在磁盘容量大大减少了。要将价格存储在nfs球上，您需要再增加1个服务器的大小+-作为产品，但是更新执行时间本身会减少（尤其是在使用增量美元时）。使用nfs球进行联网会明显减慢IO读取操作。要使用CloneDB技术，基础必须是企业版；在我们的案例中，我们每次必须在测试基础上执行升级过程。幸运的是，测试数据库免于Oracle许可政策。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+优点：从bakup恢复基地的操作不到1天（我不记得确切的时间）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+时间变化：无重大变化。</font><font style="vertical-align: inherit;">尽管此时已经编写了脚本来更改服务器上的时间并重新启动数据库，以执行此操作而又不会</font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">引起</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管理员</font><font style="vertical-align: inherit;">的</font><s><font style="vertical-align: inherit;">注意</font></s><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">新历史时代</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了进一步节省磁盘空间并使数据脱机读取，我们决定使用带有压缩功能的文件系统来实现CloneDB版本（带有闪回和快照）。</font><font style="vertical-align: inherit;">在初步测试中，选择落在ZFS，虽然它在Linux内核（从没有官方的支持报价</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">文章</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）为了进行比较，我们还查看了Oracle正在推广的BTRFS（b树fs），但是在测试中相同的CPU和RAM消耗下，压缩率较小。为了在RHEL5上启用ZFS支持，已构建了自己的基于UEK的内核（牢不可破的企业内核），在更新的轴和内核上，您可以简单地使用现成的UEK内核。这种测试基础的实现也基于COW机制，但在文件系统快照级别。服务器上提供了2个磁盘设备，其中一个是zfs池，在其中通过RMAN在销售中创建了一个额外的备用数据库，并且由于我们使用压缩，因此该分区占用的资源少于生产的资源。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+系统安装在第二个磁盘设备上，其余的对于服务器和数据库本身是必需的，例如，用于undo和temp的分区。您可以随时从zfs池中创建快照，然后将其作为单独的数据库打开。创建快照需要几秒钟。这是魔法！如果只有服务器为所有实例提供足够的RAM，并且zfs池本身具有大小（用于在非个性化期间和数据库克隆的生命周期中存储数据文件中的更改），则此类数据库在原则上可以倾斜很多。更新测试库的主要时间是数据去个性化操作，但也需要15-20分钟。有明显的加速。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+缺点：在服务器上，您无法仅通过转换系统时间来更改时间，因为这时在该服务器上运行的所有数据库实例都将立即进入该时间。已经找到了解决此问题的方法，并将在相应的部分中进行描述。展望未来，我要说的是，它允许您仅在1个数据库</font><i><font style="vertical-align: inherit;">实例</font></i><font style="vertical-align: inherit;">内更改时间（</font><i><font style="vertical-align: inherit;">每个实例</font></i><font style="vertical-align: inherit;">更改时间的方法</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">），而不会影响其余服务器。</font><font style="vertical-align: inherit;">服务器本身的时间也不会改变。</font><font style="vertical-align: inherit;">这样就无需使用根脚本来更改服务器上的时间。</font><font style="vertical-align: inherit;">同样在此阶段，实现了通过Jenkins CI进行实例的时间变更自动化，并且拥有自己展位的用户（相对而言，开发团队）被授予工作权，他们可以自行更改时间，将展位更新为当前状态并进行销售，制作快照并将基础还原（回滚）到先前创建的快照。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最近历史的时代</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+随着Oracle 12c的出现，出现了一项新技术-可插拔数据库，结果就是容器数据库（cdb）。借助这项技术，可以在一个物理实例中创建几个共享该实例公用存储区的``虚拟''数据库。优点：您可以为服务器节省内存（并提高数据库的整体性能，因为在cdb中，所有已部署的pdb容器都可以共享例如5个不同实例之前占用的所有内存，并且它们只会使用它当他们真正需要它时，而不是上一个阶段那样，当每个实例都``阻塞''了为其分配的内存时，并且当一个克隆的活动较低时，该内存就没有得到有效利用，换句话说，它是空闲的）。不同pdb的数据文件仍位于zfs池中，并且在部署克隆时，它们使用相同的zfs快照机制。在这个阶段，我们几乎可以为几乎每个开发人员提供自己的数据库。在此阶段更改时间不需要重新启动数据库，并且仅对于那些需要更改时间的进程才能非常准确地工作；使用此数据库的所有其他用户均不会受到任何影响。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+减：您不能使用</font><font style="vertical-align: inherit;">上一阶段</font><font style="vertical-align: inherit;">的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">每个实例的</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">时间更改方法</font><font style="vertical-align: inherit;">，因为我们现在有一个实例。但是，找到了针对这种情况的解决方案。正是这一点推动了撰写本文。展望未来，我会说这是</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">每个过程</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">方法的时间变化</font><i><font style="vertical-align: inherit;">，</font></i><font style="vertical-align: inherit;">即在每个数据库进程中，通常可以设置自己的唯一时间。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在这种情况下，连接到数据库后立即进行的典型测试会话会在其工作开始时设置正确的时间，进行测试，最后将时间返回。返回时间是有必要的，原因很简单：一些Oracle数据库进程不会在数据库客户端与服务器断开连接时结束，这些服务器进程称为共享服务器，与专用进程不同，共享服务器在数据库服务器启动时运行并无限期地运行（理想情况下）世界的图片）。如果您在这样的服务器进程中保留时间更改，则将在此进程中服务的另一个连接将收到错误的时间。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在我们的系统中，共享服务器被大量使用，因为高达11g，实际上我们的系统没有足够的解决方案来承受高负载（在11g中出现了DRCP-数据库驻留连接池）。这就是为什么-在子目录中，它可以在专用模式和共享模式下创建的服务器进程总数受到限制。专用进程的生成速度比数据库可以从共享进程池中发出已经准备好的共享进程的速度慢，这意味着当新的连接不断到达时（特别是如果该进程执行某些其他慢速操作），进程总数将增加。当达到会话/进程的限制时，数据库将停止为新的连接提供服务，并且崩溃。使用共享进程池的过渡使我们能够减少连接时服务器上新进程的数量。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+到此，对构建测试数据库的技术的评论就完成了，我们终于可以开始为数据库本身实现时变算法了。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">每个实例的伪造方法</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如何更改数据库内部时间？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先想到的是创建一个包含所有业务逻辑代码及其自身功能的方案，该方案与随时间运行的语言功能（sysdate，current_date等）重叠，并且在某些条件下开始提供其他值，例如，您可以在测试运行开始时通过会话上下文设置值。无法解决，内置语言功能与用户功能不重叠。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后，测试了轻型虚拟化系统（Vserver，OpenVZ）和通过docker进行的容器化。它们也不起作用，它们使用与主机系统相同的内核，这意味着它们使用相同的系统计时器值。再掉下去。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在这里，我不惧怕这个词的诞生，这是Linux世界的一项杰出发明-在动态加载共享对象的阶段重新定义/拦截功能。对于LD_PRELOAD来说，这是很多技巧。在环境变量LD_PRELOAD中，您可以指定将在该进程需要的所有其他文件之前加载的库，并且如果该库具有与例如标准libc中相同名称的字符（稍后将被加载），则该应用程序的符号导入表将类似于该函数提供我们的替换模块。这正是</font><i><font style="vertical-align: inherit;">libfaketime</font></i><font style="vertical-align: inherit;">项目库的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">工作</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们开始使用它来在与系统时间不同的其他时间启动数据库。该库错过了与使用系统计时器以及获取系统时间和日期有关的呼叫。要控制相对于当前服务器日期的时间间隔或时间应从哪个时间点移入流程内部，所有操作均由必须与LD_PRELOAD一起设置的环境变量控制。为了实现时间更改，我们在Jenkins服务器上实现了一个作业，该作业进入数据库服务器，并在为libfaketime设置或不设置环境变量的情况下重新启动DBMS。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+用替换时间启动数据库的示例算法：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-built_in">export</span> LD_PRELOAD=/usr/<span class="hljs-built_in">local</span>/lib/faketime/libfaketime.so
+<span class="hljs-built_in">export</span> FAKETIME=<span class="hljs-string">"+1d"</span>
+<span class="hljs-built_in">export</span> FAKETIME_NO_CACHE=1<font></font>
+<font></font>
+<span class="hljs-variable">$ORACLE_HOME</span>/bin/sqlplus @/home/oracle/scripts/restart_db.sql
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+而且，如果您认为一切都可以立即生效，那么您将深陷错误。</font><font style="vertical-align: inherit;">因为，事实证明，这是在DBMS启动时验证加载到流程中的那些库的。</font><font style="vertical-align: inherit;">并且在警报日志中，他开始怨恨所注意到的伪造品，而基地却没有开始。</font><font style="vertical-align: inherit;">现在，我不记得该如何清除它，有一些参数可以在启动时禁止执行健全性检查。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">每过程伪造的方法</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+仅在1个进程内更改时间的一般想法保持不变-使用libfaketime。</font><font style="vertical-align: inherit;">我们使用预先加载的库来启动数据库，但是在启动时设置零时间偏移，然后将其传播到所有DBMS进程。</font><font style="vertical-align: inherit;">然后，在测试会话中，仅为此过程设置环境变量。</font><font style="vertical-align: inherit;">PFF，经营业务。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是，对于那些熟悉pl / sql语言的人来说，这种想法的整个厄运是显而易见的。因为语言非常有限，并且基本上适合于高级任务。在那里无法执行系统编程。尽管某些低级操作（例如，使用网络，使用文件）以预安装的系统dbms / utl软件包的形式存在。在使用Oracle的整个过程中，我多次对预装软件包进行了逆向工程，其中一些代码对陌生人是隐藏的（被称为包装式）。如果禁止您看东西，那么寻找它如何布置在里面的诱惑只会增加。但是通常，即使在anvrapper之后，也总是看不到东西，因为此类软件包的功能是作为</font><font style="vertical-align: inherit;">磁盘上的库的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">c接口</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">实现的</font><font style="vertical-align: inherit;">。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+总体而言，我们</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通过外部程序</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">向一名候选人寻求实施技术</font><font style="vertical-align: inherit;">。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以特殊方式设计的库可以导出方法，然后Oracle数据库可以通过pl / sql对其进行调用。看起来很有希望。只有在高级plsql课程中达到此要求后，我才非常想起如何烹饪它。这意味着有必要阅读文档。我读了它-立即变得沮丧。因为此类定制库的加载是通过数据库侦听器在单独的代理进程中进行的，而与此代理的通信则通过dlink进行的。因此，我们的想法是在数据库进程本身内部设置一个环境变量。出于安全原因，这一切都已完成。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+文档中的图片显示了其工作方式：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pu/1h/07/pu1h07d6fvy1wwetq4deujbpnga.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+so / dll库的类型不是很重要，但是由于某种原因，该图片仅适用于Windows。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+也许有人在这里注意到了另外一个潜在的机会。是的，是的，这是Java。 Oracle允许您不仅在plsql中编写存储过程代码，而且还可以在Java中编写存储过程代码，不过，它们的导出方式与plsql方法相同。定期地，我这样做了，所以这应该没有问题。但随后又隐藏了另一个陷阱。 Java使用环境副本，并且仅允许您获取JVM进程在启动时具有的环境变量。内置的JVM继承了数据库进程的环境变量，仅此而已。我在Internet上看到了一些技巧，该技巧如何通过反射更改只读地图，但有什么意义，因为它仍然只是副本。也就是说，那个女人再也一无所有。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是，Java不仅是有价值的毛皮。使用它，您可以从数据库进程中生成进程。尽管必须通过java Grants机制分别解决所有不安全的操作，但这是使用dbms_java包完成的。从plsql代码内部，可以使用系统视图v $ session和v $ process获取运行代码的当前服务器进程的进程pid。此外，我们可以从会话中派生一些子进程以使用此pid进行操作。首先，我只是推导出数据库进程内的所有环境变量（以检验假设）</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/sh
+</span>
+pid=<span class="hljs-variable">$1</span><font></font>
+<font></font>
+awk <span class="hljs-string">'BEGIN {RS="\0"; ORS="\n"} $0'</span> <span class="hljs-string">"/proc/<span class="hljs-variable">$pid</span>/environ"</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+好演绎，然后呢。仍然无法更改环境文件中的变量，这是启动时已传输到流程的数据，并且它们是只读的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我在stackoverflow上搜索了Internet：“如何在另一个过程中更改环境变量”。大部分答案是不可能的，但是有一个答案将这次机会描述为不合标准且肮脏的骇客。答案就是</font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">爱因斯坦</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（</font><s><font style="vertical-align: inherit;">Albert Einstein）</font></s><font style="vertical-align: inherit;"> gdb。调试器可以挂接到知道其pid的任何进程上，并以公开导出的符号（例如从某个库）的形式执行其中存在的任何函数/过程。在libc中，有一些用于处理环境变量的函数，并且libc被加载到Oracle数据库的任何进程中（实际上是Linux上的任何程序）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是在外部进程中设置环境变量的方式（由于使用了ptrace，因此需要从root调用它）：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/sh
+</span>
+pid=<span class="hljs-variable">$1</span>
+env_name=<span class="hljs-variable">$2</span>
+env_val=<span class="hljs-string">"<span class="hljs-variable">$3</span>"</span><font></font>
+<font></font>
+out=`gdb -q -batch -ex <span class="hljs-string">"attach <span class="hljs-variable">$pid</span>"</span> -ex <span class="hljs-string">'call (int) setenv("'</span><span class="hljs-variable">$env_name</span><span class="hljs-string">'", "'</span><span class="hljs-string">"<span class="hljs-variable">$env_val</span>"</span><span class="hljs-string">'", 1)'</span> -ex <span class="hljs-string">"detach"</span> 2&gt;&amp;1`
+</code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同样，查看gdb进程内部的环境变量也是合适的。</font><font style="vertical-align: inherit;">如前所述，/ proc / pid /中的环境文件仅显示在进程开始时存在的变量。</font><font style="vertical-align: inherit;">而且，如果该流程在其工作过程中创建了某些内容，那么只能通过调试器才能看到：</font></font><br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/sh
+</span>
+pid=<span class="hljs-variable">$1</span>
+var_name=<span class="hljs-variable">$2</span><font></font>
+<font></font>
+var_value=`gdb -q -batch -ex <span class="hljs-string">"attach <span class="hljs-variable">$pid</span>"</span> -ex <span class="hljs-string">'call (char*) getenv("'</span><span class="hljs-variable">$var_name</span><span class="hljs-string">'")'</span> -ex <span class="hljs-string">'detach'</span> | egrep <span class="hljs-string">'^\$1 ='</span>`<font></font>
+<font></font>
+<span class="hljs-keyword">if</span> [ <span class="hljs-string">"<span class="hljs-variable">$var_value</span>"</span> == <span class="hljs-string">'$1 = 0x0'</span> ]
+<span class="hljs-keyword">then</span>
+  <span class="hljs-comment"># variable empty or does not exist</span>
+  <span class="hljs-built_in">echo</span> -n
+<span class="hljs-keyword">else</span>
+  <span class="hljs-comment"># gdb returns $1 = hex_value "string value"</span>
+  var_hex=`<span class="hljs-built_in">echo</span> <span class="hljs-string">"<span class="hljs-variable">$var_value</span>"</span> | awk <span class="hljs-string">'{print $3}'</span>`<font></font>
+  var_value=`<span class="hljs-built_in">echo</span> <span class="hljs-string">"<span class="hljs-variable">$var_value</span>"</span> | sed -r -e <span class="hljs-string">'s/^\$1 = '</span><span class="hljs-variable">$var_hex</span><span class="hljs-string">' //;s/^"//;s/"$//'</span>`<font></font>
+  <font></font>
+  <span class="hljs-built_in">echo</span> -n <span class="hljs-string">"<span class="hljs-variable">$var_value</span>"</span>
+<span class="hljs-keyword">fi</span>
+</code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，解决方案已经摆在我们的口袋里了-通过java产生调试器进程，该进程进入生成它的进程并为其设置所需的环境变量，然后结束（摩尔人完成了他的工作-摩尔人可以离开）。</font><font style="vertical-align: inherit;">但是有一种感觉，那是某种拐杖。</font><font style="vertical-align: inherit;">我想要一些更优雅的东西。</font><font style="vertical-align: inherit;">强迫数据库进程本身设置环境变量而无需外部攻击完全是一样的。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">鸭蛋，野兔鸭...</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后有人来抢救，是的，您猜对了，还是Java，即JNI（Java本机接口）。</font><font style="vertical-align: inherit;">JNI允许您在JVM中调用本机C方法。</font><font style="vertical-align: inherit;">代码以一种特殊的方式以库的共享对象的形式发布，然后由JVM加载，而库中的方法映射到用native修饰符声明的类中的java方法。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+好吧，好的，我们正在编写一个类（实际上，这只是一个工件）：</font></font><br>
+<br>
+<pre><code class="java hljs"><span class="hljs-keyword">public</span> <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Posix</span> </span>{<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">private</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">native</span> <span class="hljs-keyword">int</span> <span class="hljs-title">setenv</span><span class="hljs-params">(String key, String value, <span class="hljs-keyword">boolean</span> overwrite)</span></span>;<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">private</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">native</span> String <span class="hljs-title">getenv</span><span class="hljs-params">(String key)</span></span>;<font></font>
+    <font></font>
+    <span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">static</span> <span class="hljs-keyword">void</span> <span class="hljs-title">stub</span><span class="hljs-params">()</span> 
+    </span>{<font></font>
+        <font></font>
+    }<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+之后，对其进行编译并获取将来库的生成的h文件：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-comment">#  </span><font></font>
+javac Posix.java<font></font>
+<font></font>
+<span class="hljs-comment">#   Posix.h        JNI</span><font></font>
+javah Posix<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+收到头文件后，我们为每种方法编写正文：</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdlib.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">"Posix.h"</span></span><font></font>
+<font></font>
+<span class="hljs-function">JNIEXPORT jint JNICALL <span class="hljs-title">Java_Posix_setenv</span><span class="hljs-params">(JNIEnv *env, jclass cls, jstring key, jstring value, jboolean overwrite)</span>
+</span>{
+    <span class="hljs-keyword">char</span>* k = (<span class="hljs-keyword">char</span> *) (*env)-&gt;GetStringUTFChars(env, key, <span class="hljs-literal">NULL</span>);
+    <span class="hljs-keyword">char</span>* v = (<span class="hljs-keyword">char</span> *) (*env)-&gt;GetStringUTFChars(env, value, <span class="hljs-literal">NULL</span>);<font></font>
+<font></font>
+    <span class="hljs-keyword">int</span> err = setenv(k, v, overwrite);<font></font>
+<font></font>
+    (*env)-&gt;ReleaseStringUTFChars(env, key, k);<font></font>
+    (*env)-&gt;ReleaseStringUTFChars(env, value, v);<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span> err;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function">JNIEXPORT jstring JNICALL <span class="hljs-title">Java_Posix_getenv</span><span class="hljs-params">(JNIEnv *env, jclass cls, jstring key)</span>
+</span>{
+    <span class="hljs-keyword">char</span>* k = (<span class="hljs-keyword">char</span> *) (*env)-&gt;GetStringUTFChars(env, key, <span class="hljs-literal">NULL</span>);
+    <span class="hljs-keyword">char</span>* v = getenv(k);<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span> (*env)-&gt;NewStringUTF(env, v);<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+并编译库</font></font><br>
+<br>
+<pre><code class="bash hljs">gcc -I<span class="hljs-string">"<span class="hljs-variable">$JAVA_HOME</span>/include"</span> -I<span class="hljs-string">"<span class="hljs-variable">$JAVA_HOME</span>/include/linux"</span> -fPIC Posix.c -shared -o libPosix.so -Wl,-soname -Wl,--no-whole-archive<font></font>
+<font></font>
+strip libPosix.so<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了让Java加载本机库，系统ld必须根据所有Linux规则找到它。</font><font style="vertical-align: inherit;">此外，Java具有一组属性，这些属性包含进行库搜索的路径。</font><font style="vertical-align: inherit;">在Oracle内部工作的最简单方法是将我们的库放在$ ORACLE_HOME / lib中。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+创建完库之后，我们需要在数据库中编译该类并将其发布为plsql包。</font><font style="vertical-align: inherit;">在数据库内部创建Java类有2个选项：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 通过loadjava实用程序加载二进制类文件</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 使用sqlplus从源代码编译类代码</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+尽管它们基本相等，我们将使用第二种方法。</font><font style="vertical-align: inherit;">对于第一种情况，当我们收到h文件的存根类时，有必要在阶段1中立即编写所有类代码。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了在subd中创建一个类，使用了一种特殊的语法：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">OR</span> <span class="hljs-keyword">REPLACE</span> <span class="hljs-keyword">AND</span> RESOLVE <span class="hljs-keyword">JAVA</span> <span class="hljs-keyword">SOURCE</span> NAMED <span class="hljs-string">"Posix"</span> <span class="hljs-keyword">AS</span><font></font>
+...<font></font>
+...<font></font>
+/<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+创建类时，需要将其作为plsql方法发布，这里再次使用特殊语法：</font></font><br>
+<br>
+<pre><code class="sql hljs">procedure set_env(var_name varchar2, var_value varchar2)<font></font>
+is<font></font>
+language java name 'Posix.set_env(java.lang.String, java.lang.String)';<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当您尝试在Java内部调用可能不安全的方法时，将引发一个执行，表明没有为用户发出Java授权。</font><font style="vertical-align: inherit;">加载本机方法是另一种不安全的操作，因为我们将多余的代码直接注入数据库进程中（与标头中宣布的漏洞相同）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是由于数据库是测试数据库，因此我们无需考虑从sys进行连接就可以授予资助：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">begin</span>
+dbms_java.grant_permission( <span class="hljs-string">'SYSTEM'</span>, <span class="hljs-string">'SYS:java.lang.RuntimePermission'</span>, <span class="hljs-string">'loadLibrary.Posix'</span>, <span class="hljs-string">''</span>);
+<span class="hljs-keyword">commit</span>;
+<span class="hljs-keyword">end</span>;<font></font>
+/<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+系统用户名是我用来编译Java代码和plsql包装程序包的用户名。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+重要的是要注意，通过调用System.loadLibrary加载库时，我们省略了lib前缀和so扩展名（如文档中所述），并且不传递任何查找路径。有一个类似的System.load方法，只能使用绝对路径加载库。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+然后有2个令人不快的惊喜等待着我们-我降落在Oracle的下一个兔子洞中。发出授权时，会出现错误消息，并显示模糊的消息：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">ORA-29532: Java call terminated by uncaught Java exception: java.lang.SecurityException: policy table update
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在Internet上搜索该问题，并获得My Oracle Support（又名Metalink）。</font><font style="vertical-align: inherit;">因为 </font><font style="vertical-align: inherit;">根据Oracle的规则，不允许在开源中发布metalink的文章，我只提到文档号259471.1（那些有权访问的人将可以自己阅读）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+问题的本质在于，Oracle不会让我们只允许将可疑的第三方代码加载到我们的流程中。</font><font style="vertical-align: inherit;">这是合乎逻辑的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是由于基础是经过测试的，并且我们对代码有信心，所以我们允许下载而无需特别担心。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+嗯，灾难结束了。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">活着，活着</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我喘着粗气，决定尝试让我的科学怪人呼吸一生。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们以预加载的libfaketime和0偏移量启动数据库，</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+连接到数据库并调用代码，该代码仅显示更改环境变量前后的时间：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">begin</span>
+dbms_output.enable(<span class="hljs-number">100000</span>);<font></font>
+dbms_java.set_output(100000);<font></font>
+dbms_output.put_line('old time: '||to_char(sysdate, 'dd.mm.yyyy hh24:mi:ss'));<font></font>
+system.posix.set_env('FAKETIME','+1d');<font></font>
+dbms_output.put_line('new time: '||to_char(sysdate, 'dd.mm.yyyy hh24:mi:ss'));<font></font>
+<span class="hljs-keyword">end</span>;<font></font>
+/<font></font>
+</code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+它有效，该死！</font><font style="vertical-align: inherit;">老实说，我期待更多的惊喜，例如ORA-600错误。</font><font style="vertical-align: inherit;">但是，警报具有完整的编号，并且代码继续起作用。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+重要的是要注意，如果到数据库的连接是按专用方式完成的，则在连接完成后，该过程将被破坏，并且将没有任何跟踪。</font><font style="vertical-align: inherit;">但是，如果我们使用共享连接，则在这种情况下，将从服务器池中分配一个现成的进程，我们通过环境变量更改其中的时间，并且当断开连接时，它将在进程内保持更改。</font><font style="vertical-align: inherit;">然后，当另一个数据库会话进入同一服务器进程时，它将收到错误的时间，这将给它带来极大的惊喜。</font><font style="vertical-align: inherit;">因此，在测试会话结束时，最好始终将时间恢复为零偏移。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结论</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我希望这个故事很有趣（也许对某人有用）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+源代码可在</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Github上找到</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+libfaketime文档</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">也是如此</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您如何进行测试？</font><font style="vertical-align: inherit;">以及如何在公司中创建开发和测试数据库？</font></font><br>
+<br>
+<div class="spoiler" role="button" tabindex="0">
+                        <b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">那些读到最后的人可获得奖金</font></font></b>
+                        <div class="spoiler_text"><img src="https://habrastorage.org/webt/wd/m1/s9/wdm1s9kk6_kckj-xf5amc_o6wjq.jpeg"><br>
+</div>
+                    </div></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN503782/index.html">如何制作一个带有圆形工作面的交互式桌子？</a></li>
+<li><a href="../zh-CN503786/index.html">模拟音频的数字表示。简短的教育计划</a></li>
+<li><a href="../zh-CN503788/index.html">动态电子邮件::安全性</a></li>
+<li><a href="../zh-CN503790/index.html">排列。9年级。奇偶校验任务</a></li>
+<li><a href="../zh-CN503796/index.html">降低支持成本，努力不失去质量</a></li>
+<li><a href="../zh-CN503812/index.html">敏捷海盗与辩证法</a></li>
+<li><a href="../zh-CN503826/index.html">对称和非对称DDoS保护-有什么区别？</a></li>
+<li><a href="../zh-CN503830/index.html">亚马逊为无家可归者开设了一个大型庇护所</a></li>
+<li><a href="../zh-CN503832/index.html">PostgreSQL食谱：Mustach模板引擎</a></li>
+<li><a href="../zh-CN503836/index.html">评论审核技术的利弊（+投票）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
