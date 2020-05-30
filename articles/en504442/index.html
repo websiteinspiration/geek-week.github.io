@@ -1,0 +1,434 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😹 👩🏽‍🤝‍👨🏻 🚾 A bit about relocations in the Linux kernel 👲🏾 🤹 🧖🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="We will solve a simple problem - select a memory block in the space of the Linux kernel, put some binary code into it and execute it. To do this, we w...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>A bit about relocations in the Linux kernel</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/504442/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">We will solve a simple problem - select a memory block in the space of the Linux kernel, put some binary code into it and execute it. </font><font style="vertical-align: inherit;">To do this, we write a kernel module, in it we define the function foo, which will play the role of the binary code we need, then, using the module_alloc function, select the memory block, copy this whole function to it through memcpy and give it control. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here's what it looks like:</font></font><br>
+<a name="habracut"></a><br>
+<pre><code class="plaintext hljs">static noinline int foo(int ret)<font></font>
+{<font></font>
+	return (ret + 2);<font></font>
+}<font></font>
+<font></font>
+static int exe_init(void)<font></font>
+{<font></font>
+	int ret = 0;<font></font>
+	int (*new_foo)(int);<font></font>
+<font></font>
+	ret = foo(0);<font></font>
+	printk(KERN_INFO "ret=%d\n", ret);<font></font>
+<font></font>
+	new_foo = module_alloc(PAGE_SIZE);<font></font>
+	set_memory_x((unsigned long)new_foo, 1);<font></font>
+<font></font>
+	printk(KERN_INFO "foo=%lx new_foo=%lx\n",<font></font>
+		(unsigned long)foo, (unsigned long)new_foo);<font></font>
+<font></font>
+	memcpy((void *)new_foo, (const void *)foo, PAGE_SIZE);<font></font>
+<font></font>
+	ret = new_foo(1);<font></font>
+	printk(KERN_INFO "ret=%d\n", ret);<font></font>
+<font></font>
+	vfree(new_foo);<font></font>
+	return 0;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The exe_init function is called when the module is loaded. </font><font style="vertical-align: inherit;">We look at the result of work in the kernel log:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">[ 6972.522422] ret=2<font></font>
+[ 6972.522443] foo=ffffffffc0000000 new_foo=ffffffffc0007000<font></font>
+[ 6972.522457] ret=3<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Everything is working correctly. </font><font style="vertical-align: inherit;">And now we add the printk function to foo to display the argument:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">static noinline int foo(int ret)<font></font>
+{<font></font>
+	printk(KERN_INFO "ret=%d\n", ret);<font></font>
+	return (ret + 2);<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+and dump 25 bytes of the contents of the new_foo () function before passing control to it:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">	memcpy((void *)new_foo, (const void *)foo, PAGE_SIZE);<font></font>
+	dump((unsigned long)new_foo);<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+dump is defined as</font></font><br>
+<br>
+<pre><code class="plaintext hljs">static inline void dump(unsigned long x)<font></font>
+{<font></font>
+	int i;<font></font>
+	for (i = 0; i &lt; 25; i++) \<font></font>
+		pr_cont("%.2x ", *((unsigned char *)(x) + i) &amp; 0xFF); \<font></font>
+	pr_cont("\n");<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We load the module and get a crash with the following message in the log:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">[ 8482.806092] ret=0<font></font>
+[ 8482.806092] ret=2<font></font>
+[ 8482.806111] foo=ffffffffc0000000 new_foo=ffffffffc0007000<font></font>
+[ 8482.806113] 53 89 fe 89 fb 48 c7 c7 24 10 00 c0 e8 e8 3d 0b c1 8d 43 02 5b c3 66 2e 0f <font></font>
+[ 8482.806135] invalid opcode: 0000 [#1] SMP NOPTI<font></font>
+[ 8482.806639] CPU: 0 PID: 5081 Comm: insmod Tainted: G           O      5.4.27 #12<font></font>
+[ 8482.807669] Hardware name: innotek GmbH VirtualBox/VirtualBox, BIOS VirtualBox 12/01/2006<font></font>
+[ 8482.808560] RIP: 0010:irq_create_direct_mapping+0x79/0x90<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Somehow, we ended up in the irq_create_direct_mapping function, although we had to call printk. </font><font style="vertical-align: inherit;">Let's figure out what happened. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First, take a look at the disassembled listing of the foo function. </font><font style="vertical-align: inherit;">Get it with the objdump -d command:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">Disassembly of section .text:<font></font>
+<font></font>
+0000000000000000 &lt;foo&gt;:<font></font>
+   0:	53                   	push   %rbx<font></font>
+   1:	89 fe                	mov    %edi,%esi<font></font>
+   3:	89 fb                	mov    %edi,%ebx<font></font>
+   5:	48 c7 c7 00 00 00 00 	mov    $0x0,%rdi<font></font>
+   c:	e8 00 00 00 00       	callq  11 &lt;foo+0x11&gt;<font></font>
+  11:	8d 43 02             	lea    0x2(%rbx),%eax<font></font>
+  14:	5b                   	pop    %rbx<font></font>
+  15:	c3                   	retq   <font></font>
+  16:	66 2e 0f 1f 84 00 00 	nopw   %cs:0x0(%rax,%rax,1)<font></font>
+  1d:	00 00 00 <font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The foo function is located at the beginning of the text section. At offset 0xC, the opcode of the near call command e8 is located - near, because it is executed in the current code segment, the selector value does not change. The next 4 bytes are the offset relative to the value in the RIP register to which control will be transferred, i.e. RIP = RIP + offset, according to Intel documentation (Intel 64 and IA-32 Architectures Software Developer's Manual, Instruction Set Reference AZ):</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A relative offset (rel16 or rel32) is generally specified as a label in assembly code. </font><font style="vertical-align: inherit;">But at the machine code level, it is encoded as a signed, 16- or 32-bit immediate value. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This value is added to the value in the EIP (RIP) register. </font><font style="vertical-align: inherit;">In 64-bit mode the relative offset is always a 32-bit immediate value which is sign extended to 64-bits before it is added to the value in the RIP register for the target calculation.</font></font><br>
+</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We know the address of the function foo, it is 0xffffffffc0000000, so in RIP = 0xffffffffc0000000 + 0xc + 0x5 = 0xffffffffc00000011 (0xc is the offset to the e8 instruction, 1 byte of the instruction and 4 bytes of the offset). </font><font style="vertical-align: inherit;">We know the offset, because </font><font style="vertical-align: inherit;">dumped body functions. </font><font style="vertical-align: inherit;">Let us calculate where the call to send us to the function foo will send:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">0xffffffffc00000011 + 0xffffffffc10b3de8 = 0xffffffff810b3df9
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is the address of the printk function:</font></font><br>
+<pre><code class="plaintext hljs"># cat /proc/kallsyms | grep ffffffff810b3df9  <font></font>
+ffffffff810b3df9 T printk<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And now the same goes for new_foo, whose address is 0xffffffffc0007000</font></font><br>
+<br>
+<pre><code class="plaintext hljs">0xffffffffc0007011 + 0xffffffffc10b3de8 = 0xffffffff810badf9
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There is no such address in kallsyms, but there is 0xffffffff810badf9 - 0x79 = 0xffffffff810bad80</font></font><br>
+<pre><code class="plaintext hljs"># cat /proc/kallsyms | grep ffffffff810bad80<font></font>
+ffffffff810bad80 T irq_create_direct_mapping<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is the very function on which the crash happened. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To prevent a crash, just recalculate the offset, knowing the address of the new_foo function:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">memcpy((void *)new_foo, (const void *)foo, PAGE_SIZE);<font></font>
+unsigned int delta = (unsigned long)printk - (unsigned long)new_foo - 0x11;<font></font>
+*(unsigned int *)((void *)new_foo + 0xD) = delta;<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+After this correction, there will be no crash, the new_foo function will successfully execute and return control. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The problem is solved. </font><font style="vertical-align: inherit;">It remains only to understand why in the disassembler listing the offset after the e8 opcode is zero, but there is no function in the dump. </font><font style="vertical-align: inherit;">To do this, consider what relocations are and how the kernel works with them. </font><font style="vertical-align: inherit;">But first, a little about the ELF format.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ELF stands for Executable and Linkable Format - the format of executable and composable files. An ELF file is a collection of sections. The section stores a set of objects necessary for the linker to form an executable image - instructions, data, symbol tables, records of relocations, etc. Each section is described by a heading. All headers are collected in a table of headers and are essentially an array where each element has an index. The section header contains an offset to the beginning of the section and other overhead information, such as links to other sections by specifying an index in the header table.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When assembling our test case, the compiler does not know the address of the printk function, therefore it fills the call location with a zero value and, using a relocation record, tells the kernel that this position must be filled with a valid value. A relocation record contains an offset to the position where you want to make changes (relocation position), the type of relocation and the index of the symbol in the symbol table, the address of which must be substituted at the specified offset. What is the type of relocation for? We consider below. The heading of the section of relocation records refers through indexes to the headings of the section with a table of characters and sections, relative to the beginning of which an offset to the position of the relocation is specified. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can look at the contents of relocation records using the objdump utility with the -r switch.</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+From the disassembled listing, we know that at offset 0xD it is necessary to write the address of the printk function, so we look for objdump output with the following position:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">000000000000000d R_X86_64_PC32     printk-0x0000000000000004
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+So, we have the necessary relocation record indicating the position at offset 0xD, and the name of the symbol whose address should be written to this position. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Value (-4). </font><font style="vertical-align: inherit;">which is added to the address of the printk function is called addendum, and it is taken into account when calculating the final result of the relocation. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now look at the printk symbol:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">$ objdump -t exe.ko | grep printk<font></font>
+0000000000000000         *UND*	0000000000000000 printk<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+There is a symbol, it is undefined inside the module (undefined), so we will search for it in the kernel. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It will be more informative to look at the records of relocation and symbols in binary form. </font><font style="vertical-align: inherit;">This can be done using wireshark, it can parse ELF format. </font><font style="vertical-align: inherit;">Here is our relocation entry (copy paste from writeshark, LSB on the left):</font></font><br>
+<br>
+<pre><code class="plaintext hljs">  0d 00 00 00 00 00 00 00  02 00 00 00 22 00 00 00  fc ff ff ff ff ff ff ff<font></font>
+  |                     |  |          ||         |  |                     |<font></font>
+  +----  -------+  +--  ---++---+  +---- addendum  ------+<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Compare this entry with the definition of the corresponding structure from &lt;linux / elf.h&gt;:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">typedef struct elf64_rela {<font></font>
+  Elf64_Addr r_offset;	/* Location at which to apply the action */<font></font>
+  Elf64_Xword r_info;	/* index and type of relocation */<font></font>
+  Elf64_Sxword r_addend;	/* Constant addend used to compute value */<font></font>
+} Elf64_Rela;<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here we have 8 bytes offset 0x00000000d, 4 bytes type 0x00000002, 4 bytes index in the character table 0x00000022 (or 34 in decimal) and 8 bytes addendum -4. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+And here is the entry from the symbol table at number 34:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">  01 01 00 00 10 00 00 00  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+and related structure</font></font><br>
+<br>
+<pre><code class="plaintext hljs">typedef struct elf64_sym {<font></font>
+  Elf64_Word st_name;		/* Symbol name, index in string tbl */<font></font>
+  unsigned char	st_info;	/* Type and binding attributes */<font></font>
+  unsigned char	st_other;	/* No defined meaning, 0 */<font></font>
+  Elf64_Half st_shndx;		/* Associated section index */<font></font>
+  Elf64_Addr st_value;		/* Value of the symbol */<font></font>
+  Elf64_Xword st_size;		/* Associated symbol size */<font></font>
+} Elf64_Sym;<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The first 4 bytes 0x00000101 is the index in the table of strings .strtab to the name of this character, i.e. printk. The st_info field defines the type of symbol, it can be a function, data object, etc., see the ELF specification for more details. We will skip the st_other field, now it is of no interest to us, and look at the last three fields st_shndx, st_value and st_size. st_shndx - the header index of the section in which the character is defined. We see here a zero value, because the symbol is not defined inside the module; it is not in the available sections. </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Accordingly, its st_value value and st_size size are also zero. These fields will be filled by the kernel when loading the module. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For comparison, look at the symbol foo, which is clearly present:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">  08 00 00 00 02 00 02 00  00 00 00 00 00 00 00 00  16 00 00 00 00 00 00 00
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The symbol defines a function that is located in the .text section at the address relative to the beginning of the 0x00000000 section, i.e. </font><font style="vertical-align: inherit;">at the very beginning of the section, as we saw in the disassembled listing, the function size is 22 bytes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Objdump will show us the same information about this:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">$ objdump -t exe.ko | grep foo<font></font>
+0000000000000000 l     F .text	0000000000000016 foo<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When the kernel loads the module, it finds all Undefined characters and fills the st_value and st_size fields with valid values. </font><font style="vertical-align: inherit;">This is done in the simplify_symbols function, kernel / module.c file:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/* Change all symbols so that st_value encodes the pointer directly. */<font></font>
+static int simplify_symbols(struct module *mod, const struct load_info *info)<font></font>
+{<font></font>
+...<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the parameters of the function, the load_info structure of the following form is passed</font></font><br>
+<br>
+<pre><code class="plaintext hljs">struct load_info {<font></font>
+	const char *name;<font></font>
+	/* pointer to module in temporary copy, freed at end of load_module() */<font></font>
+	struct module *mod;<font></font>
+	Elf_Ehdr *hdr;<font></font>
+	unsigned long len;<font></font>
+	Elf_Shdr *sechdrs;<font></font>
+	char *secstrings, *strtab;<font></font>
+	unsigned long symoffs, stroffs, init_typeoffs, core_typeoffs;<font></font>
+	struct _ddebug *debug;<font></font>
+	unsigned int num_debug;<font></font>
+	bool sig_ok;<font></font>
+#ifdef CONFIG_KALLSYMS<font></font>
+	unsigned long mod_kallsyms_init_off;<font></font>
+#endif<font></font>
+	struct {<font></font>
+		unsigned int sym, str, mod, vers, info, pcpu;<font></font>
+	} index;<font></font>
+};<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The following fields are of interest to us: </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ - hdr - ELF file header </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ - sechdrs - pointer to the section header table </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ - strtab - symbol name table - a set of strings separated by zeros </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ - index.sym - index of the section header containing the symbol table </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First of all, the function will get access to the section with the symbol table. </font><font style="vertical-align: inherit;">The symbol table is an array of elements of type Elf64_Sym:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">Elf64_Shdr *symsec = &amp;info-&gt;sechdrs[info-&gt;index.sym];<font></font>
+Elf64_Sym *sym = (void *)symsec-&gt;sh_addr;<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Next, in the loop, we go through all the characters in the table, determining for each its name:</font></font><br>
+<pre><code class="plaintext hljs">for (i = 1; i &lt; symsec-&gt;sh_size / sizeof(Elf_Sym); i++) {<font></font>
+	const char *name = info-&gt;strtab + sym[i].st_name;<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The st_shndx field contains the header index of the section in which this character is defined. </font><font style="vertical-align: inherit;">If there is a zero value (our case), then this symbol is not inside the module, you need to look for it in the kernel:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">	switch (sym[i].st_shndx) {<font></font>
+	.....<font></font>
+	 case SHN_UNDEF: //  0<font></font>
+	ksym = resolve_symbol_wait(mod, info, name);<font></font>
+ 	/* Ok if resolved.  */<font></font>
+	if (ksym &amp;&amp; !IS_ERR(ksym)) {<font></font>
+		sym[i].st_value = kernel_symbol_value(ksym);<font></font>
+		break;<font></font>
+	}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Then comes the relocation queue in the apply_relocations function:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">static int apply_relocations(struct module *mod, const struct load_info *info)<font></font>
+{<font></font>
+	unsigned int i;<font></font>
+	int err = 0;<font></font>
+<font></font>
+	/* Now do relocations. */<font></font>
+	for (i = 1; i &lt; info-&gt;hdr-&gt;e_shnum; i++) {<font></font>
+	.....<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the loop, we look for relocation sections and process the records of each section found in the apply_relocate_add function:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">if (info-&gt;sechdrs[i].sh_type == SHT_RELA) //   <font></font>
+	err = apply_relocate_add(info-&gt;sechdrs, info-&gt;strtab,<font></font>
+				info-&gt;index.sym, i, mod);<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A pointer to a section header table, a pointer to a symbol name table, a section header index with a symbol table and a relocation section header index are passed to apply_relocate_add:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">int apply_relocate_add(Elf64_Shdr *sechdrs,<font></font>
+	   const char *strtab,<font></font>
+	   unsigned int symindex,<font></font>
+	   unsigned int relsec,<font></font>
+	   struct module *me)<font></font>
+{<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First we address the relocations section:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">Elf64_Rela *rel = (void *)sechdrs[relsec].sh_addr;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Then, in a loop, iterate over the array of its entries:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">for (i = 0; i &lt; sechdrs[relsec].sh_size / sizeof(*rel); i++) {
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We find the section for relocation and the position in it, i.e. </font><font style="vertical-align: inherit;">where we need to make changes. </font><font style="vertical-align: inherit;">The sh_info field of the relocation section header is the index of the section header for relocation, the r_offset field of the relocation record is the offset to the position inside the section for relocation:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/* This is where to make the change */<font></font>
+loc = (void *)sechdrs[sechdrs[relsec].sh_info].sh_addr + rel[i].r_offset;<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The address of the character to be substituted in this position, taking into account addendum. </font><font style="vertical-align: inherit;">The r_info field of the relocation entry contains the index of this symbol in the symbol table:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">	/* This is the symbol it is referring to.  Note that all<font></font>
+	   undefined symbols have been resolved.  */<font></font>
+	sym = (Elf64_Sym *)sechdrs[symindex].sh_addr<font></font>
+		+ ELF64_R_SYM(rel[i].r_info);<font></font>
+<font></font>
+	val = sym-&gt;st_value + rel[i].r_addend;<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The type of relocation determines the final result of the calculations, in our example it is R_X86_64_PLT32:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">	switch (ELF64_R_TYPE(rel[i].r_info)) {<font></font>
+	......<font></font>
+	case R_X86_64_PLT32:	<font></font>
+		if (*(u32 *)loc != 0)<font></font>
+			goto invalid_relocation;<font></font>
+		val -= (u64)loc;	//   <font></font>
+		*(u32 *)loc = val;  //    <font></font>
+		break;<font></font>
+	.....<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we can calculate the final val ourselves, knowing that sym-&gt; st_value is the address of the printk function 0xffffffff810b3df9, r_addend is (-4), the offset to the position of relocation is 0xd from the beginning of the module text section, or from the beginning of the foo function, i.e. </font><font style="vertical-align: inherit;">will be ffffffffc000000d. </font><font style="vertical-align: inherit;">Substitute all these values ​​and get:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">val = (u32)(0xffffffff810b3df9 - 0x4 - 0xffffffffc000000d) = 0xc10b3de8
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's look at the dump of the foo function, which we got at the very beginning:</font></font><br>
+<br>
+<pre><code class="plaintext hljs">53 89 fe 89 fb 48 c7 c7 24 10 00 c0 e8 e8 3d 0b c1 8d 43 02 5b c3 66 2e 0f
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+At offset 0xD, the value 0xc10b3de8 is found, which is identical to the one we calculated. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This is how the kernel processes relocations and gets the necessary offset for the close call command. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In preparing the article, the Linux kernel version 5.4.27 was used.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en504414/index.html">How Microsoft Killed AppGet</a></li>
+<li><a href="../en504420/index.html">Writing a turn-based PvP arena with simultaneous moves</a></li>
+<li><a href="../en504430/index.html">Everyday Life Tinkoff Security Operations Center: Single Bootloader Analysis</a></li>
+<li><a href="../en504434/index.html">Educational program for parents: how to protect children from danger on the Internet</a></li>
+<li><a href="../en504438/index.html">30 mitaps per week. We open the summer season 2020</a></li>
+<li><a href="../en504444/index.html">Using docker multi-stage to build windows images</a></li>
+<li><a href="../en504448/index.html">Gamers Generation II</a></li>
+<li><a href="../en504450/index.html">Modern JavaScript: a side view</a></li>
+<li><a href="../en504452/index.html">Ontology Launches Layer 2, Contributing to More Integrated Public Chain Platform</a></li>
+<li><a href="../en504454/index.html">Best GitHub repositories for web developers</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
