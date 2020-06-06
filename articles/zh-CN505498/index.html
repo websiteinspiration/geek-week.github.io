@@ -1,0 +1,625 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏇🏼 🙅🏻 🐹 我们如何解决Windows中未初始化的堆栈内存的问题 🚴🏼 👫 👩🏼‍🤝‍👨🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="在本文中，我将概述Microsoft如何消除与未初始化的堆栈内存相关的漏洞，以及我们为什么要这样做。
+ 
+ 为了便于导航，该注释分为以下几部分：
+ 
+ 
+
+1. 使用未初始化的内存：问题历史记录
+2. 解决未初始化的内存漏洞
+3. InitAll-自动初始化
+4. 有关使用InitAll的有趣观察
+...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>我们如何解决Windows中未初始化的堆栈内存的问题</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/505498/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在本文中，我将概述Microsoft如何消除与未初始化的堆栈内存相关的漏洞，以及我们为什么要这样做。</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了便于导航，该注释分为以下几部分：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用未初始化的内存：问题历史记录</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">解决未初始化的内存漏洞</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll-自动初始化</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有关使用InitAll的有趣观察</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">性能优化</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用户价值</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">未来的计划</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果没有Visual Studio，Windows和MSRC的密切合作，这项工作将是不可能的。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用未初始化的内存：问题历史记录</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在创建C和C ++编程语言时，重点是开发人员的高速和灵活控制。</font><font style="vertical-align: inherit;">因此，这些语言不会强制变量初始化。</font><font style="vertical-align: inherit;">使用未初始化的变量会导致未定义的行为，因此必须在使用前对其进行初始化，并且遵守此规则的责任完全由开发人员承担。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+与未初始化的内存相关的漏洞被减少为两种类型：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内容披露：存储在未初始化内存部分中的数据被复制到受信任区域之外，并被不具有适当权限的人员所知道。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">直接使用未初始化的内存。</font><font style="vertical-align: inherit;">例子：用未初始化的指针写。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+重要的是要理解，无论是在堆栈上还是在堆上分配内存，都会发生问题。</font><font style="vertical-align: inherit;">这篇文章是关于堆栈内存的，接下来我们将讨论堆。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用未初始化内存的示例</font></font></h3><br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">int</span> size;  <font></font>
+GetSize(&amp;size); <span class="hljs-comment">//       ?</span>
+<span class="hljs-built_in">memcpy</span>(dest, src, size); <span class="hljs-comment">//  memcpy </span>
+                         <span class="hljs-comment">//  </span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这里的问题是，如果</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GetSize</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">函数</font><font style="vertical-align: inherit;">未在程序的所有分支中为变量“ size”分配值，则</font><font style="vertical-align: inherit;">未初始化的大小将传递给</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memcpy</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调用</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">因此，如果“大小”的值大于缓冲区“ src”或“目标”的大小，则可能在缓冲区外部发生读取或写入错误。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">未初始化的内存扩展示例</font></font></h3><br>
+<pre><code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">mystruct</span> {</span>
+      <span class="hljs-keyword">uint8_t</span> field1;
+      <span class="hljs-keyword">uint64_t</span> field2;<font></font>
+};<font></font>
+mystruct s {<span class="hljs-number">1</span>, <span class="hljs-number">5</span>};
+<span class="hljs-built_in">memcpy</span>(dest, &amp;s, <span class="hljs-keyword">sizeof</span>(s));</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+假设</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memcpy</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">函数</font><font style="vertical-align: inherit;">将结构复制到受信任区域之外（即，从内核模式复制到用户模式）。乍一看，该结构似乎已完全初始化，但是在“ field1”和“ field2”之间，编译器插入了未明确初始化的占位符字节。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+由于调用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memcpy</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">占位符字节将与之前写入这些虚拟地址的未初始化内容一起复制到受信任区域之外。</font><font style="vertical-align: inherit;">例如，它可能是一段秘密加密密钥（在用户模式下将变得可见），指针（将破坏ASLR）或其他东西。</font><font style="vertical-align: inherit;">在某些情况下，可以很容易地证明没有特别关键的数据被传输，在其他情况下，这将非常困难。</font><font style="vertical-align: inherit;">但是无论如何，弄清未初始化的内存问题有多严重是一件令人忘恩负义的事情，我们乐意做其他事情。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">未初始化的内存错误统计信息</font></font></h3><br>
+<p><img src="https://habrastorage.org/webt/hb/la/gn/hblagnxiqxpsgewdennaq6tx8o8.png" alt="图片8"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+注意：在此图中，使用未初始化的内存涉及两种类型的问题：直接使用和公开内容。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+近年来，此类错误的数量一直在增长。</font><font style="vertical-align: inherit;">这可能部分是由于研究人员对它们的兴趣日益浓厚，结果是​​出现了用于搜索的有效工具。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这些错误的更详细分类揭示了一些更有趣的趋势。</font></font><br>
+<br>
+<p><img src="https://habrastorage.org/webt/od/bg/sq/odbgsqun-kof4vx6j8ws_v9d9f8.png" alt="图片6"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+注意：在此图中，未初始化内存的使用不包括其内容的公开。</font></font><br>
+<br>
+<p><img src="https://habrastorage.org/webt/rl/ql/ee/rlqleezbmgk3oeo-bxztqaaphry.png" alt="图片5"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+查看这些图，我们可以得出以下结论：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在2017年至2018年之间，未初始化的内存漏洞约占Microsoft报告中所有漏洞的5-10％。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">事实证明，与堆栈上的内存分配相关的漏洞与与堆/池上的内存分配相关的漏洞几乎相等。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">公开未初始化内存内容的情况比使用未初始化内存的情况更多。</font></font></li>
+</ol><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">其他文献</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有关该主题的更完整介绍，请参见以下资源：</font></font><br>
+<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://github.com/microsoft/MSRC-Security-Research/blob/master/presentations/2019_09_CppCon/CppCon2019%20-%20Killing%20Uninitialized%20Memory.pdf</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://j00ru.vexillium.org/papers/2018/bochspwn_reloaded.pdf</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://www.blackhat.com/presentations/bh-europe-06/bh-eu-06-Flake.pdf</font></font></a></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">解决未初始化的内存漏洞</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+他们试图以几种方式解决所描述的问题。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">静态分析（在编译期间和之后）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">模糊测试</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">代码审查</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">自动初始化</font></font></li>
+</ol><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">静态分析</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Microsoft使用大量的静态分析器警告来捕获未初始化的变量（包括C4700，C4701，C4703，C6001，C26494和C26495）。</font><font style="vertical-align: inherit;">这些诊断是保守的，即 </font><font style="vertical-align: inherit;">为了减少噪声，它们忽略了一些可能导致未初始化内存的模式。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+还为</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Semmle</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">静态分析器编写了许多严格的规则，这些规则</font><font style="vertical-align: inherit;">在某些Windows代码库上运行。</font><font style="vertical-align: inherit;">但是，这些诊断会带来很多噪音，并且很难检查大量代码。</font><font style="vertical-align: inherit;">此外，遵守这些规则和纠正错误非常耗时。</font><font style="vertical-align: inherit;">结果，发现使用它们是困难且昂贵的。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">模糊测试</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如您所知，模糊测试很难扩展。</font><font style="vertical-align: inherit;">好的模糊测试器维护成本很高，并且需要针对特定​​任务进行定制。</font><font style="vertical-align: inherit;">使用Microsoft这样大小的代码库，很难确保其完整的模糊测试覆盖范围。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+即使有可能用它们完全覆盖所有代码，模糊器也无法检测到未初始化内存内容的泄露，因为这不会导致程序崩溃。</font><font style="vertical-align: inherit;">为了使用模糊检测此类缺陷，需要以下两种解决方案之一：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fazzer理解协议，并且能够检测到未初始化的内存（或意外数据）返回到该协议。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一个动态分析器，能够检测对未初始化内存的访问。</font></font></li>
+</ol><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">代码审查</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+代码概述是不可扩展的，并且极容易出错。</font><font style="vertical-align: inherit;">审查了带有漏洞的代码，但是它们是如此伪装，以至于程序员不会注意到它们。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们遇到的未初始化内存内容公开的代码部分是在32位Windows时代写回的，那时没有此类错误。</font><font style="vertical-align: inherit;">当过渡到64位体系结构时，指针的大小从32位增加到64位，这就是为什么某些结构具有未初始化的占位符字段的原因。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll-自动初始化</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+除了上述方法外，Microsoft一段时间以来一直在使用一种称为</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的机制</font><font style="vertical-align: inherit;">-它在编译阶段自动初始化堆栈变量。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在本节中，我将描述Windows中如何使用该技术以及为什么使用这种技术。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">当前Windows设置：</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下类型会自动初始化：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">标量（数组，指针，浮点数）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">指针数组</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">结构（简单数据结构-POD）</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下类型不会自动初始化：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">易变变量</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">除指针外的其他类型的数组（即整数数组，结构数组等）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">非POD的类</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在优化的零售程序集中，将变量初始化为0。对于浮点数，将使用0.0。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+调试（CHK）程序集或开发人员（即非优化零售商）的程序集使用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xE2</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">；</font><font style="vertical-align: inherit;">浮点数被初始化为1.0。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">适用于以下组件：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Windows系统信息库中以内核模式执行的所有代码（即，所有使用/ KERNEL开关编译的代码） </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">所有与Hyper-V相关的代码（管理程序，内核模式组件，用户模式组件）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">其他许多项目，例如用户模式网络服务</font></font></li>
+</ol><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在编译器的前端实现。</font><font style="vertical-align: inherit;">声明时，所有符合上述条件且未由程序员初始化的变量都将使用前端进行初始化。</font><font style="vertical-align: inherit;">这种方法的优点之一是，从优化器的角度来看，自动初始化与开发人员的初始化没有什么不同。</font><font style="vertical-align: inherit;">由此可见，我们为加快</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的使用而进行</font><font style="vertical-align: inherit;">的优化</font><font style="vertical-align: inherit;">并不仅限于此函数，而且在声明（或使用前）自己初始化变量的情况下也可以使用。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们如何避免语言分叉问题</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+自动零初始化有一个问题：零是编程语言中的特殊含义，尤其是对于指针。这也许是初始化单个变量的最常用值。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当初始化为零时，程序员未正确初始化的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">指针</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">可能会进入</font><i><font style="vertical-align: inherit;">NULL指针</font></i><font style="vertical-align: inherit;">分支</font><font style="vertical-align: inherit;">。如此一来，您可以获得一个不会崩溃但不会产生期望结果的程序。如果使用无用值初始化指针，则该指针将不会落入</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NULL指针</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分支，</font><font style="vertical-align: inherit;">并且，如果尝试使用它，将导致程序崩溃。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们通过在CHK构建和开发人员所谓的内部版本中使用非零初始化值（0xE2）来解决此问题，这些通常是非优化的发行版本。因此，一方面，可以保持交付给客户的代码的高性能，另一方面，可以在正在测试的程序集中获得这样的行为，在这种行为中，更容易注意到丢失的初始化。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我注意到C ++已经要求所有静态成员的自动零初始化。</font><font style="vertical-align: inherit;">此语义有助于开发人员。</font><font style="vertical-align: inherit;">例如，当您看到一个静态变量的值为零时，您将知道需要对其进行初始化，因为这是它的首次使用。</font><font style="vertical-align: inherit;">InitAll为自动（堆栈）变量引入了类似的语义，但有一个重要警告：我们尽量不要将开发人员绑定到特定的初始值。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我们如何选择要使用InitAll的组件</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初，</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">计划用于两个组件：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内核模式代码-主要是由于观察到的大量未初始化内核内存相关的漏洞。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Hyper-V代码主要是由于其对Azure的重要性以及令人失望的有关未初始化堆栈内存内容泄露情况的最新统计数据。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Microsoft的一些人员发现了有关</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll的信息，</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并开始在其组件上积极使用它。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们不</font><font style="vertical-align: inherit;">立即在整个代码上</font><font style="vertical-align: inherit;">部署</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的原因</font><font style="vertical-align: inherit;">是，我们希望至少先做好一些事情，而不是失败，然后立即尝试全部完成。</font><font style="vertical-align: inherit;">我们一次处理</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll的</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">代码</font><font style="vertical-align: inherit;">越多，调试性能下降，解决兼容性问题等就越困难。</font><font style="vertical-align: inherit;">既然我们已经成功地将技术部署到了最重要的组件上，那么您就可以完成其余的代码。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll是否会破坏静态分析？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+静态分析非常有用，因为它可以提醒开发人员使用前忘记初始化的变量。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">将已添加的初始化</font><font style="vertical-align: inherit;">通知</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PREfast</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分析器</font><font style="vertical-align: inherit;">和编译器后端（均会发出有关未初始化变量的警告）。</font><font style="vertical-align: inherit;">因此，静态分析仪可以忽略这些位置并仍然发出警告。</font><font style="vertical-align: inherit;">当</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll启用时，</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">你仍然会收到关于未初始化的变量静态分析信息-即使</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">初始化它们。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为什么我们不初始化所有类型</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在初步测试期间，我们强制初始化了分配在堆栈上的所有类型的数据，并在几种重要情况下观察到性能下降超过10％。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果仅初始化POD结构，性能不会下降太多，并且旨在减少不必要的写操作（包括基本单元内部和基本单元之间）的编译器优化使我们可以进一步将速度从任何明显的级别降低到错误级别。大多数测试。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们计划返回初始化所有类型的想法（特别是现在我们有了更强大的优化），但我们还没有达到这一点。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为什么我们用零初始化变量</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+初始化为零会在性能（速度和二进制大小）以及安全性方面获得最佳结果。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从安全角度看</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+零初始化具有以下优点：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在Windows下取消引用时，空指针将引发SEH异常（即，在最坏的情况下，这将导致</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">拒绝服务</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">错误</font><font style="vertical-align: inherit;">，但无法执行远程代码），通常以程序崩溃结束。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">指定大小或索引的变量将收到一个空值。</font><font style="vertical-align: inherit;">这应该最小化将未初始化的大小传递给像</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memcpy</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这样的函数的风险，该函数</font><font style="vertical-align: inherit;">使用缓冲区的大小由传递的变量的值给出。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">检查空指针后，程序将执行相应的分支，并且不会尝试使用它。</font><font style="vertical-align: inherit;">因此，至少可以正确处理开发人员忘记初始化的指针（因为尝试使用自动初始化的指针访问内存将始终导致崩溃）。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">值为0的布尔型变量表示“假”，在测试中可以指示错误状态。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+用零初始化也有两个缺点：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NTSTATUS变量的值将为STATUS_SUCCESS </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">HRESULT将为S_OK </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是返回值可能有很大的不同，并且没有一个通用的值可以用来初始化它们，特别是考虑到它也必须用于大小，索引，指针等。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从性能角度看</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+程序速度和代码大小还取决于所选的初始化值。</font><font style="vertical-align: inherit;">我们没有测量使用非零值时结果的糟糕程度，因为我们主要对初始化为零的安全性感兴趣，而且我们知道同时它会对性能（速度和代码大小）产生积极影响。</font><font style="vertical-align: inherit;">我们来自Google的同事进行了测量，结果表明，在Clang上，当前使用零进行初始化比使用非零值进行初始化要有利得多。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下面，我将通过示例显示为什么用零初始化时会得到更少的代码。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">示例1：使用通用寄存器进行初始化</font></font></h4><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">初始化为零：</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">31</span> c0                            <span class="hljs-keyword">xor</span>    eax,eax
+<span class="hljs-number">48</span> <span class="hljs-number">89</span> <span class="hljs-number">01</span>                         mov    QWORD PTR [rcx],rax</code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用非零值初始化：</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">48</span> b8 e2 e2 e2 e2 e2 e2 e2 e2    movabs rax,<span class="hljs-number">0xe2e2e2e2e2e2e2e2</span>
+<span class="hljs-number">48</span> <span class="hljs-number">89</span> <span class="hljs-number">01</span>                         mov    QWORD PTR [rcx],rax</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在此示例中，我们关注两点：</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，将RAX寄存器设置为零需要2个字节的代码，而设置为非零值则需要10个字节。事实证明，代码大小和速度都有所提高。许多处理器一次读取16个字节的指令，因此使用10个字节的指令将固定常量写入寄存器会阻止发出以下可以并行执行的指令。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+其次，在将值写入RCX寄存器之前，您必须等待直到完成对RAX的写入，这可能导致处理器空闲。</font><font style="vertical-align: inherit;">在流水线的最早部分就可以识别“ xor eax，eax”之类的序列，并且不需要真正执行XOR命令-处理器只需复位RAX寄存器即可。</font><font style="vertical-align: inherit;">结果，管道空闲时间更少，程序运行更快。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">示例2：使用XMM寄存器进行初始化</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要写入更大的值，编译器通常使用XMM寄存器（以及YMM或ZMM，取决于是否启用了对AVX或AVX512指令集的支持）。</font><font style="vertical-align: inherit;">通常，处理器在一个时钟周期内最多只能完成一个写入命令，因此明智的做法是使用设置尽可能多字节的命令。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">初始化为零：</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">0f</span> <span class="hljs-number">57</span> c0                         xorps  xmm0,xmm0<font></font>
+f3 <span class="hljs-number">0f</span> <span class="hljs-number">7f</span> <span class="hljs-number">01</span>                      movdqu XMMWORD PTR [rcx],xmm0</code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用非零值初始化（从全局变量加载，编译器通常会这样做）：</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">66</span> <span class="hljs-number">0f</span> <span class="hljs-number">6f</span> <span class="hljs-number">04</span> <span class="hljs-number">25</span> <span class="hljs-number">00</span> <span class="hljs-number">00</span> <span class="hljs-number">00</span> <span class="hljs-number">00</span>       movdqa xmm0,XMMWORD PTR ds:<span class="hljs-number">0x0</span>
+f3 <span class="hljs-number">0f</span> <span class="hljs-number">7f</span> <span class="hljs-number">01</span>                      movdqu XMMWORD PTR [rcx],xmm0</code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用非零值初始化（从代码中的固定常数加载，编译器不这样做）：</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">48</span> ba e2 e2 e2 e2 e2 e2 e2 e2    movabs rdx,<span class="hljs-number">0xe2e2e2e2e2e2e2e2</span>
+<span class="hljs-number">66</span> <span class="hljs-number">48</span> <span class="hljs-number">0f</span> <span class="hljs-number">6</span>e c2                   movq   xmm0,rdx
+<span class="hljs-number">0f</span> <span class="hljs-number">16</span> c0                         movlhps xmm0,xmm0<font></font>
+f3 <span class="hljs-number">0f</span> <span class="hljs-number">7f</span> <span class="hljs-number">01</span>                      movdqu XMMWORD PTR [rcx],xmm0</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如您所见，对于XMM寄存器，可以观察到相同的图像。当初始化为零时，代码非常小。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+无法将固定常数直接写入XMM寄存器。首先，您必须将其保存到通用寄存器，然后从那里移动到XMM寄存器，然后将XMM寄存器的低64位复制到其高64位。结果，我们得到了一个长代码和三个命令，每个命令必须等待上一个命令完成。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了避免这种情况，编译器通常会以全局变量的形式保存一个固定的常量，然后他们可以从中读取值-这样就减少了代码量。不幸的是，您必须等到写入XMM寄存器结束后才能使用它。如果从内存中卸载了全局变量，则该操作可能需要数千个时钟周期。当数据存储在L1高速缓存中时，即使在最佳情况下，读操作也要花费几个时钟周期。即使在这种情况下，代码也比仅重置寄存器要长得多。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这揭示了零初始化的另一个优点：更具确定性的结果。初始化时间不取决于全局变量是在L1，L2还是L3高速缓存中，是否从内存中卸载等等。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有关使用InitAll的有趣观察</font></font></h2><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">性能</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Windows 10 1903（于2019年春季发布）是</font><font style="vertical-align: inherit;">默认启用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的第一个版本</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">到目前为止，我们还没有收到任何因性能下降而引起的投诉。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">兼容性</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">反作弊</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在Windows </font><font style="vertical-align: inherit;">
+上打开</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">之后不久</font><font style="vertical-align: inherit;">，我们开始收到有关某些反作弊程序导致的内核崩溃的投诉。</font><font style="vertical-align: inherit;">在检查了问题之后，我们发现这些程序包含内核模式驱动程序，该程序扫描内存中的NT内核映像，并查找指示未记录功能开始的特定字节序列。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在这些函数的开头添加了其他初始化（无法证明其冗余性），因此其签名已更改。</font><font style="vertical-align: inherit;">我们联系了这些反作弊的开发人员，并应我们的要求更新了驱动程序，以使它们不再导致内核崩溃。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在FAT32中使用释放的内存</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为标量数据类型（即整数，浮点数等）</font><font style="vertical-align: inherit;">
+启用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">之后不久</font><font style="vertical-align: inherit;">，我们在FAT文件系统驱动程序中遇到了一个有趣的问题，该问题不允许从可引导USB闪存驱动器更新内部Windows程序集。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+发生问题的代码如下所示：</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">for</span>(<span class="hljs-keyword">int</span> i = <span class="hljs-number">0</span>; i &lt; size; i++)<font></font>
+{<font></font>
+      <span class="hljs-keyword">int</span> tmp;<font></font>
+      DoStuff(&amp;tmp, i);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有一个循环，其中声明了一个变量。在循环的第一次迭代中，</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">DoStuff</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">函数</font><font style="vertical-align: inherit;">初始化变量“ tmp”，其地址作为参数传递给它。在随后的每次迭代中，变量“ tmp”都用作输入/输出参数。换句话说，首先读取其值，然后更新。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+问题在于，循环的每个迭代开始时所讨论的变量进入其作用域，并在迭代结束时保留它。</font><font style="vertical-align: inherit;">在每次迭代之前，</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">将此变量初始化为零。实际上，我们有一个“ </font><i><font style="vertical-align: inherit;">售后使用”</font></i><font style="vertical-align: inherit;">漏洞</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">对于代码的正常操作，要求变量“ tmp”在每次迭代时都保留其值，即使在迭代结束时它超出范围。</font><font style="vertical-align: inherit;">不幸的是，此问题并没有导致驱动程序崩溃，而是导致了其操作逻辑不正确，从而导致文件系统的行为无法预测。</font><font style="vertical-align: inherit;">在调试期间，内核团队确定了问题的原因，并通过将变量移出循环来解决了问题。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这个案例很好地说明了安全性改进如何破坏多年未发现的代码。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">性能优化</font></font></h2><br><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll的</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+性能优化具有</font><font style="vertical-align: inherit;">三个目标：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为开发人员提供</font><font style="vertical-align: inherit;">针对关键代码</font><font style="vertical-align: inherit;">禁用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll的</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">功能</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如果可能，请删除不必要的写操作</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">尽可能加快剩余的写入操作</font></font></li>
+</ol><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为关键代码禁用InitAll</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最明显的优化是让代码：</font></font><ol>
+<li><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;">完全</font></i><font style="vertical-align: inherit;">禁用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">禁用</font><font style="vertical-align: inherit;">特定类型的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（即typedef结构）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为函数中的所有内存分配操作</font><font style="vertical-align: inherit;">禁用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">为函数中的特定变量声明</font><font style="vertical-align: inherit;">禁用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（出于性能</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">原因</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><i><font style="vertical-align: inherit;">InitAll</font></i><font style="vertical-align: inherit;"> 
+当前</font><font style="vertical-align: inherit;">针对单个类型-_CONTEXT结构被禁用，该结构存储所有寄存器的值。强制初始化导致测试性能下降。</font><i><font style="vertical-align: inherit;">_CONTEXT</font></i></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+结构</font><font style="vertical-align: inherit;">的大小超过1000个字节，这足以存储所有寄存器的值。启用ETW日志记录以跟踪上下文切换后，每次更改上下文时，都会记录所有寄存器的值。</font><font style="vertical-align: inherit;">在这种情况下</font><font style="vertical-align: inherit;">，</font><i><font style="vertical-align: inherit;">_CONTEXT</font></i><font style="vertical-align: inherit;">结构</font><font style="vertical-align: inherit;">将分配在堆栈上，并用汇编函数填充，然后传递给ETW。由于结构是由汇编程序函数初始化的，因此编译器无法删除已完成的初始化</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">由于此结构已经包含关键数据（每个寄存器的状态），很大并且用于对性能要求极高的分支中，因此我们决定不对其应用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于所有其他类型，变量和函数，</font><font style="vertical-align: inherit;">未</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">禁用InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">删除不必要的写操作</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+删除不必要的写操作是Visual Studio编译器执行的优化，它可以删除被证明是多余的写操作。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下面是Visual Studio使用的不同类型的优化的示例。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">删除多个内存集</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+链接到Godbolt：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ://msvc.godbolt.org/z/Ldu7AP </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下代码模式（具有不同的变体）非常普遍。最初的NT编程规则要求所有变量都在函数的开头声明，并尽可能晚地初始化。结果，在某些情况下，变量会在函数的开头声明，并且仅在使用前立即在任何一个分支中初始化。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在函数的开头添加其变量初始化。编译器可以删除重复项，但这并不总是容易做到的。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;string.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">MyStruct</span>
+{</span>
+    <span class="hljs-keyword">int</span> <span class="hljs-built_in">array</span>[<span class="hljs-number">160</span>];<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Dummy</span><span class="hljs-params">()</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"dummy"</span>);
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DoStuff</span><span class="hljs-params">(MyStruct* s)</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"hi"</span>, (<span class="hljs-keyword">int</span>*)&amp;s); <span class="hljs-comment">//   "s"</span>
+                            <span class="hljs-comment">//   , </span>
+                            <span class="hljs-comment">//    c  </span>
+                            <span class="hljs-comment">//      "s"</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">volatile</span> <span class="hljs-keyword">bool</span> b = <span class="hljs-literal">true</span>;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">f</span><span class="hljs-params">()</span>
+</span>{<font></font>
+    MyStruct s;<font></font>
+    <span class="hljs-comment">//   memset,  ,   memset,  InitAll</span>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+  <font></font>
+    <span class="hljs-keyword">if</span> (b) <span class="hljs-comment">//  volatile-,</span>
+           <span class="hljs-comment">//        </span>
+           <span class="hljs-comment">// (   ,      )</span><font></font>
+    {<font></font>
+        Dummy();<font></font>
+        <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x1</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+        DoStuff(&amp;s);<font></font>
+    }<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+}</code></pre><br>
+<p><img src="https://habrastorage.org/webt/hq/dl/ee/hqdleeuo4icifkr9_ijrp0rt_ps.png" alt="图片4"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+看来这个简单的示例应该容易优化，但是在这种情况下，GCC 9.3和Clang 10.0.0（Godbolt上提供的最新版本）无法删除多余的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调用</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我并不是为了批评这些编译器而谈论它-它们都很好地优化了代码。</font><font style="vertical-align: inherit;">我只想表明，即使对于功能最强大的编译器，某些模式也可能导致困难。</font><font style="vertical-align: inherit;">在</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和相关优化</font><font style="vertical-align: inherit;">出现之前</font><font style="vertical-align: inherit;">，Visual Studio无法删除多余的调用。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一个更简单的示例：</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+在两次</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调用</font><font style="vertical-align: inherit;">之间，只有一个没有参数的函数调用。</font><font style="vertical-align: inherit;">与上一个模式一样，这种模式在Microsoft代码中非常常见。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+链接到Godbolt：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://msvc.godbolt.org/z/HqFMx_</font></font></a><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;string.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">MyStruct</span>
+{</span>
+    <span class="hljs-keyword">int</span> <span class="hljs-built_in">array</span>[<span class="hljs-number">160</span>];<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Dummy</span><span class="hljs-params">()</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"dummy"</span>);
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DoStuff</span><span class="hljs-params">(MyStruct* s)</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"hi"</span>, (<span class="hljs-keyword">int</span>*)&amp;s); <span class="hljs-comment">//   "s"</span>
+                            <span class="hljs-comment">//   , </span>
+                            <span class="hljs-comment">//    c  </span>
+                            <span class="hljs-comment">//      "s"</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">f</span><span class="hljs-params">()</span>
+</span>{<font></font>
+    MyStruct s;<font></font>
+    <span class="hljs-comment">//   memset,  ,   memset,  InitAll</span>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+<font></font>
+    Dummy();<font></font>
+<font></font>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x1</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+<font></font>
+    DoStuff(&amp;s);<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+}</code></pre><br>
+<p><img src="https://habrastorage.org/webt/fe/qo/7e/feqo7evdydknbjjwx9wwlvxt61a.png" alt="图片3"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+MSVC </font><font style="vertical-align: inherit;">在此示例中</font><font style="vertical-align: inherit;">删除了多余的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内存集</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。 Clang 10.0.0-也是，但是GCC 9.3仍然失败。似乎可以轻松地优化该代码，但是为此，编译器必须进行非平凡的分析。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这里的问题（在MSVC中）是编译器使用对象可及性分析，而与分支或线程执行无关。从编译器的角度来看，变量“ s”从当前函数“转义”（换句话说，其地址传递到该函数外部的某个地方），因为其地址传递给了函数“ DoStuff”。编译器还会看到对</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 's'的调用，然后是对'Dummy'的调用，然后是对</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 's'的</font><font style="vertical-align: inherit;">另一个调用</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从编译器的角度来看，由于“ s”变量已从函数中“转义”，因此“虚拟”函数理论上可以读取“ s”的内容或在调用“ DoStuff”函数之前对其进行修改。</font><font style="vertical-align: inherit;">这意味着</font><font style="vertical-align: inherit;">不能在“虚拟”之前或之后删除</font><font style="vertical-align: inherit;">对</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的调用</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们看到，尽管's'变量也从当前函数中“转义”，但这在调用'DoStuff'函数之前不会发生。</font><font style="vertical-align: inherit;">MSVC编译器现在也（某种程度上）理解了这一点，并且可以删除第一个</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调用</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Memset尺寸减小</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+链接到Godbolt：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ://msvc.godbolt.org/z/fyLVUF </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下模式也很常见。</font><font style="vertical-align: inherit;">该结构被部分初始化，然后转移到另一个函数。</font><font style="vertical-align: inherit;">第二个功能可能会初始化其余的结构数据（或至少不读取它们），但是编译器无法证明这一点。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;string.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">MyStruct</span>
+{</span>
+    <span class="hljs-keyword">int</span> <span class="hljs-built_in">array</span>[<span class="hljs-number">320</span>];<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Dummy</span><span class="hljs-params">()</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"dummy"</span>);
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DoStuff</span><span class="hljs-params">(MyStruct* s)</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"hi"</span>, (<span class="hljs-keyword">int</span>*)&amp;s); <span class="hljs-comment">//   "s"</span>
+                            <span class="hljs-comment">//   , </span>
+                            <span class="hljs-comment">//    c  </span>
+                            <span class="hljs-comment">//      "s"</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">volatile</span> <span class="hljs-keyword">bool</span> b = <span class="hljs-literal">true</span>;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">f</span><span class="hljs-params">()</span>
+</span>{<font></font>
+    MyStruct s;<font></font>
+    <span class="hljs-comment">//   memset,  ,   memset,  InitAll</span>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+<font></font>
+    <span class="hljs-keyword">if</span> (b) <span class="hljs-comment">//  volatile-,</span>
+           <span class="hljs-comment">//        </span>
+           <span class="hljs-comment">// (   ,      )</span><font></font>
+    {<font></font>
+        Dummy();<font></font>
+        <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s)<span class="hljs-number">-0x160</span>);<font></font>
+        DoStuff(&amp;s);<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+}</code></pre><br>
+<p><img src="https://habrastorage.org/webt/qv/zv/ix/qvzvix4pxzqvazgvfzafdg_zraa.png" alt="图片2"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+MSVC现在可以调整第一个</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内存集</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的大小，</font><font style="vertical-align: inherit;">以便它仅初始化第二个</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内存集</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">未初始化的结构中的那些元素</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">同样，在此示例中，GCC 9.3和Clang 10.0.0尚不知道如何进行此优化。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">高效的记忆集扫描</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+→ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">链接到Godbolt</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+在以下示例中，</font><font style="vertical-align: inherit;">无法删除</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调用</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">因此，应尽可能高效地执行。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;string.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">MyStruct</span>
+{</span>
+    <span class="hljs-keyword">int</span> <span class="hljs-built_in">array</span>[<span class="hljs-number">12</span>];<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DoStuff</span><span class="hljs-params">(MyStruct* s)</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"hi"</span>, (<span class="hljs-keyword">int</span>*)&amp;s); <span class="hljs-comment">//   "s"</span>
+                            <span class="hljs-comment">//   , </span>
+                            <span class="hljs-comment">//    c  </span>
+                            <span class="hljs-comment">//      "s"</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">f</span><span class="hljs-params">()</span>
+</span>{<font></font>
+    MyStruct s;<font></font>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+    DoStuff(&amp;s);<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+}</code></pre><br>
+<p><img src="https://habrastorage.org/webt/fm/yf/7v/fmyf7vxnqesyecgskxvarcbgyc4.png" alt="图片1"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+MSVC（像大多数编译器一样）可以“部署” </font><font style="vertical-align: inherit;">具有静态定义的大小和填充值的</font><font style="vertical-align: inherit;">小型</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内存集</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调用</font><font style="vertical-align: inherit;">。也就是说，</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调用</font><font style="vertical-align: inherit;">被一系列直接写入内存的命令所代替。得益于此优化，较小的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">调用</font><font style="vertical-align: inherit;">（最多128个字节）</font><font style="vertical-align: inherit;">的执行时间</font><font style="vertical-align: inherit;">可以用较少的代码减少到通常的四分之一（无需将寄存器中的值保存在堆栈上，调用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset即可</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">恢复寄存器的状态）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+MSVC用于部署</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内存集</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在AMD64上使用通用寄存器。</font><font style="vertical-align: inherit;">现在，它使用向量寄存器，使您可以部署两倍大小的调用。</font><font style="vertical-align: inherit;">结果，我们获得了更快的</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内存集，</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">并且不会让代码增长。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">更多高效的memset实现</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+，我们将</font><b><font style="vertical-align: inherit;">在下</font></b><font style="vertical-align: inherit;">一次详细</font><b><font style="vertical-align: inherit;">分析</font></b><font style="vertical-align: inherit;">该项目。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用户价值</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+自从发布</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">以来</font><font style="vertical-align: inherit;">，用户报告给MSRC的许多漏洞都已停止在最新版本的Windows上播放。感谢</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll，</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这些漏洞已从“安全问题” </font><i><font style="vertical-align: inherit;">演变</font></i><font style="vertical-align: inherit;">为“目前没有负面影响的代码缺陷”。这意味着我们不再需要为已安装</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll的</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">已发布操作系统提供安全更新</font><font style="vertical-align: inherit;">，这使用户免于安装补丁程序带来的麻烦，而使Microsoft免于因开发而带来的麻烦。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在存储库的活动分支中，我们仍在改进代码并修复错误，以及对已经发布了</font><i><font style="vertical-align: inherit;">InitAll的</font></i><font style="vertical-align: inherit;">操作系统进行更改。</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">失踪，因此仍然脆弱。</font><font style="vertical-align: inherit;">随着时间的推移，</font><font style="vertical-align: inherit;">将不再支持</font><font style="vertical-align: inherit;">没有</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll的</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">版本</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">发生这种情况时，</font><font style="vertical-align: inherit;">将仅在活动的开发分支中纠正</font><font style="vertical-align: inherit;">用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">中和的错误</font><font style="vertical-align: inherit;">，并且在当前系统上，此类缺陷将不再需要修复。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">未来的计划</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+目前，我们计划在未初始化的堆栈变量存在问题的情况下处理两项主要任务：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">研究并利用将</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">应用于所有类型的已分配数据（即所有类型和所有类的数组，而不仅仅是POD）</font><font style="vertical-align: inherit;">的可能性</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">在所有Windows代码上</font><font style="vertical-align: inherit;">部署</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+将来，我们计划找出是否有可能标准化消除C和C ++中描述的问题类型的过程。默认情况下，出于性能原因，不必使变量保持未初始化状态（尤其是在编译器能够很好地优化冗余写入操作的情况下）。取而代之的是，最好是要求开发人员在使用前（如果已经证明了这种需要）初始化变量，并且仅当特殊关键字用于未初始化的变量时才允许违反该规则。这样的解决方案将保留高性能，并同时使程序员免于不必要的错误。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们计划在正在进行的工作中发布另一个说明，以消除Windows内核中分配内存池的机制中未初始化的内存漏洞。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">翻译评论</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这篇文章几乎与我的静态代码分析主题无关，但对我来说似乎很有趣，我想与俄语用户分享翻译。</font><font style="vertical-align: inherit;">从我本人来说，我想补充一点，与私有数据“泄漏”相关的安全问题通常由两个部分组成。</font><font style="vertical-align: inherit;">首先：在某个地方应删除私有数据，但是不会发生（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">V597</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font><font style="vertical-align: inherit;">第二：未清理的私有数据作为未初始化内存的一部分可以转移到某个地方（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">示例</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN505476/index.html">Deno和PostegreSQL上的CRUD API：使用恐龙</a></li>
+<li><a href="../zh-CN505478/index.html">用CRM系统替换CRM系统</a></li>
+<li><a href="../zh-CN505488/index.html">在React应用程序中实现TypeScript的12个技巧</a></li>
+<li><a href="../zh-CN505494/index.html">开发者框架</a></li>
+<li><a href="../zh-CN505496/index.html">首席技术官Meduza Boris Goryachev的Flutter Dev Podcast：Meduz应用程序和媒体开发的主要内容</a></li>
+<li><a href="../zh-CN505502/index.html">客户服务中的全渠道：寻找什么以及如何正确地做所有事情？</a></li>
+<li><a href="../zh-CN505506/index.html">他不咬人：如何使工业机器人对工人安全</a></li>
+<li><a href="../zh-CN505508/index.html">不仅无人技术：汽车行业的未来</a></li>
+<li><a href="../zh-CN505510/index.html">使用Python SDK简化Check Point API</a></li>
+<li><a href="../zh-CN505516/index.html">机器学习：从哪里开始或如何建立第一个模型</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,617 @@
+<!doctype html>
+<html class="no-js" lang="pt">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧑🏿‍🤝‍🧑🏽 🎳 📹 Como resolvemos o problema de memória de pilha não inicializada no Windows 🕵🏾 🥥 🙋🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nesta nota, descreverei como a Microsoft elimina as vulnerabilidades associadas à memória não inicializada da pilha e por que fazemos isso.
+ 
+ Para fa...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Como resolvemos o problema de memória de pilha não inicializada no Windows</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/505498/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nesta nota, descreverei como a Microsoft elimina as vulnerabilidades associadas à memória não inicializada da pilha e por que fazemos isso.</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para facilitar a navegação, a nota é dividida em seções:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Trabalhando com memória não inicializada: histórico de problemas</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Solução para vulnerabilidades de memória não inicializadas</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll - inicialização automática</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Observações interessantes relacionadas ao uso do InitAll</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Otimizações de desempenho</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Valor do Usuário</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Planos futuros</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Este trabalho não teria sido possível sem uma estreita colaboração entre o Visual Studio, Windows e MSRC.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Trabalhando com memória não inicializada: histórico de problemas</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Ao criar as linguagens de programação C e C ++, a ênfase estava na alta velocidade e no controle flexível do desenvolvedor. </font><font style="vertical-align: inherit;">Por esse motivo, esses idiomas não forçam a inicialização de variáveis. </font><font style="vertical-align: inherit;">Trabalhar com variáveis ​​não inicializadas leva a um comportamento indefinido; portanto, elas devem ser inicializadas antes do uso, e a responsabilidade de observar essa regra cabe inteiramente ao desenvolvedor. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As vulnerabilidades associadas à memória não inicializada são reduzidas para dois tipos:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Divulgação de conteúdo: os dados armazenados em seções não inicializadas da memória são copiados para fora da área confiável e tornam-se conhecidos por pessoas que não possuem a autoridade apropriada.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Uso direto de memória não inicializada. </font><font style="vertical-align: inherit;">Exemplo: escreva por ponteiro não inicializado.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+É importante entender que problemas podem ocorrer independentemente de a memória estar alocada na pilha ou no heap. </font><font style="vertical-align: inherit;">Este post é sobre pilha de memória, e a seguir falaremos sobre heap.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Exemplo de uso de memória não inicializada</font></font></h3><br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">int</span> size;  <font></font>
+GetSize(&amp;size); <span class="hljs-comment">//       ?</span>
+<span class="hljs-built_in">memcpy</span>(dest, src, size); <span class="hljs-comment">//  memcpy </span>
+                         <span class="hljs-comment">//  </span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O problema aqui é que, se a função </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GetSize</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> não atribuir um valor à variável 'tamanho' em todas as ramificações do programa, um </font><font style="vertical-align: inherit;">tamanho não inicializado será passado para a </font><font style="vertical-align: inherit;">chamada de </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memória</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Por esse motivo, pode ocorrer um erro de leitura ou gravação fora do buffer, se o valor de 'tamanho' for maior que o tamanho do buffer 'src' ou 'dest'.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Exemplo de expansão de memória não inicializada</font></font></h3><br>
+<pre><code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">mystruct</span> {</span>
+      <span class="hljs-keyword">uint8_t</span> field1;
+      <span class="hljs-keyword">uint64_t</span> field2;<font></font>
+};<font></font>
+mystruct s {<span class="hljs-number">1</span>, <span class="hljs-number">5</span>};
+<span class="hljs-built_in">memcpy</span>(dest, &amp;s, <span class="hljs-keyword">sizeof</span>(s));</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Suponha que a função </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memcpy</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> copie uma estrutura fora de uma área confiável (ou seja, do modo kernel para o modo usuário). À primeira vista, a estrutura parece estar totalmente inicializada, mas entre o 'campo1' e 'campo2' o compilador inseriu bytes de espaço reservado que não foram explicitamente inicializados. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como resultado da chamada do </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memcpy</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bytes de espaço reservado serão copiados para fora da área confiável, juntamente com seu conteúdo não inicializado, gravado anteriormente nesses endereços virtuais. </font><font style="vertical-align: inherit;">Pode ser, por exemplo, uma parte de uma chave de criptografia secreta (que ficará visível no modo de usuário), um ponteiro (que interromperá o ASLR) ou qualquer outra coisa. </font><font style="vertical-align: inherit;">Em alguns casos, pode-se facilmente provar que nenhum dado particularmente crítico é transmitido; em outros, será muito difícil. </font><font style="vertical-align: inherit;">Mas, de qualquer forma, descobrir qual é a gravidade do problema da memória não inicializada é um trabalho ingrato, e faríamos de bom grado outra coisa.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Estatísticas de erro de memória não inicializada</font></font></h3><br>
+<p><img src="https://habrastorage.org/webt/hb/la/gn/hblagnxiqxpsgewdennaq6tx8o8.png" alt="Quadro 8"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nota: nesta figura, o uso de memória não inicializada refere-se aos dois tipos de problemas: uso direto e divulgação de conteúdo. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nos últimos anos, o número de tais erros tem aumentado. </font><font style="vertical-align: inherit;">Provavelmente isso se deve em parte ao crescente interesse neles por parte dos pesquisadores e, como resultado, o surgimento de ferramentas eficazes para sua pesquisa. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Uma classificação mais detalhada desses erros revela algumas tendências mais interessantes.</font></font><br>
+<br>
+<p><img src="https://habrastorage.org/webt/od/bg/sq/odbgsqun-kof4vx6j8ws_v9d9f8.png" alt="Quadro 6"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nota: neste diagrama, o uso de memória não inicializada NÃO inclui a divulgação de seu conteúdo.</font></font><br>
+<br>
+<p><img src="https://habrastorage.org/webt/rl/ql/ee/rlqleezbmgk3oeo-bxztqaaphry.png" alt="Quadro 5"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Observando esses diagramas, podemos tirar as seguintes conclusões:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Entre 2017 e 2018, as vulnerabilidades de memória não inicializadas representaram aproximadamente 5 a 10% de todas as vulnerabilidades nos relatórios da Microsoft.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">As vulnerabilidades associadas à alocação de memória na pilha e as vulnerabilidades associadas à alocação de memória no heap / pool foram quase iguais.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Há mais casos de divulgação do conteúdo da memória não inicializada do que casos de uso de memória não inicializada.</font></font></li>
+</ol><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">literatura adicional</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para uma introdução mais completa ao tópico, consulte os seguintes recursos:</font></font><br>
+<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://github.com/microsoft/MSRC-Security-Research/blob/master/presentations/2019_09_CppCon/CppCon2019%20-%20Killing%20Uninitialized%20Memory.pdf</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://j00ru.vexillium.org/papers/2018/bochspwn_reloaded.pdf</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://www.blackhat.com/presentations/bh-europe-06/bh-eu-06-Flake.pdf</font></font></a></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Solução para vulnerabilidades de memória não inicializadas</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Eles tentaram resolver os problemas descritos de várias maneiras.</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Análise estática (durante a compilação e depois)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fuzzing</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Revisão de código</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Inicialização automática</font></font></li>
+</ol><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Análise estática</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A Microsoft usa vários avisos de analisador estático para capturar variáveis ​​não inicializadas (incluindo C4700, C4701, C4703, C6001, C26494 e C26495). </font><font style="vertical-align: inherit;">Esses diagnósticos são conservadores, ou seja, </font><font style="vertical-align: inherit;">Para reduzir o ruído, eles ignoram alguns padrões que podem levar à memória não inicializada. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Também foram escritas várias regras rigorosas para o analisador estático </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Semmle</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , que são executadas em algumas bases de código do Windows. </font><font style="vertical-align: inherit;">Mas esses diagnósticos emitem muito ruído e é difícil verificar grandes quantidades de código. </font><font style="vertical-align: inherit;">Além disso, a conformidade com essas regras e a correção de erros consome muito tempo. </font><font style="vertical-align: inherit;">Como resultado, ficou difícil e caro usá-los.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fuzzing</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Difusa, como você sabe, é difícil de escalar. </font><font style="vertical-align: inherit;">Os bons difusores são caros para manter e exigem personalização para tarefas específicas. </font><font style="vertical-align: inherit;">Com uma base de código de tamanhos como a Microsoft, é muito difícil garantir sua cobertura total. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mesmo que fosse possível cobrir perfeitamente todo o código com eles, os difusores não são capazes de detectar a divulgação do conteúdo da memória não inicializada, pois isso não causa uma falha no programa. </font><font style="vertical-align: inherit;">Para detectar esses defeitos usando difusão, uma das duas soluções é necessária:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fazzer, que entende o protocolo e é capaz de detectar o retorno de memória não inicializada (ou melhor, dados inesperados) nele.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Um analisador dinâmico capaz de detectar o acesso à memória não inicializada.</font></font></li>
+</ol><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Revisão de código</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A visão geral do código não é escalável e é extremamente suscetível a erros. </font><font style="vertical-align: inherit;">O código com vulnerabilidades é revisado, mas eles são tão bem disfarçados que os programadores não percebem. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A parte do código em que encontramos a divulgação do conteúdo da memória não inicializada foi gravada nos dias do Windows de 32 bits e, portanto, não havia tais erros. </font><font style="vertical-align: inherit;">Quando ocorreu a transição para arquiteturas de 64 bits, o tamanho dos ponteiros aumentou de 32 para 64 bits, e é por isso que algumas estruturas têm campos de espaço reservado não inicializados.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll - Inicialização automática</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Além das abordagens mencionadas, a Microsoft já utiliza há algum tempo um mecanismo chamado </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - ele inicializa automaticamente as variáveis ​​de pilha no estágio de compilação. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Nesta seção, descreverei como essa tecnologia é usada no Windows e por que dessa maneira.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Configurações atuais do Windows:</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Os seguintes tipos são inicializados automaticamente:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Escalar (matrizes, ponteiros, números de ponto flutuante)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Matrizes de ponteiro</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Estruturas (Estruturas de Dados Simples - POD)</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Os seguintes tipos não são inicializados automaticamente:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">variáveis ​​voláteis</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Matrizes de tipos diferentes de ponteiros (ou seja, matrizes de números inteiros, matrizes de estruturas etc.)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Classes que não são POD</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em montagens de varejo otimizadas, as variáveis ​​são inicializadas com um valor de 0. Para números de ponto flutuante, é usado um valor de 0,0. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Assemblies de depuração (CHK) ou assemblies para desenvolvedores (ou seja, varejistas não otimizados) usam o valor </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xE2</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ; </font><font style="vertical-align: inherit;">números de ponto flutuante são inicializados para 1.0. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> se aplica aos seguintes componentes:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Todo o código do repositório do Windows em execução no modo kernel (ou seja, todo o código compilado com a opção / KERNEL) </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Todo o código relacionado ao Hyper-V (hypervisor, componentes no modo kernel, componentes no modo usuário)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Vários outros projetos, como serviços de rede no modo de usuário</font></font></li>
+</ol><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll é</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> implementado no front-end do compilador. </font><font style="vertical-align: inherit;">Todas as variáveis ​​que atendem aos critérios listados acima e não são inicializadas pelo programador serão inicializadas pelo frontend na declaração. </font><font style="vertical-align: inherit;">Uma das vantagens dessa abordagem é que, do ponto de vista do otimizador, a inicialização automática não difere da inicialização pelo desenvolvedor. </font><font style="vertical-align: inherit;">Daqui resulta que as otimizações adicionadas para acelerar o trabalho com </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> não estão vinculadas apenas a esta função e funcionarão nesses casos quando você mesmo inicializar as variáveis ​​ao declarar (ou antes de usar).</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Como evitar o problema de bifurcação de idiomas</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Há um problema com a inicialização automática do zero: zero é um significado especial em uma linguagem de programação, especialmente para ponteiros. E este é talvez o valor mais comum que inicializa variáveis ​​individuais. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Quando inicializado como zero, um ponteiro que não foi inicializado corretamente pelo programador pode cair na ramificação do </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ponteiro NULL</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . Como resultado, você pode obter um programa que não falha, mas não produz os resultados desejados. Se você inicializar o ponteiro com um valor de lixo, ele não cairá na ramificação do </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ponteiro NULL</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e, se você tentar usá-lo, causará uma falha no programa.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Resolvemos esse problema usando um valor de inicialização diferente de zero (0xE2) nas construções CHK e nas chamadas construções para desenvolvedores, que geralmente são construções de versão não otimizadas. Por esse motivo, por um lado, é possível manter o alto desempenho do código entregue aos clientes e, por outro lado, obter comportamento em assemblies que estão sendo testados, o que facilita a observação de inicializações perdidas.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Observo que o C ++ já requer inicialização automática zero de todos os membros estáticos. </font><font style="vertical-align: inherit;">Essa semântica ajuda os desenvolvedores. </font><font style="vertical-align: inherit;">Por exemplo, quando você vê uma variável estática com um valor zero, saberá que precisa inicializá-la, pois esse é seu primeiro uso. </font><font style="vertical-align: inherit;">InitAll introduz semântica semelhante para variáveis ​​automáticas (pilha) com uma ressalva importante: tentamos não vincular os desenvolvedores a valores iniciais específicos.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Como escolhemos quais componentes usar InitAll</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Inicialmente, o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> planejava usar em dois componentes:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Código do modo do kernel - principalmente devido ao grande número de vulnerabilidades observadas associadas à memória não inicializada do kernel.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">O código Hyper-V é principalmente devido à sua importância para o Azure e devido às estatísticas recentes decepcionantes sobre casos de divulgação do conteúdo da memória de pilha não inicializada.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Alguns na Microsoft descobriram o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e começaram a usá-lo ativamente em seus componentes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O motivo de não implantarmos o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> imediatamente em todo o código é porque queremos fazer pelo menos algo bem primeiro, e não falhar, tentando fazer tudo de uma vez. </font><font style="vertical-align: inherit;">Quanto mais código processamos </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll de</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> cada vez, mais difícil é depurar quedas de desempenho, resolver problemas de compatibilidade etc. </font><font style="vertical-align: inherit;">Agora que implantamos com sucesso a tecnologia nos componentes mais importantes, você pode executar o restante do código.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll quebra a análise estática?</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A análise estática é extremamente útil, pois lembra os desenvolvedores das variáveis ​​que eles esqueceram de inicializar antes do uso. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> notifica o analisador </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PREfast</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e o back-end do compilador (ambos dão avisos sobre variáveis ​​não inicializadas) sobre as inicializações adicionadas. </font><font style="vertical-align: inherit;">Graças a isso, os analisadores estáticos podem ignorar esses locais e ainda dar seus avisos. </font><font style="vertical-align: inherit;">Quando </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll estiver ativado,</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> você ainda receberá mensagens do analisador estático sobre variáveis ​​não inicializadas - mesmo que </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll as</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> inicialize para você.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Por que não inicializamos todos os tipos</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Durante os testes preliminares, inicializamos com força todos os tipos de dados alocados na pilha e observamos quedas de desempenho superiores a 10% em vários cenários importantes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Se apenas estruturas de POD foram inicializadas, o desempenho não diminuiu muito e as otimizações do compilador destinadas a reduzir o número de operações de gravação desnecessárias (dentro das unidades base e entre elas) nos permitiram reduzir ainda mais a desaceleração de qualquer nível perceptível para o nível de erro em maioria dos testes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Planejamos voltar à idéia de inicializar todos os tipos (especialmente agora que temos otimizações mais poderosas), apenas não chegamos a esse ponto.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Por que inicializamos variáveis ​​com zero</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A inicialização para zero fornece os melhores resultados em termos de desempenho (em termos de velocidade e tamanho binário), bem como em termos de segurança.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Do ponto de vista da segurança</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A inicialização zero tem as seguintes vantagens:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Um ponteiro nulo lançará uma exceção SEH ao fazer a referência no Windows (ou seja, na pior das hipóteses, isso causará um erro de </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">negação de serviço</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , mas a execução remota de código será impossível), que geralmente termina com uma falha no programa.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Uma variável que especifica um tamanho ou índice receberá um valor nulo. </font><font style="vertical-align: inherit;">Isso deve minimizar o risco de passar o tamanho não inicializado para funções como </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memcpy</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> trabalhando com um buffer cujo tamanho é fornecido pelo valor da variável passada.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Após verificar o ponteiro nulo, o programa executará o ramo correspondente e não tentará usá-lo. </font><font style="vertical-align: inherit;">Portanto, pelo menos, será possível processar corretamente os ponteiros que o desenvolvedor esqueceu de inicializar (já que uma tentativa de acessar a memória usando um ponteiro inicializado automaticamente sempre causará uma falha).</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Variáveis ​​de um tipo booleano com o valor 0 significam "false", o que nos testes pode indicar um estado de erro.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A inicialização com zero também tem algumas desvantagens:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A variável NTSTATUS terá o valor STATUS_SUCCESS </font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">HRESULT será S_OK </font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mas os valores retornados podem ser muito diferentes e não existe um valor universal único para inicializar todos eles, principalmente considerando que ele também deve ser usado para tamanhos, índices, ponteiros etc.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Do ponto de vista do desempenho</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A velocidade do programa e o tamanho do código também dependem do valor de inicialização selecionado. </font><font style="vertical-align: inherit;">Não medimos o quão piores foram os resultados ao usar um valor diferente de zero, pois estávamos interessados ​​principalmente nos benefícios de segurança que a inicialização dá zero e sabíamos que ao mesmo tempo isso teria um efeito positivo no desempenho (velocidade e tamanho do código). </font><font style="vertical-align: inherit;">Nossos colegas do Google fizeram medições e mostraram que, no Clang, a inicialização com zero no momento é visivelmente mais lucrativa do que a inicialização com um valor diferente de zero. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Abaixo, mostrarei por exemplos porque, ao inicializar com zero, menos código é obtido.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Exemplo 1: Inicialização usando registros de uso geral</font></font></h4><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Inicialização por zero:</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">31</span> c0                            <span class="hljs-keyword">xor</span>    eax,eax
+<span class="hljs-number">48</span> <span class="hljs-number">89</span> <span class="hljs-number">01</span>                         mov    QWORD PTR [rcx],rax</code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Inicialização com um valor diferente de zero:</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">48</span> b8 e2 e2 e2 e2 e2 e2 e2 e2    movabs rax,<span class="hljs-number">0xe2e2e2e2e2e2e2e2</span>
+<span class="hljs-number">48</span> <span class="hljs-number">89</span> <span class="hljs-number">01</span>                         mov    QWORD PTR [rcx],rax</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Neste exemplo, estamos interessados ​​em dois pontos: </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Primeiro, definir o registro RAX como zero requer 2 bytes de código versus 10 bytes quando definido como um valor diferente de zero. Acontece um ganho tanto no tamanho do código quanto na velocidade. Muitos processadores leem instruções de 16 bytes por vez, portanto, escrever uma constante fixa no registro usando uma instrução de 10 bytes impede a emissão das seguintes instruções que podem ser executadas em paralelo.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em segundo lugar, antes que seja possível gravar o valor no registro RCX, é necessário aguardar a conclusão da gravação no RAX, o que pode levar ao processador inativo. </font><font style="vertical-align: inherit;">Sequências como “xor eax, eax” são reconhecidas nas primeiras partes do pipeline, e a execução real do comando XOR não é necessária - os processadores simplesmente redefinem o registro RAX. </font><font style="vertical-align: inherit;">Como resultado, o pipeline fica ocioso por menos tempo e o programa é executado mais rapidamente.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Exemplo 2: Inicialização Usando Registros XMM</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para escrever valores maiores, o compilador geralmente usa registradores XMM (assim como YMM ou ZMM, dependendo se o suporte para os conjuntos de instruções AVX ou AVX512 está ativado). </font><font style="vertical-align: inherit;">Como regra, os processadores não podem concluir mais de um comando de gravação em um ciclo de clock, portanto, seria aconselhável usar comandos que configurem o máximo de bytes possível. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Inicialização por zero:</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">0f</span> <span class="hljs-number">57</span> c0                         xorps  xmm0,xmm0<font></font>
+f3 <span class="hljs-number">0f</span> <span class="hljs-number">7f</span> <span class="hljs-number">01</span>                      movdqu XMMWORD PTR [rcx],xmm0</code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Inicialização com um valor diferente de zero (carregado de uma variável global, o que os compiladores geralmente fazem):</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">66</span> <span class="hljs-number">0f</span> <span class="hljs-number">6f</span> <span class="hljs-number">04</span> <span class="hljs-number">25</span> <span class="hljs-number">00</span> <span class="hljs-number">00</span> <span class="hljs-number">00</span> <span class="hljs-number">00</span>       movdqa xmm0,XMMWORD PTR ds:<span class="hljs-number">0x0</span>
+f3 <span class="hljs-number">0f</span> <span class="hljs-number">7f</span> <span class="hljs-number">01</span>                      movdqu XMMWORD PTR [rcx],xmm0</code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Inicialização com um valor diferente de zero (carregado de uma constante fixa no código, que os compiladores não fazem):</font></font></b><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-number">48</span> ba e2 e2 e2 e2 e2 e2 e2 e2    movabs rdx,<span class="hljs-number">0xe2e2e2e2e2e2e2e2</span>
+<span class="hljs-number">66</span> <span class="hljs-number">48</span> <span class="hljs-number">0f</span> <span class="hljs-number">6</span>e c2                   movq   xmm0,rdx
+<span class="hljs-number">0f</span> <span class="hljs-number">16</span> c0                         movlhps xmm0,xmm0<font></font>
+f3 <span class="hljs-number">0f</span> <span class="hljs-number">7f</span> <span class="hljs-number">01</span>                      movdqu XMMWORD PTR [rcx],xmm0</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Como você pode ver, no caso do XMM registra a mesma imagem é observada. Quando inicializado como zero, o código é muito pequeno. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Não é possível gravar uma constante fixa diretamente no registro XMM. Primeiro, você deve salvá-lo no registro geral; daí, mova-o para o registro XMM e, em seguida, copie os 64 bits baixos do registro XMM nos 64 bits altos. Como resultado, obtemos um código longo e três comandos, cada um dos quais deve aguardar a conclusão do anterior.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para evitar isso, os compiladores, em regra, salvam uma constante fixa na forma de uma variável global, a partir da qual eles podem ler o valor - isso resulta em muito menos código. Infelizmente, é necessário aguardar até o final da gravação no registro XMM antes que ele fique disponível para uso. Se uma variável global for descarregada da memória, a operação poderá demorar vários milhares de ciclos de clock. Uma operação de leitura leva vários ciclos de relógio, mesmo no melhor cenário, quando os dados são armazenados no cache L1. E mesmo nesse caso, o código é muito mais longo do que se você apenas redefinir o registro. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Isso revela outra vantagem da inicialização zero: resultados mais determinísticos. O tempo de inicialização não depende se a variável global está no cache L1, L2 ou L3, se está descarregada da memória, etc.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Observações interessantes relacionadas ao uso do InitAll</font></font></h2><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">atuação</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O Windows 10 1903 (lançado na primavera de 2019) foi a primeira versão na qual </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> foi ativado por padrão. </font><font style="vertical-align: inherit;">Até o momento, não recebemos nenhuma reclamação sobre a degradação do desempenho devido a isso.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Compatibilidade</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Anticheat</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Logo após ativar o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> no Windows, começamos a receber reclamações sobre falhas no kernel causadas por alguns programas anti-fraude. </font><font style="vertical-align: inherit;">Após examinar o problema, descobrimos que esses programas continham drivers no modo kernel que examinavam a imagem do kernel do NT na memória e procuravam sequências de bytes específicas indicando o início de funções não documentadas. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> adicionou inicializações adicionais (cuja redundância não pôde ser comprovada) no início dessas funções, por causa das quais suas assinaturas foram alteradas. </font><font style="vertical-align: inherit;">Entramos em contato com os desenvolvedores desses antivírus e, a nosso pedido, eles atualizaram seus drivers para que não causassem mais falhas no kernel.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Usando memória liberada no FAT32</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Logo após ativar o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> para tipos de dados escalares (ou seja, números inteiros, números de ponto flutuante etc.), encontramos um problema interessante no driver do sistema de arquivos FAT, que não permitia a atualização de assemblies internos do Windows a partir de unidades flash USB inicializáveis. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O código no qual o problema ocorreu tinha algo parecido com isto:</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">for</span>(<span class="hljs-keyword">int</span> i = <span class="hljs-number">0</span>; i &lt; size; i++)<font></font>
+{<font></font>
+      <span class="hljs-keyword">int</span> tmp;<font></font>
+      DoStuff(&amp;tmp, i);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Há um loop no qual uma variável é declarada. Na primeira iteração do loop, a função </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">DoStuff</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> inicializa a variável 'tmp', cujo endereço é passado como argumento. A cada iteração subsequente, a variável 'tmp' é usada como parâmetro de entrada / saída. Em outras palavras, seu valor é lido primeiro e depois atualizado. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O problema é que a variável em questão no início de cada iteração do loop entra em seu escopo e a deixa no final da iteração. </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> inicializa essa variável para zero antes de cada iteração. De fato, temos uma vulnerabilidade de </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">uso após livre</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">) </font><font style="vertical-align: inherit;">Para operação normal do código, é necessário que a variável 'tmp' retenha seu valor a cada iteração, mesmo que, no final da iteração, fique fora do escopo. </font><font style="vertical-align: inherit;">Infelizmente, esse problema não levou a uma falha do driver, mas a uma lógica incorreta de sua operação e, como resultado, um comportamento imprevisível do sistema de arquivos. </font><font style="vertical-align: inherit;">Durante a depuração, a equipe do kernel determinou a causa do problema e o corrigiu retirando a variável do loop. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Este caso é um bom exemplo de como as melhorias de segurança podem quebrar códigos que não são analisados ​​há anos.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Otimizações de desempenho</font></font></h2><br><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">As</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+otimizações de desempenho </font><i><font style="vertical-align: inherit;">do InitAll</font></i><font style="vertical-align: inherit;"> têm </font><font style="vertical-align: inherit;">três objetivos:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Fornecer aos desenvolvedores a capacidade de desativar o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> para código crítico</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Se possível, remova operações desnecessárias de gravação</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Acelere o máximo possível das operações de gravação restantes</font></font></li>
+</ol><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Desativando InitAll for Critical Code</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As otimizações mais óbvias são deixar o código:</font></font><ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Desativar </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll completamente</font></font></i></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Desative </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> para um tipo específico (ou seja, estrutura typedef)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Desative </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> para todas as operações de alocação de memória na função</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Desative </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> para uma declaração de variável específica em uma função</font></font></li>
+</ol><br><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">No</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+momento, o </font><i><font style="vertical-align: inherit;">InitAll está</font></i><font style="vertical-align: inherit;"> desativado (por </font><i><font style="vertical-align: inherit;">motivos de</font></i><font style="vertical-align: inherit;"> desempenho) para um único tipo - a estrutura _CONTEXT, que armazena os valores de todos os registros. A inicialização forçada levou a uma diminuição no desempenho nos testes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A estrutura </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">_CONTEXT</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> tem um tamanho superior a 1000 bytes, e isso é suficiente para armazenar os valores de todos os registros. Com o log de ETW ativado para rastrear opções de contexto, sempre que o contexto é alterado, os valores de todos os registros são registrados. A estrutura </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">_CONTEXT</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , </font><font style="vertical-align: inherit;">neste caso, será alocada na pilha, preenchida com uma função assembler e depois passada para o ETW. Devido ao fato de a estrutura ser inicializada por uma função assembler, o compilador não pode remover a inicialização feita</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Como essa estrutura já contém dados críticos (o estado de cada registro), é grande e é usada em filiais extremamente exigentes em termos de desempenho, decidimos não aplicar </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> a ele </font><font style="vertical-align: inherit;">. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Para todos os outros tipos, variáveis ​​e funções, </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> não </font><i><font style="vertical-align: inherit;">foi desativado</font></i><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Removendo operações de gravação desnecessárias</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A remoção de operações de gravação desnecessárias é uma otimização realizada pelo compilador do Visual Studio, que remove as operações de gravação que podem ser redundantes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A seguir, exemplos de diferentes tipos de otimização usados ​​pelo Visual Studio.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Removendo vários memset</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Link para Godbolt: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://msvc.godbolt.org/z/Ldu7AP</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+O seguinte padrão de código (com variações diferentes) é extremamente comum. As regras de programação inicial do NT exigem que todas as variáveis ​​sejam declaradas no início da função e inicializadas o mais tarde possível. Como resultado, temos casos em que uma variável é declarada no início de uma função e é inicializada apenas em qualquer ramo imediatamente antes do uso. </font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> adiciona sua inicialização de variável no início da função. O compilador pode remover a duplicata, mas isso nem sempre é fácil de fazer.</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;string.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">MyStruct</span>
+{</span>
+    <span class="hljs-keyword">int</span> <span class="hljs-built_in">array</span>[<span class="hljs-number">160</span>];<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Dummy</span><span class="hljs-params">()</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"dummy"</span>);
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DoStuff</span><span class="hljs-params">(MyStruct* s)</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"hi"</span>, (<span class="hljs-keyword">int</span>*)&amp;s); <span class="hljs-comment">//   "s"</span>
+                            <span class="hljs-comment">//   , </span>
+                            <span class="hljs-comment">//    c  </span>
+                            <span class="hljs-comment">//      "s"</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">volatile</span> <span class="hljs-keyword">bool</span> b = <span class="hljs-literal">true</span>;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">f</span><span class="hljs-params">()</span>
+</span>{<font></font>
+    MyStruct s;<font></font>
+    <span class="hljs-comment">//   memset,  ,   memset,  InitAll</span>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+  <font></font>
+    <span class="hljs-keyword">if</span> (b) <span class="hljs-comment">//  volatile-,</span>
+           <span class="hljs-comment">//        </span>
+           <span class="hljs-comment">// (   ,      )</span><font></font>
+    {<font></font>
+        Dummy();<font></font>
+        <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x1</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+        DoStuff(&amp;s);<font></font>
+    }<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+}</code></pre><br>
+<p><img src="https://habrastorage.org/webt/hq/dl/ee/hqdleeuo4icifkr9_ijrp0rt_ps.png" alt="Quadro 4"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Parece que este exemplo simples deve ser facilmente otimizado, no entanto, o GCC 9.3 e o Clang 10.0.0 (as últimas versões disponíveis no Godbolt) não conseguem, neste caso, remover a chamada extra do </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">Não estou falando sobre isso para criticar esses compiladores - ambos otimizam o código muito bem. </font><font style="vertical-align: inherit;">Eu só quero mostrar que alguns padrões podem causar dificuldades, mesmo para os compiladores mais poderosos. </font><font style="vertical-align: inherit;">Antes do advento do </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e das otimizações relacionadas, o Visual Studio não conseguia remover a chamada extra. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Um exemplo ainda mais simples:</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+entre duas chamadas </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , </font><font style="vertical-align: inherit;">há apenas uma chamada de função sem argumentos. </font><font style="vertical-align: inherit;">Esse padrão, como o anterior, é muito comum no código da Microsoft. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Link para Godbolt:</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://msvc.godbolt.org/z/HqFMx_</font></font></a><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;string.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">MyStruct</span>
+{</span>
+    <span class="hljs-keyword">int</span> <span class="hljs-built_in">array</span>[<span class="hljs-number">160</span>];<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Dummy</span><span class="hljs-params">()</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"dummy"</span>);
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DoStuff</span><span class="hljs-params">(MyStruct* s)</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"hi"</span>, (<span class="hljs-keyword">int</span>*)&amp;s); <span class="hljs-comment">//   "s"</span>
+                            <span class="hljs-comment">//   , </span>
+                            <span class="hljs-comment">//    c  </span>
+                            <span class="hljs-comment">//      "s"</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">f</span><span class="hljs-params">()</span>
+</span>{<font></font>
+    MyStruct s;<font></font>
+    <span class="hljs-comment">//   memset,  ,   memset,  InitAll</span>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+<font></font>
+    Dummy();<font></font>
+<font></font>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x1</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+<font></font>
+    DoStuff(&amp;s);<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+}</code></pre><br>
+<p><img src="https://habrastorage.org/webt/fe/qo/7e/feqo7evdydknbjjwx9wwlvxt61a.png" alt="Quadro 3"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+MSVC remove o excesso de </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> neste exemplo. Clique no 10.0.0 - também, mas o GCC 9.3 ainda falha. Parece que esse código pode ser facilmente otimizado, mas, para isso, o compilador precisa realizar análises não triviais. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O problema aqui (no MSVC) é que o compilador usa a análise de acessibilidade de objetos, independentemente da ramificação ou do fluxo de execução. Do ponto de vista do compilador, a variável 'escapa' da função atual (em outras palavras, seu endereço é passado em algum lugar fora dessa função), já que seu endereço é passado para a função 'DoStuff'. O compilador também vê uma chamada para </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 's', depois uma chamada para 'Dummy', seguida por outra chamada para </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 's'.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Do ponto de vista do compilador, como a variável 's' "escapou" da função, a função 'Dummy' poderia teoricamente ler o conteúdo dos 's' ou modificá-lo antes de chamar a função 'DoStuff'. </font><font style="vertical-align: inherit;">Isso significa que uma chamada para </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> não pode ser excluída antes ou depois de 'Dummy'. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Vimos que, embora a variável 's' também “escape” da função atual, isso não acontece antes que a função 'DoStuff' seja chamada. </font><font style="vertical-align: inherit;">O compilador MSVC agora também entende isso (em um grau ou outro) e pode remover a primeira chamada </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Redução de tamanho de Memset</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Link para Godbolt: </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://msvc.godbolt.org/z/fyLVUF</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+O padrão a seguir também não é incomum. </font><font style="vertical-align: inherit;">A estrutura é parcialmente inicializada e depois transferida para outra função. </font><font style="vertical-align: inherit;">É provável que esta segunda função inicialize o restante dos dados da estrutura (ou pelo menos não os leia), mas o compilador não pode provar isso.</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;string.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">MyStruct</span>
+{</span>
+    <span class="hljs-keyword">int</span> <span class="hljs-built_in">array</span>[<span class="hljs-number">320</span>];<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">Dummy</span><span class="hljs-params">()</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"dummy"</span>);
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DoStuff</span><span class="hljs-params">(MyStruct* s)</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"hi"</span>, (<span class="hljs-keyword">int</span>*)&amp;s); <span class="hljs-comment">//   "s"</span>
+                            <span class="hljs-comment">//   , </span>
+                            <span class="hljs-comment">//    c  </span>
+                            <span class="hljs-comment">//      "s"</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">volatile</span> <span class="hljs-keyword">bool</span> b = <span class="hljs-literal">true</span>;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">f</span><span class="hljs-params">()</span>
+</span>{<font></font>
+    MyStruct s;<font></font>
+    <span class="hljs-comment">//   memset,  ,   memset,  InitAll</span>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+<font></font>
+    <span class="hljs-keyword">if</span> (b) <span class="hljs-comment">//  volatile-,</span>
+           <span class="hljs-comment">//        </span>
+           <span class="hljs-comment">// (   ,      )</span><font></font>
+    {<font></font>
+        Dummy();<font></font>
+        <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s)<span class="hljs-number">-0x160</span>);<font></font>
+        DoStuff(&amp;s);<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+}</code></pre><br>
+<p><img src="https://habrastorage.org/webt/qv/zv/ix/qvzvix4pxzqvazgvfzafdg_zraa.png" alt="Quadro 2"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O MSVC agora pode aparar o tamanho do primeiro </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> para inicializar apenas os elementos na estrutura que o segundo </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> não inicializa </font><font style="vertical-align: inherit;">. </font><font style="vertical-align: inherit;">Novamente, o GCC 9.3 e o Clang 10.0.0 ainda não sabem como fazer essa otimização neste exemplo.</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Varredura memset mais eficiente</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+→ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Link para Godbolt</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+No exemplo a seguir, a chamada </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> não pode ser removida. </font><font style="vertical-align: inherit;">Portanto, deve ser realizado da maneira mais eficiente possível.</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;string.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">MyStruct</span>
+{</span>
+    <span class="hljs-keyword">int</span> <span class="hljs-built_in">array</span>[<span class="hljs-number">12</span>];<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">DoStuff</span><span class="hljs-params">(MyStruct* s)</span>
+</span>{
+    <span class="hljs-built_in">printf</span>(<span class="hljs-string">"hi"</span>, (<span class="hljs-keyword">int</span>*)&amp;s); <span class="hljs-comment">//   "s"</span>
+                            <span class="hljs-comment">//   , </span>
+                            <span class="hljs-comment">//    c  </span>
+                            <span class="hljs-comment">//      "s"</span>
+    <span class="hljs-keyword">return</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">f</span><span class="hljs-params">()</span>
+</span>{<font></font>
+    MyStruct s;<font></font>
+    <span class="hljs-built_in">memset</span>(&amp;s, <span class="hljs-number">0x0</span>, <span class="hljs-keyword">sizeof</span>(s));<font></font>
+    DoStuff(&amp;s);<font></font>
+    <span class="hljs-keyword">return</span>;<font></font>
+}</code></pre><br>
+<p><img src="https://habrastorage.org/webt/fm/yf/7v/fmyf7vxnqesyecgskxvarcbgyc4.png" alt="Imagem 1"></p><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O MSVC (como a maioria dos compiladores) pode "implantar" pequenas chamadas </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> com um tamanho definido estatisticamente e um valor de preenchimento. Ou seja, a chamada </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> é substituída por uma sequência de comandos de gravação diretamente na memória. Graças a essa otimização, o tempo de execução de pequenas chamadas do </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> (até 128 bytes) é reduzido para um quarto do habitual com uma quantidade menor de código (não há necessidade de salvar os valores do registro na pilha, chamar o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> e restaurar o estado dos registradores). </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+MSVC usado para implantar </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">no AMD64 usando registros de uso geral. </font><font style="vertical-align: inherit;">Agora, ele usa registradores vetoriais, o que permite implantar chamadas com o dobro do tamanho. </font><font style="vertical-align: inherit;">Como resultado, obtemos o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">memset</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> mais rápido </font><font style="vertical-align: inherit;">e não deixamos o código crescer. </font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Implementações de memset mais produtivas: analisaremos</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+esse item em detalhes outra vez.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Valor do Usuário</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Desde o lançamento do </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , muitas das vulnerabilidades relatadas pelos usuários ao MSRC pararam de ser reproduzidas nas versões recentes do Windows. Graças ao </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll,</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> essas vulnerabilidades </font><i><font style="vertical-align: inherit;">evoluíram</font></i><font style="vertical-align: inherit;"> de "problemas de segurança" para "defeitos de código que atualmente não têm consequências negativas". Isso significa que não precisamos mais fornecer atualizações de segurança para os sistemas operacionais já lançados com o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> instalado </font><font style="vertical-align: inherit;">, o que evita os usuários da dor de cabeça que acompanha a instalação dos patches e a Microsoft da dor de cabeça que acompanha o seu desenvolvimento. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Em nossas ramificações ativas do repositório, ainda melhoramos o código e corrigimos erros, além de fazer alterações nos sistemas operacionais já lançados nos quais </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">desaparecidos e, portanto, ainda vulneráveis. </font><font style="vertical-align: inherit;">Com o tempo, as versões sem </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> não serão mais suportadas. </font><font style="vertical-align: inherit;">Quando isso acontece, os erros neutralizados com o </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> serão corrigidos apenas nas ramificações de desenvolvimento ativas e, nos sistemas atuais, esse tipo de defeito não precisará mais ser corrigido.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Planos futuros</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No momento, planejamos lidar com duas tarefas principais no contexto de problemas com variáveis ​​de pilha não inicializadas:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Estudar e usar a possibilidade de aplicar </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> a todos os tipos de dados alocados (ou seja, matrizes de todos os tipos e classes, e não apenas de POD)</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Implante </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">InitAll</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> em todo o código do Windows.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+No futuro, planejamos descobrir se é possível padronizar o processo de eliminação dos tipos de problemas descritos em C e C ++. Não é necessário deixar variáveis ​​não inicializadas por padrão por causa do desempenho (especialmente se o compilador puder otimizar operações de gravação redundantes). Em vez disso, seria melhor exigir que o desenvolvedor inicialize as variáveis ​​antes do uso ", se essa necessidade tiver sido comprovada" e permitir que essa regra seja violada apenas se uma palavra-chave especial for usada para variáveis ​​não inicializadas. Essa solução preservaria o alto desempenho e, ao mesmo tempo, salvaria os programadores de erros desnecessários.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Planejamos publicar outra observação sobre o trabalho em andamento para neutralizar vulnerabilidades de memória não inicializadas no mecanismo para alocar um pool de memória no kernel do Windows.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Comentário do tradutor</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+O artigo quase não está relacionado ao meu tópico nativo de análise de código estático, mas parecia interessante para mim e eu queria compartilhar a tradução com um público de língua russa. </font><font style="vertical-align: inherit;">Por mim, quero acrescentar que os problemas de segurança associados ao "vazamento" de dados privados geralmente consistem em dois componentes. </font><font style="vertical-align: inherit;">Primeiro: existe um local onde os dados privados devem ser apagados, mas isso não acontece ( </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">V597</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). </font><font style="vertical-align: inherit;">Segundo: dados privados não limpos como parte da memória não inicializada podem ser transferidos para algum lugar ( </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=pt&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">exemplo</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ).</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../pt505476/index.html">API CRUD no Deno e PostegreSQL: trabalhando com um dinossauro</a></li>
+<li><a href="../pt505478/index.html">Substituindo um sistema CRM por um sistema CRM</a></li>
+<li><a href="../pt505488/index.html">12 dicas para implementar o TypeScript em aplicativos React</a></li>
+<li><a href="../pt505494/index.html">Desenvolvedor Framing</a></li>
+<li><a href="../pt505496/index.html">Flutter Dev Podcast com o CTO Meduza Boris Goryachev: o principal sobre o aplicativo Meduz e o desenvolvimento de mídia</a></li>
+<li><a href="../pt505502/index.html">Omnichannel no atendimento ao cliente: o que procurar e como fazer tudo certo?</a></li>
+<li><a href="../pt505506/index.html">Ele não morde: como tornar os robôs industriais seguros para os trabalhadores</a></li>
+<li><a href="../pt505508/index.html">Não apenas tecnologia não tripulada: o futuro da indústria automotiva</a></li>
+<li><a href="../pt505510/index.html">Simplificando a API do Check Point com o Python SDK</a></li>
+<li><a href="../pt505516/index.html">Aprendizado de máquina: por onde começar ou como construir o primeiro modelo</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
