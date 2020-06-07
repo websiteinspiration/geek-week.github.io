@@ -1,0 +1,740 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👂 🎧 👏🏾 Memory allocators 🦅 💍 👩🏼‍🌾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Hello everyone! Not so long ago, after a very tight study of allocators and memory allocation algorithms, as well as in their subsequent application i...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Memory allocators</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/505632/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Hello everyone! </font><font style="vertical-align: inherit;">Not so long ago, after a very tight study of allocators and memory allocation algorithms, as well as in their subsequent application in practice, I came up with the idea to write an article that will describe them in as much detail as possible. </font><font style="vertical-align: inherit;">I believe that this topic will be quite popular, since there are currently very few sources on the network, especially in the Russian-speaking part, devoted to this issue.</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Foreword</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+To begin with, I would like to immediately note that if someone first hears the terms "allocator", "memory allocation algorithms" and does not understand what this is all for, then, before reading this article, I recommend that you familiarize yourself with </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">this</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> source . </font><font style="vertical-align: inherit;">This article describes quite well what problems exist in standard memory allocators, and for what purposes it is worth using other methods of memory allocation, in addition to standard ones. </font><font style="vertical-align: inherit;">Here I will talk only about the distribution algorithms themselves, and, of course, in the end I will give an implementation of one of the allocators, which can be used without problems in standard C ++ containers.</font></font><br>
+<br>
+<hr><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The basics</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Five main operations that can be performed on an allocator are conceptually highlighted (I would like to note that not all allocators can explicitly correspond to this interface):</font></font><br>
+<br>
+<ul>
+<li><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">create</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - creates an allocator and gives it a certain amount of memory;</font></font></li>
+<li><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">allocate</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - selects a block of a certain size from the memory area that the allocator controls;</font></font></li>
+<li><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">deallocate</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - frees a specific block;</font></font></li>
+<li><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">free</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - frees all allocated blocks from allocator memory (memory allocated to allocator is not freed);</font></font></li>
+<li><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">destroy</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - destroys the allocator with the subsequent release of memory allocated to the allocator.</font></font></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Linear Allocator</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Linear Allocator, it is also “linear” - this is the simplest type of allocators. The idea is to save a pointer to the beginning of the memory block for the allocated allocator, and also use a different pointer or numeric representation, which will need to be moved every time the allocation from the allocator is completed. In this allocator, internal fragmentation is minimized because all elements are inserted sequentially (spatial locality), and the only fragmentation between them is alignment. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Further, I propose to consider several examples in which it will be clearly shown in detail how this allocator works. Take some block of memory equal to 14 bytes and give it to the control of the allocator. As can be seen from the picture below, we save a pointer to the beginning of memory ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">start</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">), and also store two pointers, or two numeric representations that contain information about the total ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">end</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) and used ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">used</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) memory sizes. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/vg/aa/wg/vgaawgiqzerseegtgqvk0qbjhus.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Imagine that the allocator received a request to allocate 4 bytes of memory. </font><font style="vertical-align: inherit;">The actions of the allocator on the execution of this request will be as follows:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">check if there is enough memory to allocate;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">save the current used pointer, which will later be given to the user as a pointer to a block of allocated memory from the allocator;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">shift the used pointer by an amount equal to the size of the allocated memory block, i.e. </font><font style="vertical-align: inherit;">by 4 bytes.</font></font></li>
+</ul><br>
+<img src="https://habrastorage.org/webt/wp/3q/_r/wp3q_r2dp-ywsaou93vzk8zhqkk.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Further, for example, a request comes for the allocation of 8 bytes and, accordingly, the actions of the allocator will be exactly the same regardless of the size of the allocated memory block. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/di/g4/ih/dig4ihecjl8qfasqqonhdqtt2lm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But here it will already be a little more interesting, for example, if a request comes for allocating only 1 byte, and if we do not want to align blocks in memory (for example, addresses that are multiples of 2, 4, ...), then the actions of the allocator will remain exactly the same.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/vz/x_/cc/vzx_cc45oildurtaxdyi7n9fi7i.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But, if we need to allocate memory blocks with a certain alignment (for example, alignment of addresses multiple of 2), then the action of the allocator changes slightly. It changes not in terms of implementation, but in that, in addition to the data itself equal to the volume of one byte, we also take one additional byte from the memory of the allocator for alignment, which does not carry any meaning. This is precisely the very possible minimal fragmentation of memory inside a linear allocator. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/jx/xg/pz/jxxgpzvrvs9nhyodrphmi1xg1sy.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Great, now is the time to talk about freeing up memory. As noted earlier, this type of allocotor does not support the selective release of certain memory blocks. That is, if we draw a subtle analogy with </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">malloc / free</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , having a pointer to, say, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xFFAA00</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, we could free this block of memory, but a linear allocator cannot allow us to do this. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mj/es/_0/mjes_04nsdmq3bfiolwehoxwdfk.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All we can do is to free all the occupied memory entirely inside the allocator and continue to work with it as if it were completely empty.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/vg/aa/wg/vgaawgiqzerseegtgqvk0qbjhus.png"><br>
+<br>
+<hr><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pool allocator</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The idea of ​​a block allocator is that it divides some large piece of memory into smaller pieces of the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">same size</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . At its core, it is also a very simple allocator, because when allocation is requested, it simply returns one of the free memory locations of a fixed size, and when it is requested to be freed, it simply saves this memory area for future use. Thus, distribution is very fast, and fragmentation is still very small. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Further, as well as with a linear allocator, I propose to consider everything with an example in order to understand in more detail how it works, so we take some block of memory equal to 12 bytes and give it to the control of the allocator. As you can see from the picture below, we keep the pointer to the beginning (</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">start</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) and the end ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">end</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) of the memory controlled by the allocator, as well as a list ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">freeblocks</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) of the addresses of free blocks in the allocator. As a means of storing data that the block is busy or free, you can use a lot of tools, for example, an array of Boolean values, but I just decided to choose a simply connected list, since it most simply and clearly characterizes this concept (by the way, the links of the list can be stored in free blocks of memory, thereby removing the additional costs of memory).</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/co/6s/5o/co6s5o7c7ufuvofrrb1oqwke8vy.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If a request comes to allocate one block of memory, then the actions of the allocator are very primitive. First, he checks if there are links in the list of free blocks, if they are not there, then it is not difficult to guess that the memory in the allocator has already run out. If there is at least one link there, then it simply takes out the root or tail (in this implementation tail links are given) link of the list and gives its address to the user. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/uc/j_/44/ucj_44gjfi99_jf4whquo4sra78.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If a request comes for the allocation of several memory blocks, then the allocator in the same way performs the same actions in turn, described in the previous step.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ri/qc/zy/riqczyaeceqtxdshywd0py4r0nw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+As for the release of the block, if a request for release arrives, then the allocator simply adds this address to one of the ends of a simply connected list. It is worth noting such a moment that, for example, an address that does not match the allocator’s memory address, for example, </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xEFAB12</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , </font><font style="vertical-align: inherit;">can come as the address of the block to be </font><b><font style="vertical-align: inherit;">freed</font></b><font style="vertical-align: inherit;"> , and then it will be possible that we will give the user a piece of memory that does not belong to us (of course , this will lead to undefined behavior or if you are very lucky, then simply to crash the program). To avoid this possible problem, just </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">begin</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">end are used</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> , which allow you to check whether the user was mistaken with the address during the request for the release operation.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/gd/0n/ed/gd0nedbx2nlhsrxggnymb42keey.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In addition to going beyond the memory that the allocator does not control, there is another possible problem. </font><font style="vertical-align: inherit;">A user can come up with a request to release absolutely any address located in the memory area of ​​the allocator, but not equal to the start address of any of the blocks, let's say a block with the address </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xFFAA07</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font><font style="vertical-align: inherit;">This operation, of course, will lead to undefined behavior. </font><font style="vertical-align: inherit;">If there is a need to additionally check whether the user is doing everything correctly, then it is possible to track this. </font><font style="vertical-align: inherit;">To track this, there are many solutions, for example, to store addresses and occupied blocks as well, or even check the address for multiplicity of block sizes in the allocator (it all depends on the imagination and on the particular situation in which the allocator is used).</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/3u/mn/hw/3umnhwagefbl_eysi3zl6yhu9be.png"><br>
+<br>
+<hr><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Stack allocator</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In fact, this is a smart evolution of a linear allocator that allows you to manage memory like a stack. Everything is the same as before, we save the pointer with the “header” block (hereinafter will be used as the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">header</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) to the current memory address and move it forward for each allocation. Unlike a linear allocator, we can also move it back, that is, perform the deallocate operation, which is not supported by a linear allocator. As before, the principle of spatial locality is retained, and fragmentation is still minimal. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I propose to consider several examples all with the same memory block of 14 bytes. As with a linear allocator, we also store pointers to the beginning of memory ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">start</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) and end ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">end</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">), as well as a pointer to the end of the used memory ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">used</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ). </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ba/sb/qv/basbqv8yj_v1sijo_td54pa472k.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+When a request for memory allocation arrives, in addition to allocating a certain amount of memory requested by the user, we additionally allocate a header (the user will not interact with it in any way), in which we store information about how many bytes were allocated (in this example, the header size is 2 bytes). For example, if a request came for allocation of 2 bytes, then the state of the allocator will be exactly the same as in the figure below. It is important to note that the user will not be given a pointer to the heading, but to the block immediately following the heading, that is, in this example, this is the block with the address </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0xFFAA02</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/bg/qb/q2/bgqbq2fei1egpmowdnmz9vciplo.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A similar situation will be, for example, with the allocation of 6 bytes.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/up/pf/x_/uppfx_dpultvroggfr2rvy7lxhc.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But with the release, everything is a little more interesting (as previously discussed, we can only allocate and free memory using the </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LIFO</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> algorithm </font><font style="vertical-align: inherit;">). </font><font style="vertical-align: inherit;">First, from the pointer that the user asks to be freed, you need to subtract the size of the header, then dereference the value and only after that move the </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">used</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> pointer </font><font style="vertical-align: inherit;">to the size of the header along with the size of the block obtained from the header. </font><font style="vertical-align: inherit;">Here, just as with the block allocator, a situation of freeing “random” memory blocks is possible, which will also lead to undefined behavior. </font><font style="vertical-align: inherit;">It is up to everyone to supplement allocators with additional checks or not. </font><font style="vertical-align: inherit;">The most important thing is not to forget about this moment. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/as/fh/s4/asfhs4qflx43fwr9jizq-zmsatq.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now, having understood the basics, it's time to learn something more serious.</font></font><br>
+<br>
+<hr><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">"Primitive standard allocator"</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Next, an implementation of the allocator will be presented, which can be used without problems with STL. The memory allocation algorithm in this allocator will be similar to the algorithm used by the standard allocator. I want to immediately note that I do not pretend to be a complete implementation of malloc, I took only the basic concepts from it with the addition of my logic in some places. All its subtleties and nuances, of course, were not taken into account in this implementation ... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The algorithm is based on interaction with “chunks” (hereinafter it will be used as a </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">section</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">, in this implementation, their size is static and should be a multiple of four, as well as all memory allocations from allocator memory are aligned by a multiple of four), which will be discussed later. As an example, take a section with a size of 16 bytes. Inside it, it will contain pointers to the beginning ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">start</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) and end ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">end</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) of the memory, a pointer to the maximum memory block ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">maxblock</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ) and many ( </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">freeblocks</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">), in which headers of free blocks will be stored. The header size in this implementation is 4 bytes, but it can easily vary in size for the purposes you need. For example, if you know for sure that the size of the allocated memory blocks will be no more than the maximum numerical value that can be represented in one or two byte variables, then you can use a header of 1 or 2 bytes. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/nr/xq/3f/nrxq3fcbnoooxnu0hehls2dghim.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In the operation of allocating memory from a section, you first need to check if there is enough memory (in this implementation, this is a constant operation, we just compare with </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">maxblock</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">header and, if the size of the allocated memory is less than the maximum block, then we have enough memory for this allocation). If there is enough memory, then we simply give the memory address following the header, as in the stack allocator, and also delete the previous header from the set of free blocks and only after that add the new header to the newly allocated memory block there. It is important to note that if we allocated memory from the maximum block, then we will need to update the value of the maximum block. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/5m/lm/yw/5mlmywi79wh3uutr-ug7ko7s9em.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In subsequent selections, everything happens exactly the same as in the previous step.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/3m/2m/i9/3m2mi9xd9qmnf6ngnqjf8wfnzd0.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+But now, as soon as the memory in the section is over, the allocator takes and simply creates another section of the same or larger size (in this implementation, all sections are the same size). It is also worthwhile to ensure that the size of a possible block for allocation does not exceed the size of the plot minus the size of the header. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fy/fz/6g/fyfz6gthdrfysccjef_xcphihb0.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Further, in the new section, you can easily allocate the necessary memory blocks. The allocation of memory will occur in exactly the same scenario as in the previous section.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/al/eu/gc/aleugc_fka3uvpmju9gw66dpn1w.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now a little about why in this implementation the size of the plot should be a multiple of four. The answer is very simple - this is done for ease of implementation and perception of the algorithm. Since such a situation is possible that at the end of the section there may remain some memory area, which simply does not fit the header (an example of this is shown in the following figure). To solve this problem, it will be possible to fill this memory with additional alignment, or make the header size smaller or use additional tools to track this possible problem, otherwise this memory will be lost and most importantly, in the future, the lost memory can accumulate!</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rq/rp/mv/rqrpmvvpbx1thpxjfbqcictzq1o.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Before freeing up memory, you need to determine in which section the block is located (in the current implementation, this operation is of linear complexity with respect to the total number of sections, if it is understood that there will be a large number of sections, then it can be made constant by adding a section index to the header, in which the memory was allocated). In the following, the deallocation operation is identical with the stack allocator, except that you will need to add the header address of the deallocated block to the set of free blocks, as well as update </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">maxblock</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> if the size of the newly released block is larger than </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">maxblock</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fw/sl/yl/fwslyluxwv00a8mwazxe2iakd00.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is important to note that in this implementation, with each subsequent memory release, an attempt is made to defragment in the area from which the memory was freed. Defragmentation is needed in order to combine free blocks into large ones. For example, in this situation, as in the figure below, we will not be able to allocate 6 bytes, even if the size of free memory allows us to do this, but fragmentation tells us a firm and decisive “no”! </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/tm/ec/dp/tmecdpyhyynvn0ahzubdxltorvo.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The defrag operation is very primitive. Its essence lies in the fact that after the operation of freeing up memory, it checks to see if two neighboring blocks to the left and to the right of the freed are free. If two neighboring blocks are free, then they are combined into one single unit.</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/jt/1u/hl/jt1uhl_a7d3xo2a3f9kedx_7waq.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I would also like to note that this implementation will be disastrously awful to work with allocating small blocks of memory, for example equal to 1 byte. </font><font style="vertical-align: inherit;">In this situation, we get +7 extra bytes to allocate only one byte of memory due to the fact that the header size is 4 bytes and plus 3 bytes to tear out addresses that must be a multiple of four. </font><font style="vertical-align: inherit;">By this, I want to say that you should not blindly use any memory allocation algorithm, since instead of the long-awaited optimization, sometimes you can get only additional costs. </font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/r2/ez/v3/r2ezv39toknyjxexeamoq05g3r8.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I think the theory will be enough and therefore, as Linus Torvalds said: “ </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Chatter is worthless. </font><font style="vertical-align: inherit;">Show me the code</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> . " </font><font style="vertical-align: inherit;">Well, let's get started ...</font></font><br>
+<br>
+<hr><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Implementation</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The requirements for allocators are given in the C ++ standard in the chapter " </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Allocator requirements [allocator.requirements]</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ". </font><font style="vertical-align: inherit;">Based on those requirements, the most primitive allocator interface that can be used in STL should look something like this:</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">template</span>&lt;<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">T</span>&gt;
+<span class="hljs-title">class</span> <span class="hljs-title">Allocator</span> 
+{</span>
+    <span class="hljs-keyword">typedef</span> T value_type;<font></font>
+    Allocator( );<font></font>
+    <span class="hljs-keyword">template</span> &lt;<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">T</span>&gt; 
+    <span class="hljs-title">Allocator</span>(<span class="hljs-title">const</span> &lt;T&gt;&amp; <span class="hljs-title">other</span>);</span>
+    <span class="hljs-function">T* <span class="hljs-title">allocate</span><span class="hljs-params">(<span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> count_objects)</span></span>;
+    <span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">deallocate</span><span class="hljs-params">(T* ptr, <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> count_objects)</span></span>;<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">T</span>, <span class="hljs-title">class</span> <span class="hljs-title">U</span>&gt;
+<span class="hljs-title">bool</span> <span class="hljs-title">operator</span>==(<span class="hljs-title">const</span> <span class="hljs-title">Allocator</span>&lt;T&gt;&amp;, <span class="hljs-title">const</span> <span class="hljs-title">Allocator</span>&lt;U&gt;&amp;);</span>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">T</span>, <span class="hljs-title">class</span> <span class="hljs-title">U</span>&gt;
+<span class="hljs-title">bool</span> <span class="hljs-title">operator</span>!=(<span class="hljs-title">const</span> <span class="hljs-title">Allocator</span>&lt;T&gt;&amp;, <span class="hljs-title">const</span> <span class="hljs-title">Allocator</span>&lt;U&gt;&amp;);</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+It is assumed that STL containers do not access the allocator directly, but through the std :: allocator_traits template, which provides values ​​such as:</font></font><br>
+<br>
+<pre><code class="cpp hljs">
+<span class="hljs-keyword">typedef</span> T* pointer;
+<span class="hljs-keyword">typedef</span> <span class="hljs-keyword">const</span> T* const_pointer; <font></font>
+… <font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Well, we figured out the requirements, now finally we are starting to write an allocator. </font><font style="vertical-align: inherit;">To begin with, we’ll write some interface or adapter, in fact it’s hard to call either one or the other, so let it be a kind of “layer” in which with the help of strategies we can easily change the memory allocation algorithm for certain purposes:</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-comment">// Common interface for interaction with STL</span>
+<span class="hljs-comment">// containers and algorithms. You can manually change</span>
+<span class="hljs-comment">// allocation algorithm with different 'AllocationStrategy'</span>
+<span class="hljs-comment">//</span>
+<span class="hljs-comment">// In this implementation was not implented 'adress' and 'max_size'</span>
+<span class="hljs-comment">// unnecessary functions for.</span><font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T, <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">AllocationStrategy</span>&gt;
+<span class="hljs-title">class</span> <span class="hljs-title">Allocator</span>
+{</span>
+    <span class="hljs-keyword">static_assert</span>(!<span class="hljs-built_in">std</span>::is_same_v&lt;T, <span class="hljs-keyword">void</span>&gt;, <span class="hljs-string">"Type of the allocator can not be void"</span>);
+<span class="hljs-keyword">public</span>:
+    <span class="hljs-keyword">using</span> value_type = T;<font></font>
+<font></font>
+    <span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> U, <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">AllocStrategy</span>&gt;
+    <span class="hljs-title">friend</span> <span class="hljs-title">class</span> <span class="hljs-title">Allocator</span>;</span><font></font>
+    <font></font>
+    <span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> U&gt;
+    <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">rebind</span>
+    {</span>
+        <span class="hljs-keyword">using</span> other = Allocator&lt;U, AllocationStrategy&gt;;<font></font>
+    };<font></font>
+<span class="hljs-keyword">public</span>:<font></font>
+    Allocator() = <span class="hljs-keyword">default</span>;<font></font>
+    <font></font>
+    <span class="hljs-function"><span class="hljs-keyword">explicit</span> <span class="hljs-title">Allocator</span><span class="hljs-params">(AllocationStrategy&amp; strategy)</span> <span class="hljs-keyword">noexcept</span>
+        : <span class="hljs-title">m_allocation_strategy</span><span class="hljs-params">(&amp;strategy)</span> </span>{}<font></font>
+    <font></font>
+    Allocator(<span class="hljs-keyword">const</span> Allocator&amp; other) <span class="hljs-keyword">noexcept</span><font></font>
+        : m_allocation_strategy(other.m_allocation_strategy) {}<font></font>
+    <font></font>
+    <span class="hljs-function"><span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> U&gt;
+    <span class="hljs-title">Allocator</span><span class="hljs-params">(<span class="hljs-keyword">const</span> Allocator&lt;U, AllocationStrategy&gt;&amp; other)</span> <span class="hljs-keyword">noexcept</span>
+        : <span class="hljs-title">m_allocation_strategy</span><span class="hljs-params">(other.m_allocation_strategy)</span> </span>{}<font></font>
+    <font></font>
+    <span class="hljs-function">T* <span class="hljs-title">allocate</span><span class="hljs-params">(<span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> count_objects)</span>
+    </span>{<font></font>
+        assert(m_allocation_strategy &amp;&amp; <span class="hljs-string">"Not initialized allocation strategy"</span>);
+        <span class="hljs-keyword">return</span> <span class="hljs-keyword">static_cast</span>&lt;T*&gt;(m_allocation_strategy-&gt;allocate(count_objects * <span class="hljs-keyword">sizeof</span>(T)));<font></font>
+    }<font></font>
+    <font></font>
+    <span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">deallocate</span><span class="hljs-params">(<span class="hljs-keyword">void</span>* memory_ptr, <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> count_objects)</span>
+    </span>{<font></font>
+        assert(m_allocation_strategy &amp;&amp; <span class="hljs-string">"Not initialized allocation strategy"</span>);<font></font>
+        m_allocation_strategy-&gt;deallocate(memory_ptr, count_objects * <span class="hljs-keyword">sizeof</span>(T));<font></font>
+    }<font></font>
+    <font></font>
+    <span class="hljs-function"><span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> U, <span class="hljs-keyword">typename</span>... Args&gt;
+    <span class="hljs-keyword">void</span> <span class="hljs-title">construct</span><span class="hljs-params">(U* ptr, Args&amp;&amp;... args)</span>
+    </span>{
+        <span class="hljs-keyword">new</span> (<span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-keyword">void</span>*&gt;(ptr)) U { <span class="hljs-built_in">std</span>::forward&lt;Args&gt;(args)... };<font></font>
+    }<font></font>
+    <font></font>
+    <span class="hljs-function"><span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> U&gt;
+    <span class="hljs-keyword">void</span> <span class="hljs-title">destroy</span><span class="hljs-params">(U* ptr)</span>
+    </span>{<font></font>
+        ptr-&gt;~U();<font></font>
+    }<font></font>
+<span class="hljs-keyword">private</span>:<font></font>
+    AllocationStrategy* m_allocation_strategy = <span class="hljs-literal">nullptr</span>;<font></font>
+};<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T, <span class="hljs-keyword">typename</span> U, <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">AllocationStrategy</span>&gt;
+<span class="hljs-title">bool</span> <span class="hljs-title">operator</span>==(<span class="hljs-title">const</span> <span class="hljs-title">Allocator</span>&lt;T, AllocationStrategy&gt;&amp; <span class="hljs-title">lhs</span>, <span class="hljs-title">const</span> <span class="hljs-title">Allocator</span>&lt;U, AllocationStrategy&gt;&amp; <span class="hljs-title">rhs</span>)
+{</span>
+    <span class="hljs-keyword">return</span> lhs.m_allocation_strategy == rhs.m_allocation_strategy;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T, <span class="hljs-keyword">typename</span> U, <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">AllocationStrategy</span>&gt;
+<span class="hljs-title">bool</span> <span class="hljs-title">operator</span>!=(<span class="hljs-title">const</span> <span class="hljs-title">Allocator</span>&lt;T, AllocationStrategy&gt;&amp; <span class="hljs-title">lhs</span>, <span class="hljs-title">const</span> <span class="hljs-title">Allocator</span>&lt;U, AllocationStrategy&gt;&amp; <span class="hljs-title">rhs</span>)
+{</span>
+    <span class="hljs-keyword">return</span> !(lhs == rhs);<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thanks to the strategy for memory allocation, we can do something like this:</font></font><br>
+<br>
+<pre><code class="cpp hljs">
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T&gt;
+<span class="hljs-keyword">using</span> AllocatorForSmallObjects = Allocator&lt;T, StrategyForSmallObjects&gt;;
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T&gt;
+<span class="hljs-keyword">using</span> AllocatorForBigObjects = Allocator&lt;T, StrategyForBigObjects&gt;;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+That is, we can flexibly change the distribution algorithms for the necessary purposes in a given situation. </font><font style="vertical-align: inherit;">The only requirement for AllocationStrategy is that they must have </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">allocate</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> and </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">deallocate operations</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .</font></font><br>
+<br>
+<pre><code class="cpp hljs">
+<span class="hljs-comment">// Strategy for manipulation memory chunks, like</span>
+<span class="hljs-comment">// a primitive malloc allocator.</span>
+<span class="hljs-comment">//</span>
+<span class="hljs-comment">// Warning: if you try to deallocate some random block</span>
+<span class="hljs-comment">// of the memory, most of all it will be an undefined behavior,</span>
+<span class="hljs-comment">// because current implementation doesn't check this possible situation.</span><font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> CHUNK_SIZE = <span class="hljs-number">16'384u</span>&gt;<font></font>
+class CustomAllocationStrategy<font></font>
+{<font></font>
+    <span class="hljs-keyword">static_assert</span>(CHUNK_SIZE != <span class="hljs-number">0u</span>, <span class="hljs-string">"Chunk size must be more, than zero"</span>);
+    <span class="hljs-keyword">static_assert</span>(CHUNK_SIZE &lt;= <span class="hljs-built_in">std</span>::numeric_limits&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>&gt;::max(),
+        <span class="hljs-string">"Chunk size must be less or equal max value of the uint32_t"</span>);
+<span class="hljs-keyword">public</span>:
+    <span class="hljs-function"><span class="hljs-keyword">void</span>* <span class="hljs-title">allocate</span><span class="hljs-params">(<span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> size)</span>
+    </span>{<font></font>
+        assert(size &lt; CHUNK_SIZE &amp;&amp; <span class="hljs-string">"Incorrect chunk size for future usage"</span>);<font></font>
+<font></font>
+        <span class="hljs-keyword">if</span> (size == <span class="hljs-number">0u</span>)<font></font>
+        {<font></font>
+            <span class="hljs-keyword">return</span> <span class="hljs-literal">nullptr</span>;<font></font>
+        }<font></font>
+        <font></font>
+        <span class="hljs-keyword">for</span> (<span class="hljs-keyword">auto</span>&amp; chunk : m_chunks)<font></font>
+        {<font></font>
+            <span class="hljs-keyword">void</span>* allocated_block = chunk.tryReserveBlock(size);
+            <span class="hljs-keyword">if</span> (allocated_block) <span class="hljs-comment">//if the block was not reserved, then memory in the chunk has run out</span><font></font>
+            {<font></font>
+                <span class="hljs-keyword">return</span> allocated_block;<font></font>
+            }<font></font>
+        }<font></font>
+<font></font>
+        m_chunks.push_back(details::Chunk&lt;CHUNK_SIZE&gt;{});<font></font>
+        <span class="hljs-keyword">auto</span>&amp; chunk = m_chunks.back();
+        <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>* allocated_block = chunk.tryReserveBlock(size);
+        <span class="hljs-keyword">return</span> allocated_block;<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">deallocate</span><span class="hljs-params">(<span class="hljs-keyword">void</span>* memory_ptr, <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> size)</span>
+    </span>{
+        <span class="hljs-keyword">if</span> ( (!memory_ptr) || (size == <span class="hljs-number">0u</span>) )<font></font>
+        {<font></font>
+            <span class="hljs-keyword">return</span>;<font></font>
+        }<font></font>
+<font></font>
+        <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>* deallocation_ptr = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>*&gt;(memory_ptr);
+        <span class="hljs-keyword">for</span> (<span class="hljs-keyword">auto</span>&amp; chunk : m_chunks)<font></font>
+        {<font></font>
+            <span class="hljs-keyword">if</span> (chunk.isInside(deallocation_ptr))<font></font>
+            {<font></font>
+                chunk.releaseBlock(deallocation_ptr);<font></font>
+            }<font></font>
+        }<font></font>
+    }<font></font>
+<span class="hljs-keyword">private</span>:
+    <span class="hljs-built_in">std</span>::<span class="hljs-built_in">deque</span>&lt;details::Chunk&lt;CHUNK_SIZE&gt;&gt; m_chunks{ <span class="hljs-number">1u</span> };<font></font>
+};<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Hereinafter standard containers are used. </font><font style="vertical-align: inherit;">I agree that there will be a lot of allocations from the heap. </font><font style="vertical-align: inherit;">I think that for those who will write their allocators, this will be unacceptable. </font><font style="vertical-align: inherit;">As an alternative, of course, you can write your own containers or use someone else's, sharpened for certain needs, but in this implementation I tried to present the material as easily as possible, so my choice fell on standard containers.</font></font><br>
+<br>
+<pre><code class="cpp hljs">
+<span class="hljs-keyword">namespace</span> details<font></font>
+{<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> <span class="hljs-title">getAlignmentPadding</span><span class="hljs-params">(<span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> not_aligned_address, <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> alignment)</span>
+    </span>{
+        <span class="hljs-keyword">if</span> ( (alignment != <span class="hljs-number">0u</span>) &amp;&amp; (not_aligned_address % alignment != <span class="hljs-number">0u</span>) )<font></font>
+        {<font></font>
+            <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> multiplier = (not_aligned_address / alignment) + <span class="hljs-number">1u</span>;
+            <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> aligned_address = multiplier * alignment;
+            <span class="hljs-keyword">return</span> aligned_address - not_aligned_address;<font></font>
+        }<font></font>
+<font></font>
+        <span class="hljs-keyword">return</span> <span class="hljs-number">0u</span>;<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">// Current chunk implementation works only with size</span>
+    <span class="hljs-comment">// aligned by 4 bytes, because HEADER_SIZE now also 4 bytes.</span>
+    <span class="hljs-comment">// You can modify it with HEADER_SIZE without problems for your purposes.</span><font></font>
+<font></font>
+    <span class="hljs-keyword">template</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> CHUNK_SIZE&gt;
+    <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Chunk</span>
+    {</span>
+        <span class="hljs-keyword">static</span> <span class="hljs-keyword">constexpr</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> HEADER_SIZE = <span class="hljs-number">4u</span>;
+        <span class="hljs-keyword">static_assert</span>(CHUNK_SIZE % HEADER_SIZE == <span class="hljs-number">0</span>, <span class="hljs-string">"CHUNK_SIZE must be multiple of the four"</span>);
+        <span class="hljs-keyword">static_assert</span>(CHUNK_SIZE &gt; HEADER_SIZE, <span class="hljs-string">"CHUNK_SIZE must be more than HEADER_SIZE"</span>);
+    <span class="hljs-keyword">public</span>:<font></font>
+        Chunk()<font></font>
+        {<font></font>
+            m_blocks.resize(CHUNK_SIZE);<font></font>
+            <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* init_header = <span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;(m_blocks.data());<font></font>
+            *init_header = CHUNK_SIZE - HEADER_SIZE;<font></font>
+            m_max_block = init_header;<font></font>
+            m_free_blocks.insert(init_header);<font></font>
+        }<font></font>
+        <font></font>
+        <span class="hljs-function"><span class="hljs-keyword">bool</span> <span class="hljs-title">isInside</span><span class="hljs-params">(<span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>* address)</span> <span class="hljs-keyword">const</span> <span class="hljs-keyword">noexcept</span>
+        </span>{
+            <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>* start_chunk_address = <span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>*&gt;(m_blocks.data());
+            <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>* end_chunk_address = start_chunk_address + CHUNK_SIZE;
+            <span class="hljs-keyword">return</span> (start_chunk_address &lt;= address) &amp;&amp; (address &lt;= end_chunk_address);<font></font>
+        }<font></font>
+        <font></font>
+        <span class="hljs-function"><span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>* <span class="hljs-title">tryReserveBlock</span><span class="hljs-params">(<span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> allocation_size)</span>
+        </span>{
+            <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> not_aligned_address = <span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span>&gt;(m_max_block) + allocation_size;
+            <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> alignment_padding = getAlignmentPadding(not_aligned_address, HEADER_SIZE);
+            <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span> allocation_size_with_alignment = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>&gt;(allocation_size + alignment_padding);
+            <span class="hljs-keyword">if</span> ( (!m_max_block) || (allocation_size_with_alignment &gt; *m_max_block) ) <span class="hljs-comment">// Check on enaught memory for allocation</span><font></font>
+            {<font></font>
+                <span class="hljs-keyword">return</span> <span class="hljs-literal">nullptr</span>;<font></font>
+            }<font></font>
+            <font></font>
+            <span class="hljs-comment">// Find min available by size memory block</span>
+            <span class="hljs-keyword">const</span> <span class="hljs-keyword">auto</span> min_it = <span class="hljs-built_in">std</span>::min_element(m_free_blocks.cbegin(), m_free_blocks.cend(), [allocation_size_with_alignment] (<span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* lhs, <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* rhs)<font></font>
+            {<font></font>
+                <span class="hljs-keyword">if</span> (*rhs &lt; allocation_size_with_alignment)<font></font>
+                {<font></font>
+                    <span class="hljs-keyword">return</span> <span class="hljs-literal">true</span>;<font></font>
+                }<font></font>
+                <font></font>
+                <span class="hljs-keyword">return</span> (*lhs &lt; *rhs) &amp;&amp; (*lhs &gt;= allocation_size_with_alignment);<font></font>
+            });<font></font>
+            <font></font>
+            assert(min_it != m_free_blocks.cend() &amp;&amp; <span class="hljs-string">"Internal logic error with reserve block, something wrong in implementation..."</span>);<font></font>
+            assert(**min_it &gt;= allocation_size_with_alignment &amp;&amp; <span class="hljs-string">"Internal logic error with reserve block, something wrong in implementation..."</span>);<font></font>
+            <font></font>
+            <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* header_address = *min_it;
+            <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* new_header_address =
+                <span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;(<span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>*&gt;(header_address) + HEADER_SIZE + allocation_size_with_alignment);
+            <span class="hljs-keyword">if</span> (m_free_blocks.find(new_header_address) == m_free_blocks.cend()) <span class="hljs-comment">// check if there is free memory in the current block</span><font></font>
+            {<font></font>
+                <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span> old_block_size = *header_address;
+                <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span> difference = old_block_size - HEADER_SIZE;
+                <span class="hljs-keyword">if</span> (difference &gt;= allocation_size_with_alignment) <span class="hljs-comment">// check if there is enough space for another block</span><font></font>
+                {<font></font>
+                    <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span> new_block_size = difference - allocation_size_with_alignment;<font></font>
+                    *new_header_address = new_block_size;<font></font>
+                    m_free_blocks.insert(new_header_address);<font></font>
+                }<font></font>
+            }<font></font>
+            <font></font>
+            m_free_blocks.erase(header_address);<font></font>
+            *header_address = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>&gt;(allocation_size);
+            <span class="hljs-keyword">if</span> (header_address == m_max_block) <span class="hljs-comment">// if the maximum block were changed, then need to find the maximum block again</span><font></font>
+            {<font></font>
+                <span class="hljs-comment">// Find max block by size</span>
+                <span class="hljs-keyword">const</span> <span class="hljs-keyword">auto</span> max_it = <span class="hljs-built_in">std</span>::max_element(m_free_blocks.cbegin(), m_free_blocks.cend(), [] (<span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* lhs, <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* rhs)<font></font>
+                {<font></font>
+                    <span class="hljs-keyword">return</span> (*lhs) &lt; (*rhs);<font></font>
+                });<font></font>
+                <font></font>
+                <span class="hljs-comment">// If there are no free blocks, therefore the memory in this chunk is over</span>
+                m_max_block = (max_it != m_free_blocks.cend()) ? (*max_it) : (<span class="hljs-literal">nullptr</span>);<font></font>
+            }<font></font>
+<font></font>
+            <span class="hljs-keyword">return</span> <span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>*&gt;(header_address) + HEADER_SIZE;<font></font>
+        }<font></font>
+        <font></font>
+        <span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">releaseBlock</span><span class="hljs-params">(<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>* block_ptr)</span>
+        </span>{
+            <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>* header_address = block_ptr - HEADER_SIZE;
+            <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span> size_relized_block = *header_address;
+            <span class="hljs-keyword">if</span> ( (!m_max_block) || (size_relized_block &gt; *m_max_block) ) <span class="hljs-comment">// if the relized block is greater than the maximum, then need to replace it</span><font></font>
+            {<font></font>
+                m_max_block = <span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;(header_address);<font></font>
+            }<font></font>
+                <font></font>
+            m_free_blocks.insert(<span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;(header_address));
+            <span class="hljs-keyword">auto</span> forward_it = m_free_blocks.find(<span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;(header_address));
+            <span class="hljs-keyword">auto</span> backward_it = tryDefragment(forward_it, m_free_blocks.end());<font></font>
+            tryDefragment(<span class="hljs-built_in">std</span>::make_reverse_iterator(backward_it), m_free_blocks.rend());<font></font>
+        }<font></font>
+    <span class="hljs-keyword">private</span>:
+        <span class="hljs-function"><span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> DstIterator, <span class="hljs-keyword">typename</span> SrcIterator&gt;
+        <span class="hljs-keyword">constexpr</span> DstIterator <span class="hljs-title">getIterator</span><span class="hljs-params">(SrcIterator it)</span> <span class="hljs-keyword">const</span>
+        </span>{
+            <span class="hljs-keyword">using</span> iterator = <span class="hljs-built_in">std</span>::<span class="hljs-built_in">set</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;::iterator;
+            <span class="hljs-keyword">using</span> reverse_iterator = <span class="hljs-built_in">std</span>::<span class="hljs-built_in">set</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;::reverse_iterator;
+            <span class="hljs-function"><span class="hljs-keyword">if</span> <span class="hljs-title">constexpr</span> <span class="hljs-params">( (<span class="hljs-built_in">std</span>::is_same_v&lt;SrcIterator, iterator&gt;) &amp;&amp; (<span class="hljs-built_in">std</span>::is_same_v&lt;DstIterator, reverse_iterator&gt;) )</span>
+            </span>{
+                <span class="hljs-keyword">return</span> <span class="hljs-built_in">std</span>::make_reverse_iterator(it);<font></font>
+            }<font></font>
+            <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> <span class="hljs-keyword">constexpr</span> ( (<span class="hljs-built_in">std</span>::is_same_v&lt;SrcIterator, reverse_iterator&gt;) &amp;&amp; (<span class="hljs-built_in">std</span>::is_same_v&lt;DstIterator, iterator&gt;) )<font></font>
+            {<font></font>
+                <span class="hljs-keyword">return</span> it.base();<font></font>
+            }<font></font>
+            <span class="hljs-keyword">else</span><font></font>
+            {<font></font>
+                <span class="hljs-keyword">return</span> it;<font></font>
+            }<font></font>
+        }<font></font>
+        <font></font>
+        <span class="hljs-function"><span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> Iterator&gt;
+        Iterator <span class="hljs-title">tryDefragment</span><span class="hljs-params">(Iterator start_it, Iterator end_it)</span>
+        </span>{
+            <span class="hljs-comment">// primitive defragmentation algorithm - connects two neighboring</span>
+            <span class="hljs-comment">// free blocks into one with linear complexity</span><font></font>
+   <font></font>
+            <span class="hljs-keyword">auto</span> current_it = start_it++;
+            <span class="hljs-keyword">auto</span> next_it = start_it;
+            <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* current_header_address = *current_it;
+            <span class="hljs-keyword">if</span> ( (current_it != end_it) &amp;&amp; (next_it != end_it) )<font></font>
+            {<font></font>
+                <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* next_header_address = *next_it;
+                <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span> current_block_size = *current_header_address;
+                <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* available_current_block_address =
+                    <span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;(<span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>*&gt;(current_header_address) + HEADER_SIZE + current_block_size);
+                <span class="hljs-keyword">if</span> (available_current_block_address == next_header_address)<font></font>
+                {<font></font>
+                    <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span> next_block_size = *next_header_address;
+                    <span class="hljs-keyword">const</span> <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span> new_current_block_size = current_block_size + HEADER_SIZE + next_block_size;<font></font>
+                    *current_header_address = new_current_block_size;<font></font>
+                    <span class="hljs-keyword">if</span> (new_current_block_size &gt; *m_max_block)<font></font>
+                    {<font></font>
+                        m_max_block = <span class="hljs-keyword">reinterpret_cast</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;(current_header_address);<font></font>
+                    }<font></font>
+                            <font></font>
+                    <span class="hljs-keyword">auto</span> delete_it = getIterator&lt;<span class="hljs-built_in">std</span>::<span class="hljs-built_in">set</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt;::iterator&gt;(next_it);
+                    <span class="hljs-keyword">return</span> getIterator&lt;Iterator&gt;(m_free_blocks.erase(delete_it));<font></font>
+                }<font></font>
+            }<font></font>
+            <font></font>
+            <span class="hljs-keyword">return</span> current_it;<font></font>
+        }<font></font>
+    <span class="hljs-keyword">public</span>:
+        <span class="hljs-built_in">std</span>::<span class="hljs-built_in">vector</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint8_t</span>*&gt; m_blocks;
+        <span class="hljs-built_in">std</span>::<span class="hljs-built_in">set</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>*&gt; m_free_blocks;
+        <span class="hljs-built_in">std</span>::<span class="hljs-keyword">uint32_t</span>* m_max_block;<font></font>
+    };<font></font>
+<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now a little about how you can decorate the use of allocators together with standard containers: </font></font><br>
+<br>
+<pre><code class="cpp hljs">
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T, <span class="hljs-built_in">std</span>::<span class="hljs-keyword">size_t</span> CHUNK_SIZE = <span class="hljs-number">16'384u</span>&gt;
+<span class="hljs-keyword">using</span> CustomAllocator = Allocator&lt;T, CustomAllocationStrategy&lt;CHUNK_SIZE&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T&gt;
+<span class="hljs-keyword">using</span> CustomAllocatorWithStackChunks = Allocator&lt;T, CustomAllocationStrategy&lt;<span class="hljs-number">1'024u</span>&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T&gt;
+<span class="hljs-keyword">using</span> CustomAllocatorWithHeapChunks = Allocator&lt;T, CustomAllocationStrategy&lt;<span class="hljs-number">16'384u</span>&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T&gt;
+<span class="hljs-keyword">using</span> custom_vector = <span class="hljs-built_in">std</span>::<span class="hljs-built_in">vector</span>&lt;T, CustomAllocator&lt;T&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T&gt;
+<span class="hljs-keyword">using</span> custom_list = <span class="hljs-built_in">std</span>::<span class="hljs-built_in">list</span>&lt;T, CustomAllocator&lt;T&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T&gt;
+<span class="hljs-keyword">using</span> custom_set = <span class="hljs-built_in">std</span>::<span class="hljs-built_in">set</span>&lt;T, <span class="hljs-built_in">std</span>::less&lt;T&gt;, CustomAllocator&lt;T&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T&gt;
+<span class="hljs-keyword">using</span> custom_unordered_set = <span class="hljs-built_in">std</span>::<span class="hljs-built_in">unordered_set</span>&lt;T, <span class="hljs-built_in">std</span>::hash&lt;T&gt;, <span class="hljs-built_in">std</span>::equal_to&lt;T&gt;, CustomAllocator&lt;T&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> K, <span class="hljs-keyword">typename</span> V&gt;
+<span class="hljs-keyword">using</span> custom_map = <span class="hljs-built_in">std</span>::<span class="hljs-built_in">map</span>&lt;K, V, <span class="hljs-built_in">std</span>::less&lt;K&gt;, CustomAllocator&lt;<span class="hljs-built_in">std</span>::pair&lt;<span class="hljs-keyword">const</span> K, V&gt;&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> K, <span class="hljs-keyword">typename</span> V&gt;
+<span class="hljs-keyword">using</span> custom_unordered_map = <span class="hljs-built_in">std</span>::<span class="hljs-built_in">unordered_map</span>&lt;K, <span class="hljs-built_in">std</span>::hash&lt;K&gt;, <span class="hljs-built_in">std</span>::equal_to&lt;K&gt;, CustomAllocator&lt;<span class="hljs-built_in">std</span>::pair&lt;<span class="hljs-keyword">const</span> K, V&gt;&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-keyword">using</span> custom_string = <span class="hljs-built_in">std</span>::basic_string&lt;<span class="hljs-keyword">char</span>, <span class="hljs-built_in">std</span>::char_traits&lt;<span class="hljs-keyword">char</span>&gt;, CustomAllocator&lt;<span class="hljs-keyword">char</span>&gt;&gt;;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can also use allocators with smart pointers, but for this you will have to write a small layer: </font></font><br>
+<br>
+<pre><code class="cpp hljs">
+<span class="hljs-keyword">template</span>&lt;<span class="hljs-keyword">typename</span> T&gt;
+<span class="hljs-keyword">using</span> custom_unique_ptr = <span class="hljs-built_in">std</span>::<span class="hljs-built_in">unique_ptr</span>&lt;T, <span class="hljs-built_in">std</span>::function&lt;<span class="hljs-keyword">void</span>(T*)&gt;&gt;;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">template</span>&lt;class Allocator, <span class="hljs-keyword">typename</span> T </span>= <span class="hljs-keyword">typename</span> Allocator::value_type, <span class="hljs-keyword">typename</span>... Args&gt;
+<span class="hljs-function">custom_unique_ptr&lt;T&gt; <span class="hljs-title">make_custom_unique</span><span class="hljs-params">(Allocator allocator, Args&amp;&amp;... args)</span>
+</span>{
+    <span class="hljs-keyword">const</span> <span class="hljs-keyword">auto</span> custom_deleter = [allocator](T* ptr) <span class="hljs-keyword">mutable</span><font></font>
+    {<font></font>
+        allocator.destroy(ptr);<font></font>
+        allocator.deallocate(ptr, <span class="hljs-number">1u</span>);<font></font>
+    };<font></font>
+        <font></font>
+    <span class="hljs-keyword">void</span>* memory_block = allocator.allocate(<span class="hljs-number">1u</span>);
+    <span class="hljs-keyword">if</span> (memory_block)<font></font>
+    {<font></font>
+        T* object_block = <span class="hljs-keyword">static_cast</span>&lt;T*&gt;(memory_block);<font></font>
+        allocator.construct(object_block, <span class="hljs-built_in">std</span>::forward&lt;Args&gt;(args)...);
+        <span class="hljs-keyword">return</span> custom_unique_ptr&lt;T&gt;{ object_block, custom_deleter };<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span> <span class="hljs-literal">nullptr</span>;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Well and now, finally, an example of using all of this:</font></font><br>
+<br>
+<pre><code class="cpp hljs">
+<span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">main</span><span class="hljs-params">(<span class="hljs-keyword">int</span> argc, <span class="hljs-keyword">char</span>** argv)</span>
+</span>{<font></font>
+    CustomAllocationStrategy allocation_area{};<font></font>
+<font></font>
+    CustomAllocator&lt;<span class="hljs-keyword">int</span>&gt; custom_int_allocator{ allocation_area };<font></font>
+    custom_vector&lt;<span class="hljs-keyword">int</span>&gt; <span class="hljs-built_in">vector</span>{ custom_int_allocator };
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i = <span class="hljs-number">0u</span>; i &lt; <span class="hljs-number">100</span>; ++i)<font></font>
+    {<font></font>
+        <span class="hljs-built_in">vector</span>.push_back(i);
+        <span class="hljs-built_in">std</span>::<span class="hljs-built_in">cout</span> &lt;&lt; <span class="hljs-built_in">vector</span>.at(i) &lt;&lt; <span class="hljs-string">" "</span>;<font></font>
+    }<font></font>
+    <font></font>
+    <span class="hljs-built_in">vector</span>.resize(<span class="hljs-number">16u</span>);
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> val : <span class="hljs-built_in">vector</span>)<font></font>
+    {<font></font>
+        <span class="hljs-built_in">std</span>::<span class="hljs-built_in">cout</span> &lt;&lt; val &lt;&lt; <span class="hljs-string">" "</span>;<font></font>
+    }<font></font>
+<font></font>
+CustomAllocator&lt;<span class="hljs-keyword">int</span>&gt; custom_int_allocator_copy = <span class="hljs-built_in">vector</span>.get_allocator();<font></font>
+    custom_unique_ptr&lt;<span class="hljs-keyword">int</span>&gt; ptr1 = make_custom_unique&lt;CustomAllocator&lt;<span class="hljs-keyword">int</span>&gt;&gt;(custom_int_allocator_copy, <span class="hljs-number">100</span>);<font></font>
+    custom_unique_ptr&lt;<span class="hljs-keyword">int</span>&gt; ptr2 = make_custom_unique&lt;CustomAllocator&lt;<span class="hljs-keyword">int</span>&gt;&gt;(custom_int_allocator_copy, <span class="hljs-number">500</span>);<font></font>
+    custom_unique_ptr&lt;<span class="hljs-keyword">int</span>&gt; ptr3 = make_custom_unique&lt;CustomAllocator&lt;<span class="hljs-keyword">int</span>&gt;&gt;(custom_int_allocator_copy, <span class="hljs-number">1000</span>);<font></font>
+    custom_unique_ptr&lt;<span class="hljs-keyword">int</span>&gt; ptr4 = make_custom_unique&lt;CustomAllocator&lt;<span class="hljs-keyword">int</span>&gt;&gt;(custom_int_allocator_copy, <span class="hljs-number">1500</span>);
+    <span class="hljs-built_in">std</span>::<span class="hljs-built_in">cout</span> &lt;&lt; *ptr1 &lt;&lt; <span class="hljs-string">" "</span> &lt;&lt; *ptr2 &lt;&lt; <span class="hljs-string">" "</span> &lt;&lt; *ptr3 &lt;&lt; <span class="hljs-string">" "</span> &lt;&lt; *ptr4 &lt;&lt; <span class="hljs-string">" "</span>;<font></font>
+    <font></font>
+    CustomAllocator&lt;<span class="hljs-keyword">float</span>&gt; custom_float_allocator { custom_int_allocator };<font></font>
+    custom_list&lt;<span class="hljs-keyword">float</span>&gt; <span class="hljs-built_in">list</span>{ { <span class="hljs-number">10.0f</span>, <span class="hljs-number">11.0f</span>, <span class="hljs-number">12.0f</span>, <span class="hljs-number">13.0f</span>, <span class="hljs-number">14.0f</span>, <span class="hljs-number">15.0f</span> }, custom_float_allocator };
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">float</span> val : <span class="hljs-built_in">list</span>)<font></font>
+    {<font></font>
+        <span class="hljs-built_in">std</span>::<span class="hljs-built_in">cout</span> &lt;&lt; val &lt;&lt; <span class="hljs-string">" "</span>;<font></font>
+    }<font></font>
+    <font></font>
+    CustomAllocator&lt;<span class="hljs-built_in">std</span>::pair&lt;<span class="hljs-keyword">double</span>, <span class="hljs-keyword">double</span>&gt;&gt; custom_pair_allocator{ allocation_area };<font></font>
+    custom_map&lt;<span class="hljs-keyword">double</span>, <span class="hljs-keyword">double</span>&gt; <span class="hljs-built_in">map</span>{ { { <span class="hljs-number">1.0</span>, <span class="hljs-number">100.0</span> }, { <span class="hljs-number">2.0</span>, <span class="hljs-number">200.0</span> } }, custom_pair_allocator };
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">const</span> <span class="hljs-keyword">auto</span>&amp; it : <span class="hljs-built_in">map</span>)<font></font>
+    {<font></font>
+        <span class="hljs-built_in">std</span>::<span class="hljs-built_in">cout</span> &lt;&lt; <span class="hljs-string">"{"</span> &lt;&lt; it.first &lt;&lt; <span class="hljs-string">" : "</span> &lt;&lt; it.second &lt;&lt; <span class="hljs-string">"} "</span>;<font></font>
+    }<font></font>
+    <font></font>
+    CustomAllocator&lt;<span class="hljs-keyword">double</span>&gt; custom_double_allocator{ allocation_area };<font></font>
+    custom_set&lt;<span class="hljs-keyword">double</span>&gt; <span class="hljs-built_in">set</span>{ { <span class="hljs-number">1000.0</span>, <span class="hljs-number">2000.0</span>, <span class="hljs-number">3000.0</span> }, custom_double_allocator };
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">double</span> val : <span class="hljs-built_in">set</span>)<font></font>
+    {<font></font>
+        <span class="hljs-built_in">std</span>::<span class="hljs-built_in">cout</span> &lt;&lt; val &lt;&lt; <span class="hljs-string">" "</span>;<font></font>
+    }<font></font>
+<font></font>
+    CustomAllocator&lt;<span class="hljs-keyword">char</span>&gt; custom_char_allocator{ allocation_area };<font></font>
+    custom_string string1{ <span class="hljs-string">"First allocated string without SBO "</span>, custom_char_allocator };<font></font>
+    custom_string string2{ <span class="hljs-string">"Second allocated string without SBO "</span>, custom_char_allocator };<font></font>
+    custom_string string3{ <span class="hljs-string">"Third allocated string without SBO "</span>, custom_char_allocator };<font></font>
+    custom_string result_string = string1 + string2 + string3;<font></font>
+    <span class="hljs-built_in">std</span>::<span class="hljs-built_in">cout</span> &lt;&lt; result_string;<font></font>
+    <font></font>
+    <span class="hljs-keyword">return</span> EXIT_SUCCESS;<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+I would like to focus on the fact that this implementation is the most primitive, but it can be easily expanded in the direction that you need, so everything is in your hands!</font></font><br>
+<br>
+<hr><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Conclusion</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Thank you for your attention, I really hope that this article was useful to someone. </font><font style="vertical-align: inherit;">I also wish everyone success in their close interaction with memory, and most importantly, do not forget the very important words of Donald Knuth: “ </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Premature optimization is the root of all evils</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> .” </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Link to the </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">repository</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> with the full implementation of the allocator.</font></font><br>
+<br>
+<hr><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Sources used</font></font></h2><br>
+<ol>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">habr.com/en/post/274827</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">github.com/mtrebi/memory-allocators</font></font></a></li>
+</ol></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en505614/index.html">Ставки вкладов крупнейших банков снизились до исторического минимума: как это влияет на экономику, и причем здесь биржа</a></li>
+<li><a href="../en505616/index.html">Recognition of the Russian alphabet: from collecting a dataset to creating a GUI</a></li>
+<li><a href="../en505618/index.html">GRASP Templates: Creator</a></li>
+<li><a href="../en505620/index.html">HackTheBox. Walkthrough Nest. NTFS streams, reverse C # and SMB walker</a></li>
+<li><a href="../en505624/index.html">How to process a data frame with billions of records in seconds?</a></li>
+<li><a href="../en505634/index.html">Proxy Settings for WSL (Ubuntu)</a></li>
+<li><a href="../en505640/index.html">Publication Rating Objectivity</a></li>
+<li><a href="../en505642/index.html">Transparent coroutines</a></li>
+<li><a href="../en505644/index.html">Copyright holders tried: YouTube’s music video lessons with parsing of other people's songs may disappear</a></li>
+<li><a href="../en505648/index.html">Einstein's two mistakes</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
