@@ -1,0 +1,796 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🧔🏼 👲🏾 🐍 パーティショニングとインデックス作成によるZabbix + PostgreSQLのパフォーマンスの向上 ❔ 🕉️ ⚰️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="約1年前、私と同僚は、人気のあるネットワークインフラストラクチャ監視システムであるZabbixを使用して問題を解決する必要がありました。ドキュメントを検討した後、すぐに負荷テストに進みました。Zabbixが顕著なパフォーマンスの低下なしに機能できるパラメーターの数を評価したかったのです。 Postg...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>パーティショニングとインデックス作成によるZabbix + PostgreSQLのパフォーマンスの向上</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/468463/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">約1年前、私と同僚は、人気のあるネットワークインフラストラクチャ監視システムであるZabbixを使用して問題を解決する必要がありました。ドキュメントを検討した後、すぐに負荷テストに進みました。Zabbixが顕著なパフォーマンスの低下なしに機能できるパラメーターの数を評価したかったのです。 PostgreSQLのみがDBMSとして使用されました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テスト中に、データベースレイアウトの一部のアーキテクチャ機能と監視システム自体の動作が特定されました。これにより、デフォルトでは、監視システムが最大電力に到達できません。その結果、主にデータベースのチューニングに関して、いくつかの最適化対策が開発、実施、およびテストされました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この記事で行った作業の結果を共有したいと思います。</font><font style="vertical-align: inherit;">この記事は、ZabbixとPostgreSQLの両方のDBA管理者、および一般的なPosgreSQL DBMSをよりよく理解して理解したいすべての人に役立ちます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+小さなスポイラー：毎分20万パラメーターの負荷がかかる弱いマシンで、CPU iowaitを20％から2％に削減し、プライマリテーブルへの部分的な記録時間を250倍に、集約データテーブルを32倍に削減し、インデックスのサイズを削減しました。 5〜10倍、場合によっては18倍までの履歴サンプルの取得を高速化します。</font></font><br>
+<a name="habracut"></a><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ストレステスト</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+負荷テストは、1つのZabbixサーバー、1つのアクティブなZabbixプロキシ、2つのエージェントというスキームに従って実行されました。</font><font style="vertical-align: inherit;">各エージェントは、毎分50トンの整数と50トンの文字列パラメーターを提供するように構成されました（合計200のエージェント、毎分200トンのパラメーター、または毎秒3333パラメーター）。</font><font style="vertical-align: inherit;">エージェントパラメータを生成するに</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、Zabbixのプラグイン</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用しました</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">。</font></a><font style="vertical-align: inherit;">エージェントが生成できるパラメータの数を確認するに</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、同じプラグイン作成者zabbix_module_stressの特別なスクリプト</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用する必要があります</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">Zabbix web-adminは大きなテンプレートの登録に問題があるため、パラメーターを5トンのパラメーター（2500の数値と2500の文字列）を含む20のテンプレートに分割しました。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pythonでの負荷テスト用のスクリプトジェネレーターテンプレート</font></font></b><div class="spoiler_text"><pre><code class="python hljs"><span class="hljs-keyword">import</span> argparse<font></font>
+<font></font>
+<span class="hljs-string">"""
+    .
+  20   5000    
+( 2500  :  echo,  ;  ping,  )
+"""</span><font></font>
+<font></font>
+TEMP_HEAD = <span class="hljs-string">"""
+&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;zabbix_export&gt;
+    &lt;version&gt;2.0&lt;/version&gt;
+    &lt;date&gt;2015-08-17T23:15:01Z&lt;/date&gt;
+    &lt;groups&gt;
+        &lt;group&gt;
+            &lt;name&gt;Templates&lt;/name&gt;
+        &lt;/group&gt;
+    &lt;/groups&gt;
+    &lt;templates&gt;
+        &lt;template&gt;
+            &lt;template&gt;Template Zabbix Srv Stress {count} passive {char}&lt;/template&gt;
+            &lt;name&gt;Template Zabbix Srv Stress {count} passive {char}&lt;/name&gt;
+            &lt;description/&gt;
+            &lt;groups&gt;
+                &lt;group&gt;
+                    &lt;name&gt;Templates&lt;/name&gt;
+                &lt;/group&gt;
+            &lt;/groups&gt;
+            &lt;applications/&gt;
+            &lt;items&gt;
+"""</span><font></font>
+<font></font>
+TEMP_END = <span class="hljs-string">"""&lt;/items&gt;
+            &lt;discovery_rules/&gt;
+            &lt;macros/&gt;
+            &lt;templates/&gt;
+            &lt;screens/&gt;
+        &lt;/template&gt;
+    &lt;/templates&gt;
+&lt;/zabbix_export&gt;
+"""</span><font></font>
+<font></font>
+TEMP_ITEM = <span class="hljs-string">"""&lt;item&gt;
+                    &lt;name&gt;{k}&lt;/name&gt;
+                    &lt;type&gt;0&lt;/type&gt;
+                    &lt;snmp_community/&gt;
+                    &lt;multiplier&gt;0&lt;/multiplier&gt;
+                    &lt;snmp_oid/&gt;
+                    &lt;key&gt;{k}&lt;/key&gt;
+                    &lt;delay&gt;1m&lt;/delay&gt;
+                    &lt;history&gt;3&lt;/history&gt;
+                    &lt;trends&gt;365&lt;/trends&gt;
+                    &lt;status&gt;0&lt;/status&gt;
+                    &lt;value_type&gt;{t}&lt;/value_type&gt;
+                    &lt;allowed_hosts/&gt;
+                    &lt;units/&gt;
+                    &lt;delta&gt;0&lt;/delta&gt;
+                    &lt;snmpv3_contextname/&gt;
+                    &lt;snmpv3_securityname/&gt;
+                    &lt;snmpv3_securitylevel&gt;0&lt;/snmpv3_securitylevel&gt;
+                    &lt;snmpv3_authprotocol&gt;0&lt;/snmpv3_authprotocol&gt;
+                    &lt;snmpv3_authpassphrase/&gt;
+                    &lt;snmpv3_privprotocol&gt;0&lt;/snmpv3_privprotocol&gt;
+                    &lt;snmpv3_privpassphrase/&gt;
+                    &lt;formula&gt;1&lt;/formula&gt;
+                    &lt;delay_flex/&gt;
+                    &lt;params/&gt;
+                    &lt;ipmi_sensor/&gt;
+                    &lt;data_type&gt;0&lt;/data_type&gt;
+                    &lt;authtype&gt;0&lt;/authtype&gt;
+                    &lt;username/&gt;
+                    &lt;password/&gt;
+                    &lt;publickey/&gt;
+                    &lt;privatekey/&gt;
+                    &lt;port/&gt;
+                    &lt;description/&gt;
+                    &lt;inventory_link&gt;0&lt;/inventory_link&gt;
+                    &lt;applications/&gt;
+                    &lt;valuemap/&gt;
+                    &lt;logtimefmt/&gt;
+                &lt;/item&gt;
+"""</span><font></font>
+<font></font>
+TMP_FNAME_DEFAULT = <span class="hljs-string">"Template_App_Zabbix_Server_Stress_{count}_passive_{char}.xml"</span><font></font>
+<font></font>
+chars = <span class="hljs-string">"ABCDEFGHIJKLMNOPQRSTUVWXYZ"</span><font></font>
+<font></font>
+<span class="hljs-keyword">if</span> __name__ == <span class="hljs-string">"__main__"</span>:<font></font>
+    parser = argparse.ArgumentParser(<font></font>
+        description=<span class="hljs-string">'     zabbix'</span>)<font></font>
+    parser.add_argument(<span class="hljs-string">'--items'</span>, dest=<span class="hljs-string">'items'</span>, type=int, default=<span class="hljs-number">1000</span>,<font></font>
+                        help=<span class="hljs-string">'-   (default: 1000)'</span>)<font></font>
+    parser.add_argument(<span class="hljs-string">'--templates'</span>, dest=<span class="hljs-string">'templates'</span>, type=int, default=<span class="hljs-number">1</span>,<font></font>
+                        help=<span class="hljs-string">f'-  [1-<span class="hljs-subst">{len(chars)}</span>] (default: 1)'</span>)<font></font>
+    args = parser.parse_args()<font></font>
+    items_count = args.items<font></font>
+    tmps_count = args.templates<font></font>
+    <span class="hljs-keyword">if</span> <span class="hljs-keyword">not</span> (tmps_count &gt;= <span class="hljs-number">1</span> <span class="hljs-keyword">and</span> tmps_count &lt;= len(chars)):<font></font>
+        sys.exit(<span class="hljs-string">f"Templates must be in range 1 - <span class="hljs-subst">{len(chars)}</span>"</span>)
+    <span class="hljs-keyword">for</span> i <span class="hljs-keyword">in</span> range(tmps_count):<font></font>
+        fname = TMP_FNAME_DEFAULT.format(count=items_count, char=chars[i])<font></font>
+        <span class="hljs-keyword">with</span> open(fname, <span class="hljs-string">"w"</span>) <span class="hljs-keyword">as</span> output:<font></font>
+            output.write(TEMP_HEAD.format(count=items_count, char=chars[i]))<font></font>
+            <span class="hljs-keyword">for</span> k,t <span class="hljs-keyword">in</span> [(<span class="hljs-string">'stress.ping[{}-I-{:06d}]'</span>,<span class="hljs-number">3</span>),<font></font>
+                        (<span class="hljs-string">'stress.echo[{}-S-{:06d}]'</span>,<span class="hljs-number">4</span>)]:
+                <span class="hljs-keyword">for</span> j <span class="hljs-keyword">in</span> range(int(items_count/<span class="hljs-number">2</span>)):<font></font>
+                    output.write(TEMP_ITEM.format(k=k.format(chars[i],j),t=t))<font></font>
+            output.write(TEMP_END)<font></font>
+</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+cpu iostatメトリックは、Zabbixパフォーマンスの良い指標です。これは、プロセッサがディスクへのアクセスを予期している時間単位の割合を反映しています。値が高いほど、読み取りおよび書き込み操作でディスクが占有され、監視システム全体のパフォーマンス低下に間接的に影響します。それら。これは、監視に問題があることを示す確かな兆候です。ちなみに、ネットワークのオープンスペースでは、「Zabbixでiostatトリガーを削除する方法」という質問がよく寄せられるため、iowaitメトリックの値を増やす理由はたくさんあるため、これは痛い点です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下は、最初に3日後に取得したcpu iowaitメトリックの図です。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/dc/md/yo/dcmdyote_ghzxca-o9sft88ptxq.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、以下で説明するすべての最適化対策が実行された後、最終的に3日以内に同じメトリックについてどのような</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/do/cs/fc/docsfcjjczkhgxoubjayslrohuw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+状況が得られたのかを示します。グラフからわかるように、CPU iowaitインジケーターがほぼ20％から2％に低下し、間接的に時間が短縮されましたデータの追加と読み取りのすべてのリクエストの実行。</font><font style="vertical-align: inherit;">次に、標準のデータベース設定で、監視システムの全体的なパフォーマンスが低下する理由とその修正方法を見てみましょう。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Zabbixパフォーマンス低下の理由</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プライマリデータの各テーブルに1000万を超えるパラメーター値が蓄積されると、次の理由により、モニタリングシステムのパフォーマンスが急激に低下することがわかりました。</font></font><br>
+<br>
+<ul>
+<li>  iowait     20%,     ,            </li>
+<li>   ,     </li>
+<li>    (utilization)  100%     ,          </li>
+<li>            housekeeper</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これに加えて、1時間ごとの統計が計算されると同時に、状況が悪化します-同時に、ディスクからのインデックスページのアクティブな読み取りと書き込み、履歴からの古いデータの削除が実行され、同じ結果につながります-データベースのパフォーマンスの低下と実行時間の増加リクエスト（制限では、最大5分間続くリクエストが記録されました！）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Zabbixで監視データウェアハウスを整理する方法について少し説明します。</font><font style="vertical-align: inherit;">さらに、パラメータのタイプを分離して、プライマリデータと集計データを異なるテーブルに保存します。</font><font style="vertical-align: inherit;">各テーブルには、itemidフィールド（システムに登録されたデータアイテムへの暗黙的な参照）、unixタイムスタンプ形式でクロック値を登録するためのタイムスタンプ（別の列にミリ秒）、および別の列に値が格納されます（例外はログテーブルで、フィールドがさらに多く、イベントログのようなものです） ）：</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テーブル名</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">任命</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データ・タイプ</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">歴史</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一次監視データ</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数値（16.4）</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">history_uint</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一次監視データ</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数値（20.0）</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">history_str</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一次監視データ</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">varchar（255）</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">history_text</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一次監視データ</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テキスト</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">history_logs</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一次監視データ</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">textおよびintフィールド</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トレンド</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">集約された監視データ</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数値（16.4）</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Trends_uint</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">集約された監視データ</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数値（20.0）</font></font></td>
+</tr>
+</tbody></table></div><h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最適化活動</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PostgreSQLデータベースのパフォーマンスを向上させるために、さまざまな最適化手段が実行されました。その主なものは、インデックスのパーティション化と変更です。ただし、PostgreSQLデータベース管理システム下の任意のデータベースの動作を高速化できるいくつかの重要で有用な対策について、一言言及する価値があります。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">重要なお知らせ。</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">記事の資料の収集時には、Zabbixバージョン4.0を使用しましたが、バージョン4.2はすでにリリースされており、バージョン4.4のリリースが準備されています。これについて言及することがなぜ重要なのですか？バージョン4.2から、ZabbixはTimescaleDB時系列を操作するための特別な強力な拡張機能をサポートし始めましたが、これまでの実験モードでは、この拡張機能を使用することのすべての利点について、一部のリクエストの動作が遅くなり、未解決のパフォーマンスの問題が残っていると考えられます（バージョン4.4で解決）- </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この記事を読んでください</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">次の記事では、このソリューションのケースと比較して、TimescaleDB拡張機能をすでに使用している負荷テストの結果について説明する予定です。</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQLのバージョン10が使用されましたが、指定されたすべての情報は11および12バージョンに関連しています（待機中！​​）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、まず最初に：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgtuneユーティリティを使用した構成ファイルの設定</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データベースを別の物理ディスクに置く</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_pathmanを使用した履歴テーブルの分割</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">履歴テーブルのインデックスタイプをbrin（クロック）およびbtree-gin（itemid）に変更</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クエリ実行統計の収集と分析pg_stat_statements</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">物理ディスク監視パラメータの設定</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ハードウェアパフォーマンスの改善</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分散クラスターの作成（この記事の範囲外の資料）</font></font></li>
+</ul><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgtuneユーティリティを使用した構成ファイルの構成</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際、PostgreSQLはかなり軽量のDBMSです。</font><font style="vertical-align: inherit;">そのデフォルトの構成ファイルは、私の同僚が言うように、「コーヒーマシンで作業する」ように構成されています。</font><font style="vertical-align: inherit;">非常に控えめなアイアンで。</font><font style="vertical-align: inherit;">したがって、メモリの量、プロセッサの数、データベースの使用目的の種類、ディスクの種類（HDDまたはSSD）、および接続数を考慮して、サーバー構成用にPostgreSQLを構成する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+悲しいかな、すべてのDBMSをチューニングするための単一の公式はありませんが、ほとんどの構成に適した特定のルールとパターンがあります（より正確なチューニングはすでに専門家の仕事です）。</font><font style="vertical-align: inherit;">DBAの生活を簡素化するために、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgtune</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ユーティリティが作成されました</font><font style="vertical-align: inherit;">。これは</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ユーザー</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">によってWebバージョンによって</font></a><font style="vertical-align: inherit;">補足されました。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">le0pard</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-PostgreSQLの管理に関する興味深く有用な本の著者。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「データウェアハウス」アプリケーションタイプの100接続（Zabbixには厳しいWeb管理者がいる）を使用してコンソールでユーティリティを実行する例：</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgtune -i postgresql.conf -o new_postgresql.conf -T DW -c 100</font></font></pre><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgtuneユーティリティが目的の説明で変更する構成パラメーター（値は例として示されています）</font></font></b><div class="spoiler_text"><pre># DB Version: 11<font></font>
+# OS Type: linux<font></font>
+# DB Type: web<font></font>
+# Total Memory (RAM): 8 GB<font></font>
+# CPUs num: 1<font></font>
+# Connections num: 100<font></font>
+# Data Storage: hdd<font></font>
+<font></font>
+max_connections = 100               #      <font></font>
+shared_buffers = 2GB                #      (      )   <font></font>
+effective_cache_size = 6GB          #          <font></font>
+maintenance_work_mem = 512MB        #      VACUUM, ANALYZE, CREATE INDEX<font></font>
+checkpoint_completion_target = 0.7  #       <font></font>
+wal_buffers = 16MB                  #  ,   Shared Memory    <font></font>
+default_statistics_target = 100     #  ,   ANALYZE -      ,  <font></font>
+random_page_cost = 4                #        -     <font></font>
+effective_io_concurrency = 2        #    /,        <font></font>
+work_mem = 10485kB                  #  ,       - ,      <font></font>
+min_wal_size = 1GB                  #     WAL,       <font></font>
+max_wal_size = 2GB                  #     WAL,      </pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">いくつかの便利なpostgresql設定オプション</font></font></b><div class="spoiler_text"><pre>#    <font></font>
+max_worker_processes = 8            #     -     <font></font>
+max_parallel_workers_per_gather = 4 #        <font></font>
+max_parallel_workers = 8            #    ,       <font></font>
+<font></font>
+#   (          pg_stat_statements)<font></font>
+log_min_duration_statement = 3000   #       ,    &gt;=    <font></font>
+log_duration = off                  #     <font></font>
+log_statement = 'none'              #  SQL-   , : none (), ddl, mod  all ( )<font></font>
+debug_print_plan = off              #       <font></font>
+<font></font>
+#              (  ,    ssd   )<font></font>
+#fsync = off                        #     ,  fsync    ,      <font></font>
+#synchronous_commit = off           #           WAL -     fsync<font></font>
+#full_page_writes = off             #    ,            </pre></div></div><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">別の物理ディスク上のデータベースの一覧表示</font></font></h4><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この項目はオプションであり、本格的な分散クラスターへの移行に関する暫定的な決定ですが、この可能性について知っておくと役立ちます。</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データベースを高速化するために、別のディスクに置くことができます。</font><font style="vertical-align: inherit;">すべてのPostgreSQLデータベースが格納されているベースディレクトリにディスク全体をマウントしましたが、通常は別の方法で行うことができます。新しいテーブルベースを作成し、データベース（またはその一部のみ-プライマリおよび集約されたモニタリングデータのテーブル）を別のディスクのこのテーブルベースに転送します。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">マウント例</font></font></b><div class="spoiler_text">       ext4     .        noatime: <br>
+<br>
+<pre>mount /dev/sdc1 /var/lib/pgsql/10/data/base -o noatime</pre><br>
+       /etc/fstab :<br>
+<br>
+<pre>#  UUID -  ,      blkid<font></font>
+UUID=121efe29-70bf-410b-bc71-90704568ce3b /var/lib/pgsql/10/data/base ext4 defaults,noatime 0 0 </pre><br>
+</div></div><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_pathmanを使用した履歴テーブルのパーティション分割</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Zabbixのストレステスト中に発生した問題の1つ-PostgreSQLは、古いデータをデータベースから削除できません。パーティション化の助けを借りて、テーブルをその構成部分に分割し、それによってインデックス全体のサイズとスーパーテーブルの構成部分を減らすことができ、データベース全体の速度にプラスの影響を与えます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+解く一度に2つの問題仕切る：</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テーブル全体を削除することによって、古いデータの削除を促進1. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2分割インデックスを各複合テーブルに対して</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+：PostgreSQLのに区画する4つの機構が存在する</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。1.標準constraint_exclusionの</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2 pg_partman拡張子（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_pathmanとしない混同行う</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3. </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">pg_pathmanの</font></a><font style="vertical-align: inherit;">拡張は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ 4.自分でパーティションを手動で作成して保守するパーティション分割</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+の最も便利で信頼性が高く、最適化されたソリューションは、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_pathman</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">拡張</font><font style="vertical-align: inherit;">です。このパーティション分割方法を使用すると、クエリプランナーは、どのパーティションでデータを検索するかを柔軟に決定します。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">噂によると、PostgreSQLの12番目のバージョンでは、すぐに使える優れたパーティションがすでに存在します。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、私たちはスーパーテーブルとは別の継承されたテーブルに毎日の監視データを書き込み始め、古いパラメーター値の削除は、すべての古いテーブルを一度に削除することによって行われ始めました。これは、DBMSにとって人件費ではるかに簡単です。</font><font style="vertical-align: inherit;">削除は、データベースのユーザー定義関数をZabbixサーバーの監視パラメーターとして午前2時に呼び出し、統計ストレージの許容範囲を示して行われました。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQL 10のパーティション設定をインストールして設定する</font></font></b><div class="spoiler_text">    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">pg_pathman</a>     (              github):<br>
+<br>
+<pre>yum install pg_pathman10<font></font>
+nano /var/pgsqldb/postgresql.conf<font></font>
+shared_preload_libraries = 'pg_pathman' #  -   pg_pathman   <font></font>
+</pre><br>
+ ,         (1       3      —      1 ):<br>
+<br>
+<pre>systemctl restart postgresql-10.service<font></font>
+psql -d zabbix -U postgres<font></font>
+CREATE EXTENSION pg_pathman;<font></font>
+#         <font></font>
+# 1552424400 -    unix timestamp, 86400 -   <font></font>
+select create_range_partitions('history', 'clock', 1552424400, 86400);<font></font>
+select create_range_partitions('history_uint', 'clock', 1552424400, 86400);<font></font>
+select create_range_partitions('history_text', 'clock', 1552424400, 86400);<font></font>
+select create_range_partitions('history_str', 'clock', 1552424400, 86400);<font></font>
+select create_range_partitions('history_log', 'clock', 1552424400, 86400);<font></font>
+#         <font></font>
+# 1552424400 -    unix timestamp, 259200 -    <font></font>
+select create_range_partitions('trends', 'clock', 1545771600, 259200);  <font></font>
+select create_range_partitions('trends_uint', 'clock', 1545771600, 259200); <font></font>
+</pre><br>
+<i>  -     ,      create_range_partitions      p_count = 0_.</i><br>
+<br>
+      :<br>
+<br>
+<pre>#    ,   :<font></font>
+select * from pathman_config;<font></font>
+#     ,       :<font></font>
+select * from pathman_partition_list;<font></font>
+#  ,    pg_pathman:<font></font>
+select * from pathman_config_params;<font></font>
+#         :<font></font>
+select drop_partitions('table_name'::regclass, false);<font></font>
+</pre><br>
+         :<br>
+<pre><code class="sql hljs"><span class="hljs-comment">/*       */</span>
+<span class="hljs-keyword">SELECT</span> 
+nspname <span class="hljs-keyword">AS</span> schemaname, relname, relkind, <span class="hljs-keyword">cast</span> (reltuples <span class="hljs-keyword">as</span> <span class="hljs-built_in">int</span>),<font></font>
+pg_size_pretty(pg_relation_size(C.oid)) <span class="hljs-keyword">AS</span> <span class="hljs-string">"size"</span>
+<span class="hljs-keyword">FROM</span> 
+pg_class C <span class="hljs-keyword">LEFT</span> <span class="hljs-keyword">JOIN</span> pg_namespace N <span class="hljs-keyword">ON</span> (N.oid = C.relnamespace)
+<span class="hljs-keyword">WHERE</span> 
+nspname <span class="hljs-keyword">NOT</span> <span class="hljs-keyword">IN</span> (<span class="hljs-string">'pg_catalog'</span>, <span class="hljs-string">'information_schema'</span>) 
+<span class="hljs-keyword">and</span> (relname <span class="hljs-keyword">like</span> <span class="hljs-string">'history%'</span> <span class="hljs-keyword">or</span> relname <span class="hljs-keyword">like</span> <span class="hljs-string">'trends%'</span>) <span class="hljs-keyword">and</span> relkind = <span class="hljs-string">'r'</span> 
+<span class="hljs-comment">-- and reltuples &gt; 0</span>
+<span class="hljs-comment">-- and pg_relation_size(C.oid) &gt;= 0</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> schemaname, relname</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">古いパーティションを削除する自動構成（ahtung-大きなSQL関数）</font></font></b><div class="spoiler_text">   ,      <br>
+( ,     ):<br>
+<br>
+<pre>CREATE OR REPLACE FUNCTION public.delete_old_partitions(history_days integer, trends_days integer, str_days integer)<font></font>
+ RETURNS text<font></font>
+ LANGUAGE plpgsql<font></font>
+AS $function$<font></font>
+/*<font></font>
+   , ,    :<font></font>
+history_days -   history_x, history_uint_x<font></font>
+trends_days  -   trends_x, trends_uint_x<font></font>
+str_days     -   history_str_x, history_text_x, history_log_x<font></font>
+*/<font></font>
+declare clock_today_start         int;<font></font>
+declare clock_delete_less_history int  = 0;<font></font>
+declare clock_delete_less_trends  int  = 0;<font></font>
+declare clock_delete_less_strings int  = 0;<font></font>
+clock_delete_less                 int  = 0;<font></font>
+declare iterator                  int  = 0;<font></font>
+declare result_str                text = '';<font></font>
+declare buf_table_size            text;<font></font>
+declare buf_table_len             text;<font></font>
+declare partition_name            text;<font></font>
+declare clock_max                 text;<font></font>
+declare err_detail                text;<font></font>
+declare t_start                   timestamp = clock_timestamp();<font></font>
+declare t_end                     timestamp;<font></font>
+begin<font></font>
+    if $1 &lt;= 0 then return 'ups, something wrong: history_days argument must be positive integer value'; end if;<font></font>
+    if $2 &lt;= 0 then return 'ups, something wrong: trends_days argument must be positive integer value'; end if;<font></font>
+    if $3 &lt;= 0 then return 'ups, something wrong: str_days argument must be positive integer value'; end if;<font></font>
+    clock_today_start = extract(epoch from date_trunc('day', now()))::int;<font></font>
+    clock_delete_less_history = extract(epoch from date_trunc('day', now()) - ($1::text || ' days')::interval)::int;<font></font>
+    clock_delete_less_trends  = extract(epoch from date_trunc('day', now()) - ($2::text || ' days')::interval)::int;<font></font>
+    clock_delete_less_strings = extract(epoch from date_trunc('day', now()) - ($3::text || ' days')::interval)::int;<font></font>
+    clock_delete_less = least(clock_delete_less_history, clock_delete_less_trends, clock_delete_less_strings);<font></font>
+    --raise notice 'clock_today_start % (%)', to_timestamp(clock_today_start), clock_today_start;<font></font>
+    --raise notice 'clock_delete_less_history % (%) % days', to_timestamp(clock_delete_less_history), clock_delete_less_history, $1;<font></font>
+    --raise notice 'clock_delete_less_trends  % (%) % days', to_timestamp(clock_delete_less_trends),  clock_delete_less_trends,  $2;<font></font>
+    --raise notice 'clock_delete_less_strings % (%) % days', to_timestamp(clock_delete_less_strings), clock_delete_less_strings, $3;<font></font>
+    for partition_name, clock_max in select partition, range_max from pathman_partition_list where <font></font>
+    range_max::int &lt;= greatest(clock_delete_less_history, clock_delete_less_trends, clock_delete_less_strings) and <font></font>
+    (partition::text like 'history%' or partition::text like 'trends%') order by partition asc<font></font>
+    loop<font></font>
+        if (partition_name ~ 'history_uint_\d'  and clock_max::int &lt;= clock_delete_less_history)<font></font>
+        or (partition_name ~ 'history_\d'       and clock_max::int &lt;= clock_delete_less_history)<font></font>
+        or (partition_name ~ 'trends_\d'        and clock_max::int &lt;= clock_delete_less_trends)<font></font>
+        or (partition_name ~ 'history_log_\d'   and clock_max::int &lt;= clock_delete_less_strings)<font></font>
+        or (partition_name ~ 'history_str_\d'   and clock_max::int &lt;= clock_delete_less_strings)<font></font>
+        or (partition_name ~ 'history_text_\d'  and clock_max::int &lt;= clock_delete_less_strings)<font></font>
+        then <font></font>
+            iterator = iterator + 1;<font></font>
+            raise notice '%', format('!!! delete %s %s', partition_name, clock_max);<font></font>
+            select max(reltuples::int), pg_size_pretty(sum(pg_relation_size(pg_class.oid))) as "size" from pg_class where relname like partition_name || '%' into strict buf_table_len, buf_table_size;<font></font>
+            if result_str != '' then result_str = result_str || ', '; end if;<font></font>
+            result_str = result_str || format('%s (dt &lt; %s, len %s, %s)', partition_name, to_char(to_timestamp(clock_max::int), 'YYYY-MM-DD'), buf_table_len, buf_table_size);<font></font>
+            execute format('drop table if exists %s', partition_name);<font></font>
+        end if;<font></font>
+    end loop;<font></font>
+    if iterator = 0 then  result_str = format('there is no partitions to delete older, then %s date', to_char(to_timestamp(clock_delete_less), 'YYYY-MM-DD')); <font></font>
+    else                  result_str = format('deleted %s partitions in %s seconds: ', iterator, trunc(extract(seconds from (clock_timestamp() - t_start))::numeric, 3)) || result_str;<font></font>
+    end if;<font></font>
+    --raise notice '%', result_str;<font></font>
+    return result_str;<font></font>
+exception when others then<font></font>
+   get stacked diagnostics err_detail = PG_EXCEPTION_CONTEXT;<font></font>
+   return format('ups, something wrong: %s [err code %s], %s', sqlerrm, sqlstate, err_detail);<font></font>
+end; <font></font>
+$function$;<font></font>
+</pre><br>
+              zabbix  « »   :<br>
+<br>
+<pre>- : database monitor<font></font>
+- : delete_old_history_partitions<font></font>
+- : db.odbc.select[delete_old_history_partitions, zabbix]<font></font>
+- sql : select delete_old_partitions(3, 30, 30);<font></font>
+#       delete_old_partitions      <font></font>
+#   ,      <font></font>
+-  : <font></font>
+-  : 0<font></font>
+-  :    h2<font></font>
+-   : 90 <font></font>
+-   : Database<font></font>
+</pre><br>
+          :<br>
+<br>
+<pre>2019-09-16 02:00:00, deleted 3 partitions in 0.024 seconds: trends_78 (dt &lt; 2019-08-17, len 1, 48 kB), history_193 (dt &lt; 2019-09-13, len 85343, 9448 kB), history_uint_186 (dt &lt; 2019-09-13, len 27969, 3480 kB)
+</pre><br>
+<b>!</b>                    housekeeper Zabbix: <i>  zabbix   «» -&gt; «» -&gt;       « » -&gt;      «»  « ».</i><br>
+</div></div><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">履歴テーブルのインデックスタイプをbrin（クロック）およびbtree-gin（itemid）に変更</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ユーザーに感謝 </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エロゴフ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">以下のための</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQLのインデックスのレビュー記事の偉大なシリーズ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">そして実際、PostgresPROチーム全体。</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これらの記事に感銘を受けて、監視データテーブルのさまざまな種類のインデックスをいじり、どのフィールドのどの種類のインデックスが最大のパフォーマンス向上をもたらすかという結論に達しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+複合インデックスbtree（itemid、クロック）は、モニタリングデータのすべてのテーブルにデフォルトで作成されることがわかっています。特に単調に並べられた値の検索は高速ですが、大量のデータ（1,000万を超える）がある場合、ディスク上で「膨らみ」ます。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通常、一意のインデックスは1時間ごとに集計された統計テーブルに作成されますが、これらのテーブルはデータストレージと一意性のためにここでアプリケーションサーバーレベルで提供され、一意のインデックスはデータ挿入を遅くするだけです。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+さまざまなインデックスのテスト中に、最も成功したインデックスの組み合わせが明らかになりました。監視データのすべてのテーブルの時計フィールドのbrinインデックスとitemidフィールドのbtree-ginインデックスです。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ブリンインデックスは、イベントの事実のタイムスタンプなど、単調に増加するデータに最適です。時系列。また、btree-ginインデックスは基本的に標準データ型に対するginインデックスであり、一般的には従来のbtreeインデックスよりもはるかに高速です。 ginインデックスは、新しい値の追加時に再構築されませんが、それらによって補足されるだけです。</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">btree-ginインデックスは、PostgreSQLの拡張として配置されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このインデックス作成戦略とデフォルトのZabbixデータベースのインデックスのサンプリング速度の比較を以下に示します。</font><font style="vertical-align: inherit;">ストレステスト中に、3つのパーティションのデータを3日間蓄積しました。</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パーティション名</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MLNの行数</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MB単位のサイズ</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">history_uint_1</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">81.3</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4119</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">history_uint_2</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">74.9</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4426</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">history_uint_3</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">100.7</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5387</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+結果を評価するために、3種類のクエリが実行されました。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前月の1つの特定のパラメーターitemidデータ、実際には過去3日間（合計1660レコード）</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">select * from history_uint where itemid = 313300の分析を説明します</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+and clock&gt; =抽出（ '2019-03-09 00:00:00'からのエポック::タイムスタンプ）:: int</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして時計&lt;=抽出（ '2019-04-09 12:00:00'からのエポック::タイムスタンプ）:: int;</font></font><font></font>
+</pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1つの特定のパラメーターデータの1日12時間（合計649エントリ）</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">select * from history_text where itemid = 310650の分析を説明します</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+and clock&gt; =抽出（ '2019-04-09 00:00:00'からのエポック::タイムスタンプ）:: int</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして時計&lt;=抽出（ '2019-04-09 12:00:00'からのエポック::タイムスタンプ）:: int;</font></font><font></font>
+</pre></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1つの特定のパラメーターデータの1時間（合計61レコード）：</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">item_idが336540であるhistory_textからの選択カウント（*）の分析</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+and clock&gt; =抽出（ '2019-04-08 11:00:00'からのエポック::タイムスタンプ）:: int</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして時計&lt;=抽出（ '2019-04-08 12:00:00'からのエポック::タイムスタンプ）:: int;</font></font><font></font>
+</pre></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テスト結果を以下にまとめました。</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インデックスタイプ</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MB単位のサイズ*</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> リクエスト1 **（ミリ秒）</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リクエスト2 **（ミリ秒）</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> リクエスト3 **（ミリ秒）</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">btree（時計、itemid）</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">14741</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">7154.3</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2205.3</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 1860.4</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">brin（時計）、</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+btree-gin（itemid）</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.42および1329</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2958.2</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1820.4</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">102.1</font></font></td>
+</tr>
+</tbody></table></div><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">* 3つのパーティションの合計サイズはMBで示されます</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+**タイプ1リクエスト-3日間のデータ、タイプ2リクエスト-12時間のデータ、タイプ3リクエスト-1時間のデータ</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+比較表から、レコード数のある大きなデータテーブルの場合がわかります1億を超えると、標準の複合インデックスbtreeを2つのインデックスbrinとbtree-ginに変更すると、インデックスのサイズが小さくなり、クエリの実行時間が短縮されるというメリットがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+新しいレコードをhistory_uintテーブルとtrends_uintテーブルに追加するリクエストの例で、インデックス作成とパーティション分割の効果を以下に示します（追加はクエリごとに平均2000の値で発生します）。</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テーブル</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">改善までの平均リクエスト時間、ミリ秒</font></font></th>
+<th><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">改善後の平均リクエスト時間、ミリ秒</font></font></th>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Trends_uint</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2201.48</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">8.72</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Trends_uint</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1997.27</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">62.16</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+zabbixシステムモニタリングデータテーブルのさまざまなインデックス設定のテスト結果を要約すると、zabbixシステムモニタリングデータテーブルの標準インデックスの同様の変更は、システム全体のパフォーマンスにプラスの影響を与えると言えます。デフォルトでは、標準btreeインデックスの「膨張」の間接的な影響を忘れてください。マルチギガバイトのインデックスを頻繁に再構築すると、ハードディスクの負荷が高くなり（使用率メト​​リック）、最終的にディスク操作の時間が増加し、CPUからのディスクアクセスを待機する時間が増加します（iowaitメトリック）。 ）</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">だが、</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> btree-ginインデックスがitemint列であるbigint（in8）データ型で機能できるように、btree-ginインデックスのbigint演算子のファミリーを登録する必要があります。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bint-ginインデックスのbigint演算子ファミリーを登録します</font></font></b><div class="spoiler_text"><pre>/*<font></font>
+     gin    biginteger  integer    .<font></font>
+ -   gin     int2, int4, int8,<font></font>
+       bigint     ,     bigint (&lt;= 2147483647)<font></font>
+        intger_ops,  :<font></font>
+create index on tablename using gin(columnname int8_family_ops) with (fastupdate = false);<font></font>
+*/<font></font>
+<font></font>
+--       btree_gin<font></font>
+CREATE EXTENSION btree_gin;<font></font>
+<font></font>
+CREATE OPERATOR FAMILY integer_ops using gin;<font></font>
+<font></font>
+CREATE OPERATOR CLASS int4_family_ops<font></font>
+FOR TYPE int4 USING gin FAMILY integer_ops<font></font>
+AS<font></font>
+    OPERATOR        1       &lt;,<font></font>
+    OPERATOR        2       &lt;=,<font></font>
+    OPERATOR        3       =,<font></font>
+    OPERATOR        4       &gt;=,<font></font>
+    OPERATOR        5       &gt;,<font></font>
+    FUNCTION        1       btint4cmp(int4,int4),<font></font>
+    FUNCTION        2       gin_extract_value_int4(int4, internal),<font></font>
+    FUNCTION        3       gin_extract_query_int4(int4, internal, int2, internal, internal),<font></font>
+    FUNCTION        4       gin_btree_consistent(internal, int2, anyelement, int4, internal, internal),<font></font>
+    FUNCTION        5       gin_compare_prefix_int4(int4,int4,int2, internal),<font></font>
+STORAGE         int4;<font></font>
+<font></font>
+CREATE OPERATOR CLASS int8_family_ops<font></font>
+FOR TYPE int8 USING gin FAMILY integer_ops<font></font>
+AS<font></font>
+    OPERATOR        1       &lt;,<font></font>
+    OPERATOR        2       &lt;=,<font></font>
+    OPERATOR        3       =,<font></font>
+    OPERATOR        4       &gt;=,<font></font>
+    OPERATOR        5       &gt;,<font></font>
+    FUNCTION        1       btint8cmp(int8,int8),<font></font>
+    FUNCTION        2       gin_extract_value_int8(int8, internal),<font></font>
+    FUNCTION        3       gin_extract_query_int8(int8, internal, int2, internal, internal),<font></font>
+    FUNCTION        4       gin_btree_consistent(internal, int2, anyelement, int4, internal, internal),<font></font>
+    FUNCTION        5       gin_compare_prefix_int8(int8,int8,int2, internal),<font></font>
+STORAGE         int8;<font></font>
+<font></font>
+ALTER OPERATOR FAMILY integer_ops USING gin add<font></font>
+  OPERATOR 1 &lt;(int4,int8),<font></font>
+  OPERATOR 2 &lt;=(int4,int8),<font></font>
+  OPERATOR 3 =(int4,int8),<font></font>
+  OPERATOR 4 &gt;=(int4,int8),<font></font>
+  OPERATOR 5 &gt;(int4,int8);<font></font>
+<font></font>
+ALTER OPERATOR FAMILY integer_ops USING gin add<font></font>
+  OPERATOR 1 &lt;(int8,int4),<font></font>
+  OPERATOR 2 &lt;=(int8,int4),<font></font>
+  OPERATOR 3 =(int8,int4),<font></font>
+  OPERATOR 4 &gt;=(int8,int4),<font></font>
+  OPERATOR 5 &gt;(int8,int4);<font></font>
+</pre><br>
+</div></div><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">このスクリプトは、ZabbixのPostgreSQLデータベースのすべてのインデックスを、デフォルトの構成から上記の最適な構成に再配布します。</font></font></b><div class="spoiler_text"><pre>/*<font></font>
+        <font></font>
+*/<font></font>
+<font></font>
+--   <font></font>
+drop index history_1;<font></font>
+drop index history_uint_1;<font></font>
+drop index history_str_1;<font></font>
+drop index history_text_1;<font></font>
+drop index history_log_1;<font></font>
+--          PK <font></font>
+-- (   ,         )<font></font>
+alter table trends drop constraint trends_pk;<font></font>
+alter table trends_uint drop constraint trends_uint_pk;<font></font>
+<font></font>
+--     bree-gin   itemid    <font></font>
+--   btree-gin  bigint       <font></font>
+-- https://habr.com/ru/company/postgrespro/blog/340978/#comment_10545932<font></font>
+--    create extension btree_gin;<font></font>
+create index on history      using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_uint using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_str  using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_text using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on history_log  using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on trends       using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+create index on trends_uint  using gin(itemid int8_family_ops) with (fastupdate = false);<font></font>
+<font></font>
+--     bree-gin   itemid    <font></font>
+--     brin    128 ,    <font></font>
+--           ,<font></font>
+--      https://habr.com/ru/company/postgrespro/blog/346460/<font></font>
+create index on history      using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_uint using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_str  using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_text using brin(clock) with (pages_per_range = 128);<font></font>
+create index on history_log  using brin(clock) with (pages_per_range = 128);<font></font>
+create index on trends       using brin(clock) with (pages_per_range = 128);<font></font>
+create index on trends_uint  using brin(clock) with (pages_per_range = 128);<font></font>
+</pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+毎分100トンのパラメーター（履歴で100トン、history_uintで100トン）の強度でのデータボリュームのブリンインデックスの場合、インデックスがプライマリモニタリングデータのテーブルで動作し、ゾーンサイズが512ページの2倍であることがわかりました。標準サイズの128ページよりもですが、これは個別であり、テーブルのサイズとサーバー構成に依存します。いずれの場合でも、brinインデックスが占めるスペースはごくわずかですが、ゾーンのサイズを微調整することで速度をわずかに上げることができますが、データフローレートが大きく変化しない場合に限ります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その結果、Zabbix自体のアーキテクチャに関連する制限があることに注意する必要があります。[最近のデータ]タブでは、各パラメーターの最後の2つの値がフィルタリングを考慮して収集されます。各パラメーターについて、データベースで個別に値が要求されます。したがって、そのようなパラメーターが選択されるほど、クエリの実行時間が長くなります。最新のデータは、btreeインデックス（itemid、clock desc）が履歴テーブルに設定され、時間で逆ソートされている場合に検索されますが、同時にインデックス自体がディスク上で「スウェル」し、一般に間接的にデータベースの速度が低下するため、問題が発生します。上述。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、3つの方法があります。</font></font><br>
+<br>
+<ol>
+<li>            « »      100  (..   ,     « »    )</li>
+<li>    Zabbix ,                  ,          « »</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インデックスをデフォルトのままにして、さまざまなパラメーターに対して同時に（最近のデータ）タブで非常に大きな選択を取得するためにのみパーティション分割に制限します（ただし、Zabbix Webサーバーには、同時に表示されるパラメーター値の数に制限があることに気付きました[最近のデータ]タブ-5000の値を表示しようとすると、データベースは結果を計算しましたが、サーバーはWebページを準備できず、そのような大量のデータを表示できませんでした）。</font></font></li>
+</ol><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クエリ実行統計の収集と分析pg_stat_statements</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pg_stat_statementsは、サーバー全体のクエリパフォーマンスに関する統計を収集するための拡張機能です。</font><font style="vertical-align: inherit;">この拡張機能の利点は、PostgreSQLログを収集して解析する必要がないことです。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_stat_statements拡張機能の使用</font></font></b><div class="spoiler_text">   psql:<br>
+<br>
+<pre>CREATE EXTENSION pg_stat_statements;</pre><br>
+      postgresql.conf:<br>
+<br>
+<pre>shared_preload_libraries = 'pg_stat_statements'<font></font>
+pg_stat_statements.max = 10000 #   sql ,     (     );<font></font>
+pg_stat_statements.track = all # all -   (    ), top -   /, none -  <font></font>
+pg_stat_statements.save = true #     <font></font>
+</pre><br>
+ :<br>
+<br>
+<pre>SELECT pg_stat_statements_reset();</pre><br>
+         :<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> <span class="hljs-keyword">substring</span>(<span class="hljs-keyword">query</span> <span class="hljs-keyword">from</span> <span class="hljs-string">'[^(]*'</span>) <span class="hljs-keyword">as</span> query_sub, 
+<span class="hljs-keyword">sum</span>(calls) <span class="hljs-keyword">as</span> calls, <span class="hljs-keyword">avg</span>(mean_time) <span class="hljs-keyword">as</span> mean_time
+<span class="hljs-keyword">from</span> pg_stat_statements
+<span class="hljs-keyword">where</span>
+<span class="hljs-keyword">query</span> ~ <span class="hljs-string">'insert into'</span> <span class="hljs-keyword">or</span> <span class="hljs-keyword">query</span> ~ <span class="hljs-string">'update trends'</span>
+<span class="hljs-keyword">group</span> <span class="hljs-keyword">by</span> <span class="hljs-keyword">substring</span>(<span class="hljs-keyword">query</span> <span class="hljs-keyword">from</span> <span class="hljs-string">'[^(]*'</span>)
+<span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> calls <span class="hljs-keyword">desc</span></code></pre></div></div><br>
+<h4>    </h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Zabbixでハードドライブを監視するために、vfs.dev.readおよびvfs.dev.writeパラメータのみがデフォルトで提供されています。</font><font style="vertical-align: inherit;">これらのオプションは、ディスク使用率に関する情報を提供しません。</font><font style="vertical-align: inherit;">ハードドライブのパフォーマンスの問題を見つけるための有用な基準は、使用率、クエリ待機時間、ディスクロードキューの負荷です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+原則として、高いディスク負荷は、CPU自体の高いiowaitとSQLクエリの実行時間の増加と相関します。これは、パーティショニングと代替インデックスを設定せずに標準構成でzabbixサーバーのストレステストを行ったときに見られました。</font><font style="vertical-align: inherit;">友人からの</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">記事で</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">覗かれた次の手順を使用して、ハードドライブのこれらの監視パラメータを追加できます。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レソフスキー</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">改善：iostatパラメーターは一時パラメーターでjsonのディスクごとに個別に収集されるようになりました。そこから、後処理設定に従って、それらは最終的な監視パラメーターに既に配置されています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プルリクエストが保留中の場合</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、私のフォークを介し</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">た</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">詳細な指示</font></a><font style="vertical-align: inherit;">に従って、ディスクパラメータのモニタリングのデプロイを試みることができます</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+説明したすべてのアクションの後、システムディスクのiowait cpuおよびutiliztionパラメーターを使用したカスタムグラフと、データベースのディスク（異なる場合）をメインのZabbixサーバー監視パネルに追加できます。</font><font style="vertical-align: inherit;">結果は次のようになります（sdaはメインディスク、sdcはデータベースのあるディスクです）。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/oa/nj/fa/oanjfa3hajssftbq22dk8njiwj0.png"><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ハードウェアパフォーマンスの改善</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+DBMSの設定、インデックス作成、パーティション分割を行った後、垂直スケーリングに進み、サーバーのハードウェア特性を向上させることができます。RAMの追加、ドライブのソリッドステートへの変更、プロセッサコアの追加などです。</font><font style="vertical-align: inherit;">これは保証されたパフォーマンスの向上ですが、ソフトウェアの最適化後にのみ行うことをお勧めします。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分散クラスターの作成</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+中程度の垂直スケーリングの後、水平から開始する必要があります-分散クラスターを作成します。シャードまたはマスタースレーブを複製します。</font><font style="vertical-align: inherit;">ただし、これは別の記事の別のトピックと資料</font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（たわごとと棒のクラスターを形成する方法）であり</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、pg_pathmanを使用した前述のZabbixデータベース最適化手法と、TimescaleDB拡張を適用する方法でのインデックス付けの比較です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それまでの間、この記事の内容が有益で有益であることが判明したことのみを期待できます。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja468447/index.html">Laragon-自動ローカルドメインのWAMP</a></li>
+<li><a href="../ja468453/index.html">MBLT19 ::レポート、製品の戦い、およびテスト</a></li>
+<li><a href="../ja468455/index.html">素晴らしいGPSとそのダークサイド</a></li>
+<li><a href="../ja468457/index.html">ダミーのための簡単な算術例のジェネレーターだけでなく、</a></li>
+<li><a href="../ja468459/index.html">特徴的なレーダー探知機の概要：フラッグシップのPlayme Silent 2</a></li>
+<li><a href="../ja468465/index.html">弁護士の見解：IT企業は有毒な政府顧客との契約をどのように終了できるか</a></li>
+<li><a href="../ja468471/index.html">AngularConnect 2019の概要。パート1</a></li>
+<li><a href="../ja468479/index.html">「人々は無料は価値がないと考えています。私は彼らを納得させることができたように思えました」-ルソル学校についてのユーリ・ヤルツェフ</a></li>
+<li><a href="../ja468481/index.html">S7がロシアで航空券をオンラインで販売した最初の方法</a></li>
+<li><a href="../ja468485/index.html">美しいGUIが必要だが、GPUが不要な場合</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

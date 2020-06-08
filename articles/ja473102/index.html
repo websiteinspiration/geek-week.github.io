@@ -1,0 +1,887 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐯 👵 ⛹🏿 タイルラスタライザのしくみ ❕ 👀 🌸</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="私の一連の投稿「週末のラスタライズ」をフォローしたが、コンパイルが行われず、デモが実行されなかった場合、結果がどれほど遅いかを説明すると、大きな驚きになります。一連の投稿の最後で、痛々しいほど抑制的なラスタライザを高速化するための既存の手法について述べました。次に進んで、それらが実際にどのように適用...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>タイルラスタライザのしくみ</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/473102/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私の一連の投稿</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「週末のラスタライズ」</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">をフォローしたが、</font><font style="vertical-align: inherit;">コンパイルが行われず、デモが実行されなかった場合、結果がどれほど遅いかを説明すると、大きな驚きになります。一連の投稿の最後で、痛々しいほど抑制的なラスタライザを高速化するための既存の手法について述べました。次に進んで、それらが実際にどのように適用されるかを確認します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このプロジェクトの一環として</font><font style="vertical-align: inherit;">、この記事で分析するタイルラスタライザーである</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Tyler</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を実装しました</font><font style="vertical-align: inherit;">。このプロジェクトの開発における私の目標は、スケーラビリティでした。このトピックについてもう少し理解して実験したい人のための、ラスタライザのカスタマイズ可能性と理解可能性。この記事は、シリーズで説明されている内容と強く関連しています。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「週末のラスタライズ」</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">なので、読んだ方がいいでしょう。</font><font style="vertical-align: inherit;">あなたがそれを研究したとは思いませんが、記事にはより高度な説明があります-すでに述べられていることや他の情報源で見つけることができることを繰り返したくありません。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">短いレビュー</font></font></h2><br>
+<a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">タイルレンダリング</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（タイルベースのレンダリングまたはタイルレンダリング）は、従来の</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">イミディエイトモード</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レンダリングを</font><font style="vertical-align: inherit;">改善したもの</font><font style="vertical-align: inherit;">です。</font><font style="vertical-align: inherit;">その中で、レンダーターゲット（RT）は</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">タイル</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（つまり、フレームバッファーのサブ領域</font><font style="vertical-align: inherit;">）に分割</font><font style="vertical-align: inherit;">されます。各タイルには、個別にタイルにレンダリングできるプリミティブが含まれています。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/607/72c/cfb/60772ccfb0d154ed83231fb06351590e.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「個別に」という表現に注意してください。これは、即時モードと比較してこの手法の最大の利点の1つを強調しているためです。タイル内のすべてのアクセス操作を、個別のタイルキャッシュの使用により「低速」DRAMに残る色/深度バッファーで制限チップ上。</font></font><a name="habracut"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">もちろん、この帯域幅節約技術は、主に</font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">低電力</font></a></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">モバイル</font></font></a> <font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> GPUで</font><font style="vertical-align: inherit;">使用され</font><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">下の図を見てください。上部では、頂点がすぐに処理、ラスタライズ、シェーディングされ、下部では操作が</font><em><font style="vertical-align: inherit;">延期され</font></em><font style="vertical-align: inherit;">ます。</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/79a/38c/a9a/79a38ca9a84a3869c05be320f2423141.jpg"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/355/879/289/355879289b4983c1fceab9fbb38fdbbb.jpg"></div><br>
+<i><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">即時モードとタイルベースの比較（PowerVRの）アーキテクチャ</font></font></a></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+タイルが通常のラスタライザの仕組みに加えて、仕事にレンダリングするためのハイレベルで、それはの十分なビルドに各タイルの所与のタイルに重畳されているプリミティブのリスト、その後、日陰すべてのタイル内のすべてのプリミティブが一つずつ</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">か</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">並列処理でさらに優れています。</font><font style="vertical-align: inherit;">もちろん、この説明では詳細が失われているので、以下ではタイラーの実装について詳しく検討します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このラスタライザは、最新の3Dレンダリングパイプラインの小さなサブセットのみを実装し、頂点バッファから画面上のピクセルまで、三角形を通過する次の手順で構成されています。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">頂点シェーダー</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クリッパー（完全な三角形のみ！）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">三角形の準備とトリミング</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ハタ</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ラスタライザ</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">フラグメントシェーダー</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+タイラーには、実際のグラフィックスAPIの動作を模倣する疑似レンダリングAPIがあるので、まずそれを使用してラスタライザーを構成し、描画呼び出しを送信する方法を見てみましょう。</font><font style="vertical-align: inherit;">ここでは主に</font><font style="vertical-align: inherit;">、.OBJシーンファイルをロードしていくつかのメッシュをレンダリングし、単純化するためにスケーリングされた法線をレンダリングし、オプションでウィンドウ内のシーンを表す</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シーンレンダリングの</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">例を参照することに注意してください</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h6><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ラスタライザコンテキストの準備</font></font></h6><br>
+<pre><code class="cpp hljs"><span class="hljs-comment">// Create and initialize the rasterizer rendering context</span>
+RenderContext* pRenderContext = <span class="hljs-keyword">new</span> RenderContext(config);<font></font>
+pRenderContext-&amp;gt;Initialize()<font></font>
+<font></font>
+<span class="hljs-comment">// Allocate color &amp;amp; depth buffers</span>
+<span class="hljs-keyword">uint8_t</span>* pColorBuffer = ... <span class="hljs-comment">// Color buffer format == R8G8B8A8_UNORM</span>
+<span class="hljs-keyword">float</span>* pDepthBuffer = ... <span class="hljs-comment">// Depth buffer format == D32_FLOAT</span><font></font>
+<font></font>
+<span class="hljs-comment">// Set up main FBO</span><font></font>
+Framebuffer fbo = {};<font></font>
+fbo.m_pColorBuffer = pColorBuffer;<font></font>
+fbo.m_pDepthBuffer = pDepthBuffer;<font></font>
+fbo.m_Width = opt.m_ScreenWidth;<font></font>
+fbo.m_Height = opt.m_ScreenHeight;<font></font>
+<font></font>
+<span class="hljs-comment">// Single vec3 attribute is used to pass vertex normal VS -&amp;gt; FS</span>
+ShaderMetadata metadata = { <span class="hljs-number">0</span>, <span class="hljs-number">1</span> <span class="hljs-comment">/*vertex normal*/</span>, <span class="hljs-number">0</span> };<font></font>
+<font></font>
+<span class="hljs-comment">// Emulate passing of constants data to shaders</span><font></font>
+Constants cb;<font></font>
+cb.m_ModelViewProj = proj * view * model;<font></font>
+<font></font>
+<span class="hljs-comment">// We will have single index and vertex buffer to draw indexed mesh</span>
+<span class="hljs-built_in">std</span>::<span class="hljs-built_in">vector</span>&lt;Vertex&amp;gt; vertexBuffer;
+<span class="hljs-built_in">std</span>::<span class="hljs-built_in">vector</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt; indexBuffer;<font></font>
+// Store data of all scene objects to be drawn<font></font>
+<span class="hljs-built_in">std</span>::<span class="hljs-built_in">vector</span>&lt;Mesh&amp;gt; objects;<font></font>
+<font></font>
+// Load .OBJ scene model data <span class="hljs-keyword">and</span> generate vertex/index buffers, etc.<font></font>
+InitializeSceneObjects(opt.m_OBJName, objects, vertexBuffer, indexBuffer);<font></font>
+<font></font>
+// Bind FBO to be used in subsequent render pass once<font></font>
+pRenderContext-&amp;gt;BindFramebuffer(&amp;amp;fbo);<font></font>
+<font></font>
+// Bind VBO <span class="hljs-keyword">and</span> <span class="hljs-built_in">set</span> buffer stride<font></font>
+pRenderContext-&amp;gt;BindVertexBuffer(vertexBuffer.data(), <span class="hljs-keyword">sizeof</span>(Vertex));<font></font>
+// Bind IBO<font></font>
+pRenderContext-&amp;gt;BindIndexBuffer(indexBuffer.data());<font></font>
+<font></font>
+// Bind shader constants<font></font>
+pRenderContext-&amp;gt;BindConstantBuffer(&amp;amp;cb);<font></font>
+<font></font>
+// Bind shader, constant buffer, texture(s)<font></font>
+pRenderContext-&amp;gt;BindShaders(VS, FS, metadata);</code></pre><br>
+<h6><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メインレンダリングサイクル</font></font></h6><br>
+<pre><code class="cpp hljs">                <span class="hljs-comment">// Clear RT</span><font></font>
+                pRenderContext-&amp;gt;BeginRenderPass(<font></font>
+                    <span class="hljs-literal">true</span>, <span class="hljs-comment">/*clearColor*/</span>
+                    glm::vec4(<span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>) <span class="hljs-comment">/*colorValue*/</span>,
+                    <span class="hljs-literal">true</span>, <span class="hljs-comment">/*clearDepth*/</span>
+                    FLT_MAX <span class="hljs-comment">/*depthValue*/</span>);<font></font>
+<font></font>
+                <span class="hljs-comment">// Draw meshes</span>
+                <span class="hljs-keyword">for</span> (<span class="hljs-keyword">uint32_t</span> obj = <span class="hljs-number">0</span>; obj &lt; objects.size(); obj++)<font></font>
+                {<font></font>
+                    Mesh&amp;amp; mesh = objects[obj];<font></font>
+<font></font>
+                    view = glm::lookAt(testParams.m_EyePos, testParams.m_LookAtPos, glm::vec3(<span class="hljs-number">0</span>, <span class="hljs-number">1</span>, <span class="hljs-number">0</span>));
+                    <span class="hljs-comment">//model = glm::rotate(model, glm::radians(0.5f), glm::vec3(0, 1, 0));</span><font></font>
+                    cb.m_ModelViewProj = proj * view * model;<font></font>
+<font></font>
+                    <span class="hljs-comment">// Kick off draw. Note that it blocks callee until drawcall is completed</span><font></font>
+                    pRenderContext-&amp;gt;DrawIndexed(mesh.m_IdxCount, mesh.m_IdxOffset);<font></font>
+                }<font></font>
+<font></font>
+                pRenderContext-&amp;gt;EndRenderPass();</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アプリケーション側で魔法は発生しません。</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">標準構成</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で</font><font style="vertical-align: inherit;">レンダリングコンテキストを準備した後</font><font style="vertical-align: inherit;">、フレームバッファー、頂点/インデックスバッファー、シェーダー、およびその他すべての通常のバインディングで、オブジェクトは一度に1つのメッシュの下にレンダリングされます。同時に、タイルラスタライザはそのタスクを実行します。 18行目を見てみましょう。この行で、draw呼び出しが発生します。現在の描画呼び出しが完了して完了するまで、ラスタライザーが呼び出し元の関数のフローをブロックするというコメントに注意してください。明らかに、これは実際のAPIやハードウェアラスタライザの動作とは大きく異なります。一度に1つの描画呼び出ししか処理せず、終了するまでブロックしません。それはひどく非効率的です。代わりに、</font><em><font style="vertical-align: inherit;">バッチ</font></em><font style="vertical-align: inherit;">を処理します</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）アプリケーションがコマンドバッファに書き込み、グラフィックドライバを使用して機器に送信されるコマンド。これの主な理由は次のとおりです。1）</font><font style="vertical-align: inherit;">CPU &lt;-&gt; GPU </font><font style="vertical-align: inherit;">の過度の</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">作業計画を</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最小限に抑え、</font><font style="vertical-align: inherit;">2）GPUリソ​​ースの使用を増やします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サンプルがどのようにドローコールを実行するかをおおまかに理解したので、ラスタライザで何が起こるかに移ることができます。あなたが見れば</font><font style="vertical-align: inherit;">、プロジェクトの</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ソースディレクトリ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、この時間は、あなたがより多くのファイルが表示されます。ただし、最も重要なものは通常、</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パイプラインスレッド</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レンダリングエンジン</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">にあり、それ以外はすべてサポート機能を提供します。</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レンダリングエンジン</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、描画呼び出しの準備と、タイルラスタライザに必要なさまざまなリソース（タイルごとのグループやカバレッジマスクバッファなど）を処理し、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パイプラインスレッド</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">間の同期を提供します。</font><em><font style="vertical-align: inherit;">パイプラインスレッド</font></em><font style="vertical-align: inherit;">は、パイプラインの上記のステージを並列実行</font><font style="vertical-align: inherit;">するための独自の</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スレッド</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を生成し</font><em><font style="vertical-align: inherit;">ます</font></em><font style="vertical-align: inherit;">。レンダリングエンジンは、</font><font style="vertical-align: inherit;">パイプラインスレッドによる実行の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ため</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の描画呼び出しを</font><font style="vertical-align: inherit;">どのように</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">準備</font></a><font style="vertical-align: inherit;">しますか？</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-comment">// Prepare for next drawcall</span><font></font>
+ApplyPreDrawcallStateInvalidations();<font></font>
+<font></font>
+<span class="hljs-keyword">uint32_t</span> numRemainingPrims = primCount;<font></font>
+<font></font>
+<span class="hljs-keyword">uint32_t</span> drawElemsPrev = <span class="hljs-number">0u</span>;
+<span class="hljs-keyword">uint32_t</span> numIter = <span class="hljs-number">0</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">while</span> (numRemainingPrims &amp;gt; <span class="hljs-number">0</span>)<font></font>
+{<font></font>
+    <span class="hljs-comment">// Prepare for next draw iteration</span><font></font>
+    ApplyPreDrawIterationStateInvalidations();<font></font>
+<font></font>
+    <span class="hljs-comment">// How many prims are to be processed this iteration &amp;amp; prims per thread</span>
+    <span class="hljs-keyword">uint32_t</span> iterationSize = (numRemainingPrims &amp;gt;= m_RenderConfig.m_MaxDrawIterationSize) ? m_RenderConfig.m_MaxDrawIterationSize : numRemainingPrims;
+    <span class="hljs-keyword">uint32_t</span> perIterationRemainder = iterationSize % m_RenderConfig.m_NumPipelineThreads;
+    <span class="hljs-keyword">uint32_t</span> primsPerThread = iterationSize / m_RenderConfig.m_NumPipelineThreads;<font></font>
+<font></font>
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">uint32_t</span> threadIdx = <span class="hljs-number">0</span>; threadIdx &lt; m_RenderConfig.m_NumPipelineThreads; threadIdx++)<font></font>
+    {<font></font>
+        <span class="hljs-keyword">uint32_t</span> currentDrawElemsStart = drawElemsPrev;
+        <span class="hljs-keyword">uint32_t</span> currentDrawElemsEnd = (threadIdx == (m_RenderConfig.m_NumPipelineThreads - <span class="hljs-number">1</span>)) ?
+            <span class="hljs-comment">// If number of remaining primitives in iteration is not multiple of number of threads, have the last thread cover the remaining range</span><font></font>
+            (currentDrawElemsStart + primsPerThread + perIterationRemainder) :<font></font>
+            currentDrawElemsStart + primsPerThread;<font></font>
+<font></font>
+        <span class="hljs-comment">// Threads must have been initialized and idle by now!</span><font></font>
+        PipelineThread* pThread = m_PipelineThreads[threadIdx];<font></font>
+<font></font>
+        <span class="hljs-comment">// Assign computed draw elems range for thread</span><font></font>
+        pThread-&amp;gt;m_ActiveDrawParams.m_ElemsStart = currentDrawElemsStart;<font></font>
+        pThread-&amp;gt;m_ActiveDrawParams.m_ElemsEnd = currentDrawElemsEnd;<font></font>
+        pThread-&amp;gt;m_ActiveDrawParams.m_VertexOffset = vertexOffset;<font></font>
+        pThread-&amp;gt;m_ActiveDrawParams.m_IsIndexed = isIndexed;<font></font>
+<font></font>
+        <span class="hljs-comment">// PipelineThread drawcall input prepared, it can start processing of drawcall</span>
+        pThread-&amp;gt;m_CurrentState.store(ThreadStatus::DRAWCALL_TOP, <span class="hljs-built_in">std</span>::memory_order_release);<font></font>
+<font></font>
+        drawElemsPrev = currentDrawElemsEnd;<font></font>
+        numRemainingPrims -= (currentDrawElemsEnd - currentDrawElemsStart);<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">// All threads are assigned draw parameters, let them work now</span>
+    m_DrawcallSetupComplete.store(<span class="hljs-literal">true</span>, <span class="hljs-built_in">std</span>::memory_order_release);<font></font>
+<font></font>
+    <span class="hljs-comment">// Stall main thread until all active threads complete given draw iteration</span><font></font>
+    WaitForPipelineThreadsToCompleteProcessingDrawcall();<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは、使用可能なスレッドの増加に伴ってラスタライザをスケーリングするために、着信プリミティブをパイプラインスレッドで均等に分割します。あなたは尋ねるかもしれません、反復はどうですか？これらは、次の描画呼び出しに6つの三角形が含まれるか500万の三角形が含まれるかを事前に知ることができず、内部バッファーを動的に割り当てたりサイズを変更したりすることは絶対に望まないために発生します。ラスタライザは</font><em><font style="vertical-align: inherit;">リアルタイムで</font></em><font style="vertical-align: inherit;">動作</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">しなくなります</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">！</font><font style="vertical-align: inherit;">代わりに、内部バッファーの上限を設定します（任意に大きくすることができますが、適切な反復のサイズを検討します）。それらを1回選択し、レンダリング中に、反復によって分割されたプリミティブのセットを単純に反復します。論理的にこれを1回の反復で行うのと同じです。</font><font style="vertical-align: inherit;">これは、ハードウェアラスタライザがこの不確実性を処理する方法に似ています。</font></font><br>
+<br>
+<h6><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">描画呼び出しの準備の例：反復ごとに6つのプリミティブを同時に処理する3つのスレッド</font></font></h6><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/388/f22/9c0/388f229c048cb35137c8046fe3e71802.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえば、プリミティブの数がスレッドの数の倍数ではない場合や、スレッドの数よりも少ない場合など、さまざまな境界ケースが発生する可能性があるため、ここで処理します。内部バッファーの上限の存在は報われますが、追加の制御が必要です。たとえば、各反復の前に内部データ構造とキャッシュの古いデータを無効にする必要があります。最後に、描画の呼び出しパラメータが割り当てられていないスレッドが少なくとも1つあるため、すべてのスレッドが対応するパイプラインに入る必要があるため、同期の問題が発生しないことに注意してください。したがって、アトミックフラグ</font><em><font style="vertical-align: inherit;">m_DrawcallSetupComplete</font></em><font style="vertical-align: inherit;">を使用します</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ドローコールの準備までスレッドを一時停止します。</font><font style="vertical-align: inherit;">その後、スレッドに青信号が与えられ</font><font style="vertical-align: inherit;">、現在の描画呼び出しの</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">すべての</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">反復がスレッドによって処理される</font><font style="vertical-align: inherit;">まで待機</font><font style="vertical-align: inherit;">して、呼び出し元の関数のスレッドに実行を返します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ドローコールを処理するためにスレッドをオンにする方法を確認したので、パイプライン自体を詳しく見てみましょう。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ジオメトリ処理</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ジオメトリの処理は、ユーザーバッファから取得した頂点の処理と呼ばれます。</font><font style="vertical-align: inherit;">これは、ピークのシェーディング、切り捨て、三角形の準備、およびグループの作成の手順で構成されます。</font><font style="vertical-align: inherit;">この時点で、すべてのスレッドが並行して実行されることに注意してください。</font></font><br>
+<br>
+<h6><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ジオメトリ処理。</font><font style="vertical-align: inherit;">各スレッドは、指定された間隔でプリミティブを繰り返しバイパスします</font></font></h6><br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">for</span> (<span class="hljs-keyword">uint32_t</span> drawIdx = m_ActiveDrawParams.m_ElemsStart, primIdx = m_ActiveDrawParams.m_ElemsStart % m_RenderConfig.m_MaxDrawIterationSize;<font></font>
+    drawIdx &lt; m_ActiveDrawParams.m_ElemsEnd;<font></font>
+    drawIdx++, primIdx++)<font></font>
+{<font></font>
+    <span class="hljs-comment">// drawIdx = Assigned prim indices which will be only used to fetch indices</span>
+    <span class="hljs-comment">// primIdx = Prim index relative to current iteration</span><font></font>
+<font></font>
+    <span class="hljs-comment">// Clip-space vertices to be retrieved from VS</span><font></font>
+    glm::vec4 v0Clip, v1Clip, v2Clip;<font></font>
+<font></font>
+    <span class="hljs-comment">// VS</span><font></font>
+    ExecuteVertexShader&lt;IsIndexed&amp;gt;(drawIdx, primIdx, &amp;amp;v0Clip, &amp;amp;v1Clip, &amp;amp;v2Clip);<font></font>
+<font></font>
+    <span class="hljs-comment">// Bbox of the primitive which will be computed during clipping</span><font></font>
+    Rect2D bbox;<font></font>
+<font></font>
+    <span class="hljs-comment">// CLIPPER</span>
+    <span class="hljs-keyword">if</span> (!ExecuteFullTriangleClipping(primIdx, v0Clip, v1Clip, v2Clip, &amp;amp;bbox))<font></font>
+    {<font></font>
+        <span class="hljs-comment">// Triangle clipped, proceed iteration with next primitive</span>
+        <span class="hljs-keyword">continue</span>;<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">// TRIANGLE SETUP &amp;amp; CULL</span>
+    <span class="hljs-keyword">if</span> (!ExecuteTriangleSetupAndCull(primIdx, v0Clip, v1Clip, v2Clip))<font></font>
+    {<font></font>
+        <span class="hljs-comment">// Triangle culled, proceed iteration with next primitive</span>
+        <span class="hljs-keyword">continue</span>;<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-comment">// BINNER</span><font></font>
+    ExecuteBinner(primIdx, v0Clip, v1Clip, v2Clip, bbox);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以前のように、コンベヤーは頂点シェーダー（VS）から始まります。その役割は、指定された頂点/インデックスバッファーから頂点/インデックスを取得し、切り詰め空間内の位置を返すユーザー定義のプロシージャVSを呼び出すことと、シェーディングされた頂点に属性を渡すことです。さらに、スレッドごとに個別の小さな頂点シェーダーキャッシュを使用します。インデックス付きメッシュの頂点がVS $に存在する場合、VSを再度呼び出す代わりに、切り捨て空間のキャッシュされた位置と頂点の属性がキャッシュから直接コピーされます。これにより、多数の頂点で大量の計算を節約できます。それ以外の場合は、通常の方法でVSを呼び出し、返された頂点データのコピーをVS $に配置します。トランケーションスペースと属性での位置を受け取った後、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CalculateInterpolationCoefficients</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、FS属性に渡す前に頂点属性を補間するために必要な補間データを計算して保存します。変換された頂点のコピーをループ内に保持していることに注意してください。効率のためには、ストリームがジオメトリステップを処理する間、頂点がL1 / L2 / L3（列挙が最悪）に格納されることが重要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+VSの完了と頂点の属性の取得後、可視ピラミッドに沿って三角形を切り捨て、プリミティブの境界平行四辺形を計算します。境界画面領域。関数の名前が示すように、完全な三角形の分数によってプリミティブを切り捨てます。すばらしいですが、それはどういう意味ですか？</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/2aa/7af/468/2aa7af468ba08e21b72fb24237ed0b48.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上の図のXW平面（</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スクリーンカバレッジ</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の</font><em><font style="vertical-align: inherit;">計算</font></em><font style="vertical-align: inherit;">に関するBlinnの記事から引用</font><font style="vertical-align: inherit;">）では、上部の濃い灰色の領域が目の前の点、つまり完全に見える点を示し、下部の領域は目の後ろの点を表しています。切り捨て関数では</font><font style="vertical-align: inherit;">、三角形の</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3つの</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">頂点</font><font style="vertical-align: inherit;">すべて</font><font style="vertical-align: inherit;">が完全に可視領域内にあるか、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Trivial-Accept</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（TA）</font><font style="vertical-align: inherit;">領域にあるか、</font><font style="vertical-align: inherit;">完全に外側にあるか、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Trivial-Reject領域にあるかを確認します</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（TR）。 TAの場合、均一な除算（たとえば、Wによる除算）を適用することにより、プリミティブの境界平行四辺形を安全に計算できます。TRの場合、プリミティブ全体を簡単に破棄できます。それ以外の場合、プリミティブは可視性のピラミッドのさまざまな部分に頂点を持たなければなりません。つまり、平面によって切り捨てられ、部分的にレンダリングされる必要があります。ただし、均一なラスタライゼーションアルゴリズムの特徴は、スキャンを変換するそのメソッドが部分的に表示可能なプリミティブをレンダリングできることです。これは、以前の投稿と元の記事でより詳細に説明されていました。したがって、「切り捨てが必要」という条件が発生した場合（つまり、三角形がTRになく、TAにもない場合）、境界平行四辺形（非常に保守的！）を画面全体の境界として定義します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+三角形を完成するための切り捨てが完了したら、三角形のセットアップとカリングを準備する段階に進みます。この段階では、エッジ方程式のよく知られた係数が計算されます。 「1週間でのラスタライズ」の実装とは異なり、今回</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">元の記事の</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">最適化</font></a><font style="vertical-align: inherit;">を実装しました</font><font style="vertical-align: inherit;">。これにより</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、頂点マトリックス</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を反転</font><em><font style="vertical-align: inherit;">する</font></em><font style="vertical-align: inherit;">必要性を巧みに排除でき</font><font style="vertical-align: inherit;">ます。</font></font><br>
+<br>
+<pre><code class="cpp hljs">    <span class="hljs-comment">// First, transform clip-space (x, y, z, w) vertices to device-space 2D homogeneous coordinates (x, y, w)</span>
+    <span class="hljs-keyword">const</span> glm::vec4 v0Homogen = TO_HOMOGEN(v0Clip, fbWidth, fbHeight);
+    <span class="hljs-keyword">const</span> glm::vec4 v1Homogen = TO_HOMOGEN(v1Clip, fbWidth, fbHeight);
+    <span class="hljs-keyword">const</span> glm::vec4 v2Homogen = TO_HOMOGEN(v2Clip, fbWidth, fbHeight);<font></font>
+<font></font>
+    <span class="hljs-comment">// To calculate EE coefficients, we need to set up a "vertex matrix" and invert it</span>
+    <span class="hljs-comment">// M = |  x0  x1  x2  |</span>
+    <span class="hljs-comment">//     |  y0  y1  y2  |</span>
+    <span class="hljs-comment">//     |  w0  w1  w2  |</span><font></font>
+<font></font>
+    <span class="hljs-comment">// Alternatively, we can rely on the following relation between an inverse and adjoint of a matrix: inv(M) = adj(M)/det(M)</span>
+    <span class="hljs-comment">// Since we use homogeneous coordinates, it's sufficient to only compute adjoint matrix:</span>
+    <span class="hljs-comment">// A = |  a0  b0  c0  |</span>
+    <span class="hljs-comment">//     |  a1  b1  c1  |</span>
+    <span class="hljs-comment">//     |  a2  b2  c2  |</span><font></font>
+<font></font>
+    <span class="hljs-keyword">float</span> a0 = (v2Homogen.y * v1Homogen.w) - (v1Homogen.y * v2Homogen.w);
+    <span class="hljs-keyword">float</span> a1 = (v0Homogen.y * v2Homogen.w) - (v2Homogen.y * v0Homogen.w);
+    <span class="hljs-keyword">float</span> a2 = (v1Homogen.y * v0Homogen.w) - (v0Homogen.y * v1Homogen.w);<font></font>
+<font></font>
+    <span class="hljs-keyword">float</span> b0 = (v1Homogen.x * v2Homogen.w) - (v2Homogen.x * v1Homogen.w);
+    <span class="hljs-keyword">float</span> b1 = (v2Homogen.x * v0Homogen.w) - (v0Homogen.x * v2Homogen.w);
+    <span class="hljs-keyword">float</span> b2 = (v0Homogen.x * v1Homogen.w) - (v1Homogen.x * v0Homogen.w);<font></font>
+<font></font>
+    <span class="hljs-keyword">float</span> c0 = (v2Homogen.x * v1Homogen.y) - (v1Homogen.x * v2Homogen.y);
+    <span class="hljs-keyword">float</span> c1 = (v0Homogen.x * v2Homogen.y) - (v2Homogen.x * v0Homogen.y);
+    <span class="hljs-keyword">float</span> c2 = (v1Homogen.x * v0Homogen.y) - (v0Homogen.x * v1Homogen.y);<font></font>
+<font></font>
+    <span class="hljs-comment">// Additionally,</span>
+    <span class="hljs-comment">// det(M) == 0 -&amp;gt; degenerate/zero-area triangle</span>
+    <span class="hljs-comment">// det(M) &lt; 0  -&amp;gt; back-facing triangle</span>
+    <span class="hljs-keyword">float</span> detM = (c0 * v0Homogen.w) + (c1 * v1Homogen.w) + (c2 * v2Homogen.w);<font></font>
+<font></font>
+    <span class="hljs-comment">// Assign computed EE coefficients for given primitive</span>
+    m_pRenderEngine-&amp;gt;m_SetupBuffers.m_pEdgeCoefficients[<span class="hljs-number">3</span> * primIdx + <span class="hljs-number">0</span>] = { a0, b0, c0 };<font></font>
+    m_pRenderEngine-&amp;gt;m_SetupBuffers.m_pEdgeCoefficients[<span class="hljs-number">3</span> * primIdx + <span class="hljs-number">1</span>] = { a1, b1, c1 };<font></font>
+    m_pRenderEngine-&amp;gt;m_SetupBuffers.m_pEdgeCoefficients[<span class="hljs-number">3</span> * primIdx + <span class="hljs-number">2</span>] = { a2, b2, c2 };</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この手法のもう1つの利点は、</font><font style="vertical-align: inherit;">スキャンの変換と属性の補間にエッジ方程式の</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同じ</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">係数</font><font style="vertical-align: inherit;">を使用できること</font><font style="vertical-align: inherit;">です。前回、</font><font style="vertical-align: inherit;">個々のパラメーター</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ごとに</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメーター補間ベクトルを計算しました</font><font style="vertical-align: inherit;">。これは、たとえば法線+テクスチャ座標などのいくつかのスカラー値だけでなく、より多くの属性がある場合にすぐにボトルネックになる可能性があります。三角形の準備（三角形の設定）を完了した後、タイルラスタライザの非常に重要な部分、つまり</font></font><em><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">グループ化（ビニング）に移動しました</font></font></a></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（その概念の多くは、Michael Abrash自身によって完全に説明されていました）。</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">ビニングの</font></a><font style="vertical-align: inherit;">役割</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パイプラインで巨大：どのタイルがどのプリミティブをカバーしているか、つまり、どのプリミティブがどのタイルと重なっているかを見つける必要があります。タイルはレンダーターゲットのサブターゲットであり、デフォルトでは8×8ブロックで構成されることを考慮する価値があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これを行うには、別の三角形とそれがどのように処理されるかを見るだけですが、これはすべて複数のスレッドによって並行して実行されることに注意してください。また、実装も簡単です。タイルごとに、交差するプリミティブの配列を</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スレッドごとに</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">割り当て</font><em><font style="vertical-align: inherit;">ます</font></em><font style="vertical-align: inherit;">。つまり、各スレッドのグループのプリミティブを各スレッドの独自のグループに配置することにより、同期を必要とせずに、それらを同時に動作させることができます。さらに、この方法で、プリミティブのレンダリングの順序を保持し、後でグループ化されたプリミティブをフローの順序で処理します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a9d/12f/acc/a9d12facc45941f9f8a2d22917cdbe43.png"></div><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">色付きの矢印は、エッジの法線と、三角形の平行四辺形を囲む長方形を示します。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プリミティブ、その境界平行四辺形、およびエッジの方程式の係数に基づいて、グループは次の情報を提供します。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Trivial-Accept：三角形の境界平行四辺形内のタイルは完全に三角形で覆われています</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トリビアルリジェクト：三角形の境界平行四辺形の内側のタイルが完全に三角形の外側にある</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オーバーラップ：三角形の境界平行四辺形の内側のタイルが三角形と交差しています</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これはどのように役立ちますか？ 64×64ピクセルのタイルサイズを選択したとします。次に、Trivial-Rejectタイルは、64×64ピクセルテストを一度にスキップできることを意味します。同様に、ささいな受け入れ</font><font style="vertical-align: inherit;">タイル</font><font style="vertical-align: inherit;">は、64×64ピクセルが表示され、</font><font style="vertical-align: inherit;">タイル</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">全体</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を描画する必要があることを意味します</font><font style="vertical-align: inherit;">。オーバーラップは、ここでは最も好ましい結果ではありません。これは、タイルとプリミティブがラスタライズ段階でさらに処理を必要とすることを意味するため、ブロックレベルまで下がって、エッジ検証をより低いレベルで適用します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まず、三角形の境界平行四辺形によってカバーされるタイルの最小インデックスと最大インデックスを見つけることから、ビニングプロセスを開始します。</font></font><br>
+<br>
+<pre><code class="cpp hljs">    <span class="hljs-comment">// Given a tile size and frame buffer dimensions, find min/max range of the tiles that fall within bbox computed above</span>
+    <span class="hljs-comment">// which we're going to iterate over, in order to determine if the primitive should be binned or not</span><font></font>
+<font></font>
+    <span class="hljs-comment">// Use floor(), min indices are inclusive</span>
+    <span class="hljs-keyword">uint32_t</span> minTileX = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt;(glm::<span class="hljs-built_in">floor</span>(bbox.m_MinX / m_RenderConfig.m_TileSize));
+    <span class="hljs-keyword">uint32_t</span> minTileY = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt;(glm::<span class="hljs-built_in">floor</span>(bbox.m_MinY / m_RenderConfig.m_TileSize));<font></font>
+<font></font>
+    <span class="hljs-comment">// Use ceil(), max indices are exclusive</span>
+    <span class="hljs-keyword">uint32_t</span> maxTileX = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt;(glm::<span class="hljs-built_in">ceil</span>(bbox.m_MaxX / m_RenderConfig.m_TileSize));
+    <span class="hljs-keyword">uint32_t</span> maxTileY = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt;(glm::<span class="hljs-built_in">ceil</span>(bbox.m_MaxY / m_RenderConfig.m_TileSize));</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+エッジの方程式の係数を取得した後、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">各エッジの</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">角度TRおよびTAを</font><em><font style="vertical-align: inherit;">設定します</font></em><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="cpp hljs">    <span class="hljs-comment">// Fetch edge equation coefficients computed in triangle setup</span>
+    glm::vec3 ee0 = m_pRenderEngine-&gt;m_SetupBuffers.m_pEdgeCoefficients[<span class="hljs-number">3</span> * primIdx + <span class="hljs-number">0</span>];<font></font>
+    glm::vec3 ee1 = m_pRenderEngine-&gt;m_SetupBuffers.m_pEdgeCoefficients[<span class="hljs-number">3</span> * primIdx + <span class="hljs-number">1</span>];<font></font>
+    glm::vec3 ee2 = m_pRenderEngine-&gt;m_SetupBuffers.m_pEdgeCoefficients[<span class="hljs-number">3</span> * primIdx + <span class="hljs-number">2</span>];<font></font>
+<font></font>
+    <span class="hljs-comment">// Normalize edge functions</span>
+    ee0 /= (glm::<span class="hljs-built_in">abs</span>(ee0.x) + glm::<span class="hljs-built_in">abs</span>(ee0.y));<font></font>
+    ee1 /= (glm::<span class="hljs-built_in">abs</span>(ee1.x) + glm::<span class="hljs-built_in">abs</span>(ee1.y));<font></font>
+    ee2 /= (glm::<span class="hljs-built_in">abs</span>(ee2.x) + glm::<span class="hljs-built_in">abs</span>(ee2.y));<font></font>
+<font></font>
+    <span class="hljs-comment">// Indices of tile corners:</span>
+    <span class="hljs-comment">// LL -&gt; 0  LR -&gt; 1</span>
+    <span class="hljs-comment">// UL -&gt; 2  UR -&gt; 3</span><font></font>
+<font></font>
+    <span class="hljs-keyword">static</span> <span class="hljs-keyword">const</span> glm::vec2 scTileCornerOffsets[] =<font></font>
+    {<font></font>
+        { <span class="hljs-number">0.f</span>, <span class="hljs-number">0.f</span>},                                            <span class="hljs-comment">// LL</span>
+        { m_RenderConfig.m_TileSize, <span class="hljs-number">0.f</span> },                     <span class="hljs-comment">// LR</span>
+        { <span class="hljs-number">0.f</span>, m_RenderConfig.m_TileSize },                     <span class="hljs-comment">// UL</span>
+        { m_RenderConfig.m_TileSize, m_RenderConfig.m_TileSize} <span class="hljs-comment">// UR</span><font></font>
+    };<font></font>
+<font></font>
+    <span class="hljs-comment">// (x, y) -&gt; sample location | (a, b, c) -&gt; edge equation coefficients</span>
+    <span class="hljs-comment">// E(x, y) = (a * x) + (b * y) + c</span>
+    <span class="hljs-comment">// E(x + s, y + t) = E(x, y) + (a * s) + (b * t)</span><font></font>
+<font></font>
+    <span class="hljs-comment">// Based on edge normal n=(a, b), set up tile TR corners for each edge</span>
+    <span class="hljs-keyword">const</span> <span class="hljs-keyword">uint8_t</span> edge0TRCorner = (ee0.y &gt;= <span class="hljs-number">0.f</span>) ? ((ee0.x &gt;= <span class="hljs-number">0.f</span>) ? <span class="hljs-number">3u</span> : <span class="hljs-number">2u</span>) : (ee0.x &gt;= <span class="hljs-number">0.f</span>) ? <span class="hljs-number">1u</span> : <span class="hljs-number">0u</span>;
+    <span class="hljs-keyword">const</span> <span class="hljs-keyword">uint8_t</span> edge1TRCorner = (ee1.y &gt;= <span class="hljs-number">0.f</span>) ? ((ee1.x &gt;= <span class="hljs-number">0.f</span>) ? <span class="hljs-number">3u</span> : <span class="hljs-number">2u</span>) : (ee1.x &gt;= <span class="hljs-number">0.f</span>) ? <span class="hljs-number">1u</span> : <span class="hljs-number">0u</span>;
+    <span class="hljs-keyword">const</span> <span class="hljs-keyword">uint8_t</span> edge2TRCorner = (ee2.y &gt;= <span class="hljs-number">0.f</span>) ? ((ee2.x &gt;= <span class="hljs-number">0.f</span>) ? <span class="hljs-number">3u</span> : <span class="hljs-number">2u</span>) : (ee2.x &gt;= <span class="hljs-number">0.f</span>) ? <span class="hljs-number">1u</span> : <span class="hljs-number">0u</span>;<font></font>
+<font></font>
+    <span class="hljs-comment">// TA corner is the one diagonal from TR corner calculated above</span>
+    <span class="hljs-keyword">const</span> <span class="hljs-keyword">uint8_t</span> edge0TACorner = <span class="hljs-number">3u</span> - edge0TRCorner;
+    <span class="hljs-keyword">const</span> <span class="hljs-keyword">uint8_t</span> edge1TACorner = <span class="hljs-number">3u</span> - edge1TRCorner;
+    <span class="hljs-keyword">const</span> <span class="hljs-keyword">uint8_t</span> edge2TACorner = <span class="hljs-number">3u</span> - edge2TRCorner;</code></pre><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/3c6/80e/129/3c680e1294aa1b90eb6af223e4f8b56a.png"></div><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エッジ2のタイルごとに角度TRがマークされています（X軸は右を向き、Y軸は下向きです！）</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+タイルの角度TRは</font><font style="vertical-align: inherit;">、エッジの</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最も深いところ</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">にある角度であり、角度TAは</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最も外側</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font><font style="vertical-align: inherit;">我々はの角度TRという結論に達した場合ので、TRとTAを角度必要な</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">任意の</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エッジがエッジの外側にある場合、タイル全体が三角形の外側でなければならない、それは自明捨てることができることを意味しています。</font><font style="vertical-align: inherit;">同様に、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">すべての</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エッジの</font><font style="vertical-align: inherit;">角度TAが</font><font style="vertical-align: inherit;">対応するエッジの内側にある場合、タイル全体が三角形の内側にある（またはその逆）必要があるため、簡単に受け入れることができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上記のコードスニペットでこれらの角度を検索する方法は、タイルラスタライザの最も重要な部分の1つです。エッジの法線の勾配に基づいてTR / TA角度を選択します=（a、b）（</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">a、b</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は法線のxおよびyコンポーネントです）。上の図では、エッジ2（つまり、青い矢印）では、すべてのタイルの角度TRが右下としてマークされています。どうして？エッジ2の場合、これは有効（</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">a&gt; 0）です</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。つまり、エッジは左に伸びる必要があります。つまり、直角（下または上）の1つが左よりもエッジに近い必要があります。同様に、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（b&gt; 0）</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">つまり、角度TRは右下隅でなければなりません。角度TAを見つけるには2つのオプションがあります。同じロジックを適用するか、角度TRから最も遠いコーナーが最も外側にあるという事実に依存します。これは、角度TRから対角線上にあり、より最適です。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-comment">// Iterate over calculated range of tiles</span>
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">uint32_t</span> ty = minTileY, tyy = <span class="hljs-number">0</span>; ty &lt; maxTileY; ty++, tyy++)<font></font>
+{<font></font>
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">uint32_t</span> tx = minTileX, txx = <span class="hljs-number">0</span>; tx &lt; maxTileX; tx++, txx++)<font></font>
+    {<font></font>
+        <span class="hljs-comment">// Using EE coefficients calculated in TriangleSetup stage and positive half-space tests, determine one of three cases possible for each tile:</span>
+        <span class="hljs-comment">// 1) TrivialReject -- tile within tri's bbox does not intersect tri -&amp;gt; move on</span>
+        <span class="hljs-comment">// 2) TrivialAccept -- tile within tri's bbox is completely within tri -&amp;gt; emit a full-tile coverage mask</span>
+        <span class="hljs-comment">// 3) Overlap       -- tile within tri's bbox intersects tri -&amp;gt; bin the triangle to given tile for further rasterization where block/pixel-level coverage masks will be emitted</span><font></font>
+<font></font>
+        <span class="hljs-comment">// (txx, tyy) = how many steps are done per dimension</span>
+        <span class="hljs-keyword">const</span> <span class="hljs-keyword">float</span> txxOffset = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">float</span>&amp;gt;(txx * m_RenderConfig.m_TileSize);
+        <span class="hljs-keyword">const</span> <span class="hljs-keyword">float</span> tyyOffset = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">float</span>&amp;gt;(tyy * m_RenderConfig.m_TileSize);<font></font>
+<font></font>
+        <span class="hljs-comment">// Step from edge function computed above for the first tile in bbox</span>
+        <span class="hljs-keyword">float</span> edgeFuncTR0 = edgeFunc0 + ((ee0.x * (scTileCornerOffsets[edge0TRCorner].x + txxOffset)) + (ee0.y * (scTileCornerOffsets[edge0TRCorner].y + tyyOffset)));
+        <span class="hljs-keyword">float</span> edgeFuncTR1 = edgeFunc1 + ((ee1.x * (scTileCornerOffsets[edge1TRCorner].x + txxOffset)) + (ee1.y * (scTileCornerOffsets[edge1TRCorner].y + tyyOffset)));
+        <span class="hljs-keyword">float</span> edgeFuncTR2 = edgeFunc2 + ((ee2.x * (scTileCornerOffsets[edge2TRCorner].x + txxOffset)) + (ee2.y * (scTileCornerOffsets[edge2TRCorner].y + tyyOffset)));<font></font>
+<font></font>
+        <span class="hljs-comment">// If TR corner of the tile is outside any edge, reject whole tile</span>
+        <span class="hljs-keyword">bool</span> TRForEdge0 = (edgeFuncTR0 &lt; <span class="hljs-number">0.f</span>);
+        <span class="hljs-keyword">bool</span> TRForEdge1 = (edgeFuncTR1 &lt; <span class="hljs-number">0.f</span>);
+        <span class="hljs-keyword">bool</span> TRForEdge2 = (edgeFuncTR2 &lt; <span class="hljs-number">0.f</span>);
+        <span class="hljs-keyword">if</span> (TRForEdge0 || TRForEdge1 || TRForEdge2)<font></font>
+        {<font></font>
+            LOG(<span class="hljs-string">"Tile %d TR'd by thread %d\n"</span>, m_pRenderEngine-&amp;gt;GetGlobalTileIndex(tx, ty), m_ThreadIdx);<font></font>
+<font></font>
+            <span class="hljs-comment">// TrivialReject</span>
+            <span class="hljs-comment">// Tile is completely outside of one or more edges</span>
+            <span class="hljs-keyword">continue</span>;<font></font>
+        }<font></font>
+        <span class="hljs-keyword">else</span><font></font>
+        {<font></font>
+            <span class="hljs-comment">// Tile is partially or completely inside one or more edges, do TrivialAccept tests first</span><font></font>
+<font></font>
+            <span class="hljs-comment">// Compute edge functions at TA corners based on edge function at first tile origin</span>
+            <span class="hljs-keyword">float</span> edgeFuncTA0 = edgeFunc0 + ((ee0.x * (scTileCornerOffsets[edge0TACorner].x + txxOffset)) + (ee0.y * (scTileCornerOffsets[edge0TACorner].y + tyyOffset)));
+            <span class="hljs-keyword">float</span> edgeFuncTA1 = edgeFunc1 + ((ee1.x * (scTileCornerOffsets[edge1TACorner].x + txxOffset)) + (ee1.y * (scTileCornerOffsets[edge1TACorner].y + tyyOffset)));
+            <span class="hljs-keyword">float</span> edgeFuncTA2 = edgeFunc2 + ((ee2.x * (scTileCornerOffsets[edge2TACorner].x + txxOffset)) + (ee2.y * (scTileCornerOffsets[edge2TACorner].y + tyyOffset)));<font></font>
+<font></font>
+            <span class="hljs-comment">// If TA corner of the tile is outside all edges, accept whole tile</span>
+            <span class="hljs-keyword">bool</span> TAForEdge0 = (edgeFuncTA0 &amp;gt;= <span class="hljs-number">0.f</span>);
+            <span class="hljs-keyword">bool</span> TAForEdge1 = (edgeFuncTA1 &amp;gt;= <span class="hljs-number">0.f</span>);
+            <span class="hljs-keyword">bool</span> TAForEdge2 = (edgeFuncTA2 &amp;gt;= <span class="hljs-number">0.f</span>);
+            <span class="hljs-keyword">if</span> (TAForEdge0 &amp;amp;&amp;amp; TAForEdge1 &amp;amp;&amp;amp; TAForEdge2)<font></font>
+            {<font></font>
+                <span class="hljs-comment">// TrivialAccept</span>
+                <span class="hljs-comment">// Tile is completely inside of the triangle, no further rasterization is needed,</span>
+                <span class="hljs-comment">// whole tile will be fragment-shaded!</span><font></font>
+<font></font>
+                LOG(<span class="hljs-string">"Tile %d TA'd by thread %d\n"</span>, m_pRenderEngine-&amp;gt;GetGlobalTileIndex(tx, ty), m_ThreadIdx);<font></font>
+<font></font>
+                <span class="hljs-comment">// Append tile to the rasterizer queue</span><font></font>
+                m_pRenderEngine-&amp;gt;EnqueueTileForRasterization(m_pRenderEngine-&amp;gt;GetGlobalTileIndex(tx, ty));<font></font>
+<font></font>
+                CoverageMask mask;<font></font>
+                mask.m_SampleX = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt;(tilePosX + txxOffset); <span class="hljs-comment">// Based off of first tile position calculated above</span>
+                mask.m_SampleY = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt;(tilePosY + tyyOffset); <span class="hljs-comment">// Based off of first tile position calculated above</span><font></font>
+                mask.m_PrimIdx = primIdx;<font></font>
+                mask.m_Type = CoverageMaskType::TILE;<font></font>
+<font></font>
+                <span class="hljs-comment">// Emit full-tile coverage mask</span><font></font>
+                m_pRenderEngine-&amp;gt;AppendCoverageMask(<font></font>
+                    m_ThreadIdx,<font></font>
+                    m_pRenderEngine-&amp;gt;GetGlobalTileIndex(tx, ty),<font></font>
+                    mask);<font></font>
+            }<font></font>
+            <span class="hljs-keyword">else</span><font></font>
+            {<font></font>
+                LOG(<span class="hljs-string">"Tile %d binned by thread %d\n"</span>, m_pRenderEngine-&amp;gt;GetGlobalTileIndex(tx, ty), m_ThreadIdx);<font></font>
+<font></font>
+                <span class="hljs-comment">// Overlap</span>
+                <span class="hljs-comment">// Tile is partially covered by the triangle, bin the triangle for the tile</span><font></font>
+                m_pRenderEngine-&amp;gt;BinPrimitiveForTile(<font></font>
+                    m_ThreadIdx,<font></font>
+                    m_pRenderEngine-&amp;gt;GetGlobalTileIndex(tx, ty),<font></font>
+                    primIdx);<font></font>
+            }<font></font>
+        }<font></font>
+    }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3つのエッジすべての角度TRとTAを見つけたら、各タイルの内側/外側にチェックを適用するために、間隔[minTile {X | Y}、maxTile {X | Y}）でタイルを繰り返しトラバースするサイクルに入ります。これは、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に見たのと同じテスト</font><font style="vertical-align: inherit;">です。唯一の違いは、テストがTR / TAタイルのコーナーに対して実行されることです。タイルがTRにドロップされたら、次に進みます。タイルがTA承認済みの場合、タイル</font><font style="vertical-align: inherit;">全体の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">カバレッジマスク</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を作成</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">し</font></a><font style="vertical-align: inherit;">（そしてタイルをラスタライザーキューに入れます）、次に続行します。失敗した場合、タイルがプリミティブと交差すると、次の</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ようにして</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プリミティブを</font><font style="vertical-align: inherit;">タイル</font><font style="vertical-align: inherit;">スレッドグループに</font><em><font style="vertical-align: inherit;">追加し</font></em><font style="vertical-align: inherit;">ます。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">RenderEngine::BinPrimitiveForTile</span><span class="hljs-params">(<span class="hljs-keyword">uint32_t</span> threadIdx, <span class="hljs-keyword">uint32_t</span> tileIdx, <span class="hljs-keyword">uint32_t</span> primIdx)</span>
+</span>{
+    <span class="hljs-comment">// Add primIdx to the per-thread bin of a tile</span><font></font>
+<font></font>
+    <span class="hljs-built_in">std</span>::<span class="hljs-built_in">vector</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt;&amp;amp; tileBin = m_BinList[tileIdx][threadIdx];<font></font>
+<font></font>
+    <span class="hljs-keyword">if</span> (tileBin.empty())<font></font>
+    {<font></font>
+        // First encounter of primitive <span class="hljs-keyword">for</span> tile, enqueue it <span class="hljs-keyword">for</span> rasterization<font></font>
+        EnqueueTileForRasterization(tileIdx);<font></font>
+    }<font></font>
+    <span class="hljs-keyword">else</span><font></font>
+    {<font></font>
+        // Tile must have been already appended to the work <span class="hljs-built_in">queue</span><font></font>
+        ASSERT(m_TileList[tileIdx].m_IsTileQueued.test_and_set());<font></font>
+    }<font></font>
+<font></font>
+    // Append primIdx to the tile's bin<font></font>
+    tileBin.push_back(primIdx);<font></font>
+}</code></pre><br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">RenderEngine::EnqueueTileForRasterization</span><span class="hljs-params">(<span class="hljs-keyword">uint32_t</span> tileIdx)</span>
+</span>{
+    <span class="hljs-comment">// Append the tile to the rasterizer queue if not already done</span>
+    <span class="hljs-keyword">if</span> (!m_TileList[tileIdx].m_IsTileQueued.test_and_set(<span class="hljs-built_in">std</span>::memory_order_acq_rel))<font></font>
+    {<font></font>
+        <span class="hljs-comment">// Tile not queued up for rasterization, do so now</span><font></font>
+        m_RasterizerQueue.InsertTileIndex(tileIdx);<font></font>
+    }<font></font>
+}</code></pre><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ラスタライザキュー</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">ラスタ化を</font></a><font style="vertical-align: inherit;">待機するタイルインデックスの単純なFIFO（タイルがプリミティブと交差する場合）、または次の手順でフレームごとにシェーディングされたフラグメント（TA承認済みタイル）です。</font><font style="vertical-align: inherit;">これで、ジオメトリ処理を終了し、ラスタライズに進むことができます。</font><font style="vertical-align: inherit;">比較のために、</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">こんにちは、トライアングルです！</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">デフォルトであり、簡単に受け入れられるタイル：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/57f/bde/dc0/57fbdedc0138a573e369449d0a2f9936.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/44c/f29/151/44cf291519c72a5f10b2bab8e5dbb2da.png"></div><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ラスタライズ</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ストリームがラスタライズ段階に進む前に、すべてのストリームがビニング後の段階に達するまでアイドル状態です。これは、ラスタライザが開始する前にすべてのプリミティブがタイルにグループ化されていることを確認するために必要です。</font><font style="vertical-align: inherit;">すべてのスレッドがジオメトリ処理のすべての段階を完了するとすぐに、ラスタライザキューからのタイルの処理を開始します。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-comment">// To preserve rendering order, we must ensure that all threads finish binning primitives to tiles</span>
+<span class="hljs-comment">// before rasterization is started. To do that, we will stall all threads to sync @DRAWCALL_RASTERIZATION</span>
+<span class="hljs-comment">// Set state to post binning and stall until all PipelineThreads complete binning</span>
+m_CurrentState.store(ThreadStatus::DRAWCALL_SYNC_POINT_POST_BINNER, <span class="hljs-built_in">std</span>::memory_order_release);<font></font>
+m_pRenderEngine-&gt;WaitForPipelineThreadsToCompleteBinning();</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+グループ化の考え方を理解していれば、ラスタライザの本質は非常に簡単です。同じレベルのTR / TAチェックを使用します。今回はブロックレベルで、タイルレベルから下に向かっていきます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a01/c82/480/a01c8248040dc112b075e245538383eb.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ストリームは</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">取得</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">再びと並行して上記のチェックを適用し、ラスタライザ・キューから次の利用可能なタイルインデックスをし、このタイルを処理し</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、すべての</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">グループ化とに結合されたプリミティブ</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">このタイル</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+グループ化段階と同様に、境界平行四辺形を使用して、</font><font style="vertical-align: inherit;">プリミティブと交差する</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ブロックの</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最大</font><em><font style="vertical-align: inherit;">インデックス</font></em><font style="vertical-align: inherit;">と最小</font><em><font style="vertical-align: inherit;">インデックス</font></em><font style="vertical-align: inherit;">を見つけ、</font><font style="vertical-align: inherit;">TR / TA </font><em><font style="vertical-align: inherit;">ブロックの</font></em><font style="vertical-align: inherit;">角度を決定し</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">すべてのエッジについて、ループ内の間隔全体を回って、TRまたはTAブロックを公開するか、それを完全に無視できるかどうかを確認します。ブロックがTRによって再び破棄された場合は、続行します。 TAを満たしている場合は、ブロック全体のカバレッジマスクを作成して続行します。それ以外の場合は</font><font style="vertical-align: inherit;">、エッジをチェックしてピクセルのカバレッジマスクを作成するために</font><font style="vertical-align: inherit;">、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ピクセル</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レベルでさらに低くする必要が</font><font style="vertical-align: inherit;">あります。便利なことに、SIMDのおかげで、複数のピクセルを並行してラスタライズできます。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-comment">// Position of the block that we're testing at pixel level</span>
+<span class="hljs-keyword">float</span> blockPosX = (firstBlockWithinBBoxX + bxxOffset);
+<span class="hljs-keyword">float</span> blockPosY = (firstBlockWithinBBoxY + byyOffset);<font></font>
+<font></font>
+<span class="hljs-comment">// Compute E(x, y) = (x * a) + (y * b) c at block origin once</span><font></font>
+__m128 sseEdge0FuncAtBlockOrigin = _mm_set1_ps(ee0.z + ((ee0.x * blockPosX) + (ee0.y * blockPosY)));<font></font>
+__m128 sseEdge1FuncAtBlockOrigin = _mm_set1_ps(ee1.z + ((ee1.x * blockPosX) + (ee1.y * blockPosY)));<font></font>
+__m128 sseEdge2FuncAtBlockOrigin = _mm_set1_ps(ee2.z + ((ee2.x * blockPosX) + (ee2.y * blockPosY)));<font></font>
+<font></font>
+<span class="hljs-comment">// Store edge 0 equation coefficients</span><font></font>
+__m128 sseEdge0A4 = _mm_set_ps1(ee0.x);<font></font>
+__m128 sseEdge0B4 = _mm_set_ps1(ee0.y);<font></font>
+<font></font>
+<span class="hljs-comment">// Store edge 1 equation coefficients</span><font></font>
+__m128 sseEdge1A4 = _mm_set_ps1(ee1.x);<font></font>
+__m128 sseEdge1B4 = _mm_set_ps1(ee1.y);<font></font>
+<font></font>
+<span class="hljs-comment">// Store edge 2 equation coefficients</span><font></font>
+__m128 sseEdge2A4 = _mm_set_ps1(ee2.x);<font></font>
+__m128 sseEdge2B4 = _mm_set_ps1(ee2.y);<font></font>
+<font></font>
+<span class="hljs-comment">// Generate masks used for tie-breaking rules (not to double-shade along shared edges)</span><font></font>
+__m128 sseEdge0A4PositiveOrB4NonNegativeA4Zero = _mm_or_ps(_mm_cmpgt_ps(sseEdge0A4, _mm_setzero_ps()),<font></font>
+    _mm_and_ps(_mm_cmpge_ps(sseEdge0B4, _mm_setzero_ps()), _mm_cmpeq_ps(sseEdge0A4, _mm_setzero_ps())));<font></font>
+<font></font>
+__m128 sseEdge1A4PositiveOrB4NonNegativeA4Zero = _mm_or_ps(_mm_cmpgt_ps(sseEdge1A4, _mm_setzero_ps()),<font></font>
+    _mm_and_ps(_mm_cmpge_ps(sseEdge1B4, _mm_setzero_ps()), _mm_cmpeq_ps(sseEdge1A4, _mm_setzero_ps())));<font></font>
+<font></font>
+__m128 sseEdge2A4PositiveOrB4NonNegativeA4Zero = _mm_or_ps(_mm_cmpgt_ps(sseEdge2A4, _mm_setzero_ps()),<font></font>
+    _mm_and_ps(_mm_cmpge_ps(sseEdge2B4, _mm_setzero_ps()), _mm_cmpeq_ps(sseEdge2A4, _mm_setzero_ps())));<font></font>
+<font></font>
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">uint32_t</span> py = <span class="hljs-number">0</span>; py &lt; g_scPixelBlockSize; py++)<font></font>
+{<font></font>
+    <span class="hljs-comment">// Store Y positions in current row (all samples on the same row has the same Y position)</span>
+    __m128 sseY4 = _mm_set_ps1(py + <span class="hljs-number">0.5f</span>);<font></font>
+<font></font>
+    <span class="hljs-keyword">for</span> (<span class="hljs-keyword">uint32_t</span> px = <span class="hljs-number">0</span>; px &lt; g_scNumEdgeTestsPerRow; px++)<font></font>
+    {<font></font>
+        <span class="hljs-comment">// E(x, y) = (x * a) + (y * b) + c</span>
+        <span class="hljs-comment">// E(x + s, y + t) = E(x, y) + s * a + t * b</span><font></font>
+<font></font>
+        <span class="hljs-comment">// Store X positions of 4 consecutive samples</span><font></font>
+        __m128 sseX4 = _mm_setr_ps(<font></font>
+            g_scSIMDWidth * px + <span class="hljs-number">0.5f</span>,<font></font>
+            g_scSIMDWidth * px + <span class="hljs-number">1.5f</span>,<font></font>
+            g_scSIMDWidth * px + <span class="hljs-number">2.5f</span>,<font></font>
+            g_scSIMDWidth * px + <span class="hljs-number">3.5f</span>);<font></font>
+<font></font>
+        <span class="hljs-comment">// a * s</span><font></font>
+        __m128 sseEdge0TermA = _mm_mul_ps(sseEdge0A4, sseX4);<font></font>
+        __m128 sseEdge1TermA = _mm_mul_ps(sseEdge1A4, sseX4);<font></font>
+        __m128 sseEdge2TermA = _mm_mul_ps(sseEdge2A4, sseX4);<font></font>
+<font></font>
+        <span class="hljs-comment">// b * t</span><font></font>
+        __m128 sseEdge0TermB = _mm_mul_ps(sseEdge0B4, sseY4);<font></font>
+        __m128 sseEdge1TermB = _mm_mul_ps(sseEdge1B4, sseY4);<font></font>
+        __m128 sseEdge2TermB = _mm_mul_ps(sseEdge2B4, sseY4);<font></font>
+<font></font>
+        <span class="hljs-comment">// E(x+s, y+t) = E(x,y) + a*s + t*b</span><font></font>
+        __m128 sseEdgeFunc0 = _mm_add_ps(sseEdge0FuncAtBlockOrigin, _mm_add_ps(sseEdge0TermA, sseEdge0TermB));<font></font>
+        __m128 sseEdgeFunc1 = _mm_add_ps(sseEdge1FuncAtBlockOrigin, _mm_add_ps(sseEdge1TermA, sseEdge1TermB));<font></font>
+        __m128 sseEdgeFunc2 = _mm_add_ps(sseEdge2FuncAtBlockOrigin, _mm_add_ps(sseEdge2TermA, sseEdge2TermB));<font></font>
+<font></font>
+        <span class="hljs-comment">//E(x, y):</span>
+        <span class="hljs-comment">//    E(x, y) &amp;gt; 0</span>
+        <span class="hljs-comment">//        ||</span>
+        <span class="hljs-comment">//    !E(x, y) &lt; 0 &amp;amp;&amp;amp; (a &amp;gt; 0 || (a = 0 &amp;amp;&amp;amp; b &amp;gt;= 0))</span>
+        <span class="hljs-comment">//</span><font></font>
+<font></font>
+        <span class="hljs-comment">// Edge 0 test</span><font></font>
+        __m128 sseEdge0Positive = _mm_cmpgt_ps(sseEdgeFunc0, _mm_setzero_ps());<font></font>
+        __m128 sseEdge0Negative = _mm_cmplt_ps(sseEdgeFunc0, _mm_setzero_ps());<font></font>
+        __m128 sseEdge0FuncMask = _mm_or_ps(sseEdge0Positive,<font></font>
+            _mm_andnot_ps(sseEdge0Negative, sseEdge0A4PositiveOrB4NonNegativeA4Zero));<font></font>
+<font></font>
+        <span class="hljs-comment">// Edge 1 test</span><font></font>
+        __m128 sseEdge1Positive = _mm_cmpgt_ps(sseEdgeFunc1, _mm_setzero_ps());<font></font>
+        __m128 sseEdge1Negative = _mm_cmplt_ps(sseEdgeFunc1, _mm_setzero_ps());<font></font>
+        __m128 sseEdge1FuncMask = _mm_or_ps(sseEdge1Positive,<font></font>
+            _mm_andnot_ps(sseEdge1Negative, sseEdge1A4PositiveOrB4NonNegativeA4Zero));<font></font>
+<font></font>
+        <span class="hljs-comment">// Edge 2 test</span><font></font>
+        __m128 sseEdge2Positive = _mm_cmpgt_ps(sseEdgeFunc2, _mm_setzero_ps());<font></font>
+        __m128 sseEdge2Negative = _mm_cmplt_ps(sseEdgeFunc2, _mm_setzero_ps());<font></font>
+        __m128 sseEdge2FuncMask = _mm_or_ps(sseEdge2Positive,<font></font>
+            _mm_andnot_ps(sseEdge2Negative, sseEdge2A4PositiveOrB4NonNegativeA4Zero));<font></font>
+<font></font>
+        <span class="hljs-comment">// Combine resulting masks of all three edges</span><font></font>
+        __m128 sseEdgeFuncResult = _mm_and_ps(sseEdge0FuncMask,<font></font>
+            _mm_and_ps(sseEdge1FuncMask, sseEdge2FuncMask));<font></font>
+<font></font>
+        <span class="hljs-keyword">uint16_t</span> maskInt = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">uint16_t</span>&amp;gt;(_mm_movemask_ps(sseEdgeFuncResult));<font></font>
+<font></font>
+        <span class="hljs-comment">// If at least one sample is visible, emit coverage mask for the tile</span>
+        <span class="hljs-keyword">if</span> (maskInt != <span class="hljs-number">0x0</span>)<font></font>
+        {<font></font>
+            <span class="hljs-comment">// Quad mask points to the first sample</span><font></font>
+            CoverageMask mask;<font></font>
+            mask.m_SampleX = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt;(blockPosX + (g_scSIMDWidth * px));<font></font>
+            mask.m_SampleY = <span class="hljs-keyword">static_cast</span>&lt;<span class="hljs-keyword">uint32_t</span>&amp;gt;(blockPosY + py);<font></font>
+            mask.m_PrimIdx = primIdx;<font></font>
+            mask.m_Type = CoverageMaskType::QUAD;<font></font>
+            mask.m_QuadMask = maskInt;<font></font>
+<font></font>
+            <span class="hljs-comment">// Emit a quad mask</span><font></font>
+            m_pRenderEngine-&amp;gt;AppendCoverageMask(m_ThreadIdx, nextTileIdx, mask);<font></font>
+        }<font></font>
+    }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この醜いSIMDスープを許してくれたら（一部、MSVCのせいで、このような単純な算術演算に最適ではないコードが生成されます）、並べ替えは非常に簡単です。ブロックの行に4ピクセルを割り当てます。 8×8、エッジチェックを実行し、4つのフラグメントのグループのカバレッジマスクを生成します。少なくとも1つのサンプルが表示されているそのようなグループが少なくとも1つ見つかった</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">場合（</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">たとえば、</font><em><font style="vertical-align: inherit;">（maskInt！= 0x0かどうかを</font></em><font style="vertical-align: inherit;">確認</font><em><font style="vertical-align: inherit;">する</font></em><font style="vertical-align: inherit;">）、このフラグメントのグループのカバレッジマスクを作成し、ブロック内のすべてのピクセルを繰り返しバイパスするまで続行します。区間内のすべてのブロック。これがラスタライザのポイントです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでの秘訣は、ラスタライゼーションの追加コストは非常に小さなレベルでのみ正当化され、タイルのほとんどのグループ化された三角形は複数のブロックであるためです。それ以外の場合、より高いレベルで行われたすべての計算を破棄する必要があります。</font><font style="vertical-align: inherit;">そのため、ハードウェアの実装では、通常、小さな三角形に対してさまざまな最適化が行われます。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">フラグメントシェーディング</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ポストラスタライズの段階に達したので、別の同期ポイントに直面しています。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-comment">// Rasterization completed, set state to post raster and</span>
+<span class="hljs-comment">// stall until all PipelineThreads complete rasterization.</span>
+<span class="hljs-comment">// We need this sync because when (N-x) threads finish rasterization and</span>
+<span class="hljs-comment">// reach the end of tile queue while x threads are still busy rasterizing tile blocks,</span>
+<span class="hljs-comment">// we must ensure that none of the (N-x) non-busy threads will go ahead and start fragment-shading tiles</span>
+<span class="hljs-comment">// whose blocks could be currently still rasterized by x remaining threads</span>
+m_CurrentState.store(ThreadStatus::DRAWCALL_SYNC_POINT_POST_RASTER, <span class="hljs-built_in">std</span>::memory_order_release);<font></font>
+m_pRenderEngine-&gt;WaitForPipelineThreadsToCompleteRasterization();</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてのストリームをフラグメントのシェーディング（FS）の段階に同時に到達させ、ダウンタイムの後、ラスタライズが完了するまで、パイプラインの最終段階に進みます。</font><font style="vertical-align: inherit;">ラスタライズステージと同様に、FSステージは、ビニングステージで最初に作成し、次にラスタライズステージで作成したカバレッジマスクを使用して、ラスタライザーキューから取得したタイルと同時に動作します。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">auto</span>&amp;amp; currentSlot = pCoverageMaskBuffer-&amp;gt;m_AllocationList[numAlloc];<font></font>
+<font></font>
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">uint32_t</span> numMask = <span class="hljs-number">0</span>; numMask &lt; currentSlot.m_AllocationCount; numMask++)<font></font>
+{<font></font>
+    ASSERT(pCoverageMaskBuffer-&amp;gt;m_AllocationList[numAlloc].m_pData != <span class="hljs-literal">nullptr</span>);<font></font>
+<font></font>
+    CoverageMask* pMask = &amp;amp;currentSlot.m_pData[numMask];<font></font>
+<font></font>
+    <span class="hljs-comment">// In many cases, next N coverage masks will have been generated for the same primitive</span>
+    <span class="hljs-comment">// that we're fragment-shading at tile, block or fragment levels here,</span>
+    <span class="hljs-comment">// it could be optimized so that the EE coefficients of the same primitive won't be fetched</span>
+    <span class="hljs-comment">// from memory over and over again, unsure what gain, if anything it'd yield...</span><font></font>
+<font></font>
+    <span class="hljs-comment">// First fetch EE coefficients that will be used (in addition to edge in/out tests) for perspective-correct interpolation of vertex attributes</span>
+    <span class="hljs-keyword">const</span> glm::vec3 ee0 = m_pRenderEngine-&amp;gt;m_SetupBuffers.m_pEdgeCoefficients[<span class="hljs-number">3</span> * pMask-&amp;gt;m_PrimIdx + <span class="hljs-number">0</span>];
+    <span class="hljs-keyword">const</span> glm::vec3 ee1 = m_pRenderEngine-&amp;gt;m_SetupBuffers.m_pEdgeCoefficients[<span class="hljs-number">3</span> * pMask-&amp;gt;m_PrimIdx + <span class="hljs-number">1</span>];
+    <span class="hljs-keyword">const</span> glm::vec3 ee2 = m_pRenderEngine-&amp;gt;m_SetupBuffers.m_pEdgeCoefficients[<span class="hljs-number">3</span> * pMask-&amp;gt;m_PrimIdx + <span class="hljs-number">2</span>];<font></font>
+<font></font>
+    <span class="hljs-comment">// Store edge 0 coefficients</span><font></font>
+    __m128 sseA4Edge0 = _mm_set_ps1(ee0.x);<font></font>
+    __m128 sseB4Edge0 = _mm_set_ps1(ee0.y);<font></font>
+    __m128 sseC4Edge0 = _mm_set_ps1(ee0.z);<font></font>
+<font></font>
+    <span class="hljs-comment">// Store edge 1 equation coefficients</span><font></font>
+    __m128 sseA4Edge1 = _mm_set_ps1(ee1.x);<font></font>
+    __m128 sseB4Edge1 = _mm_set_ps1(ee1.y);<font></font>
+    __m128 sseC4Edge1 = _mm_set_ps1(ee1.z);<font></font>
+<font></font>
+    <span class="hljs-comment">// Store edge 2 equation coefficients</span><font></font>
+    __m128 sseA4Edge2 = _mm_set_ps1(ee2.x);<font></font>
+    __m128 sseB4Edge2 = _mm_set_ps1(ee2.y);<font></font>
+    __m128 sseC4Edge2 = _mm_set_ps1(ee2.z);<font></font>
+<font></font>
+    <span class="hljs-keyword">const</span> SIMDEdgeCoefficients simdEERegs =<font></font>
+    {<font></font>
+        sseA4Edge0,<font></font>
+        sseA4Edge1,<font></font>
+        sseA4Edge2,<font></font>
+        sseB4Edge0,<font></font>
+        sseB4Edge1,<font></font>
+        sseB4Edge2,<font></font>
+        sseC4Edge0,<font></font>
+        sseC4Edge1,<font></font>
+        sseC4Edge2,<font></font>
+    };<font></font>
+<font></font>
+    <span class="hljs-keyword">switch</span> (pMask-&amp;gt;m_Type)<font></font>
+    {<font></font>
+    <span class="hljs-keyword">case</span> CoverageMaskType::TILE:<font></font>
+        LOG(<span class="hljs-string">"Thread %d fragment-shading tile %d\n"</span>, m_ThreadIdx, nextTileIdx);<font></font>
+        FragmentShadeTile(pMask-&amp;gt;m_SampleX, pMask-&amp;gt;m_SampleY, pMask-&amp;gt;m_PrimIdx, simdEERegs);<font></font>
+        <span class="hljs-keyword">break</span>;
+    <span class="hljs-keyword">case</span> CoverageMaskType::BLOCK:<font></font>
+        LOG(<span class="hljs-string">"Thread %d fragment-shading blocks\n"</span>, m_ThreadIdx);<font></font>
+        FragmentShadeBlock(pMask-&amp;gt;m_SampleX, pMask-&amp;gt;m_SampleY, pMask-&amp;gt;m_PrimIdx, simdEERegs);<font></font>
+        <span class="hljs-keyword">break</span>;
+    <span class="hljs-keyword">case</span> CoverageMaskType::QUAD:<font></font>
+        LOG(<span class="hljs-string">"Thread %d fragment-shading coverage masks\n"</span>, m_ThreadIdx, ee0, ee1, ee2);<font></font>
+        FragmentShadeQuad(pMask, simdEERegs);<font></font>
+        <span class="hljs-keyword">break</span>;
+    <span class="hljs-keyword">default</span>:<font></font>
+        ASSERT(<span class="hljs-literal">false</span>);
+        <span class="hljs-keyword">break</span>;<font></font>
+    }<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ユーザープロシージャFSを呼び出す前に、最初に、パラメーターの基本関数と呼ばれるものを計算する必要があります。これは、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">記事</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で</font><font style="vertical-align: inherit;">説明したメソッドの直接実装であり</font><font style="vertical-align: inherit;">、上記のリンクです。</font><font style="vertical-align: inherit;">一番下の行は、各パラメーターの補間ベクトルを計算する代わりに、任意のパラメーターを（遠近法の観点から正しく）補間できる基底関数を見つけることです。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/ca7/77a/b0e/ca777ab0e68b2069946140da44616045.png"></div><br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">PipelineThread::ComputeParameterBasisFunctions</span><span class="hljs-params">(
+    <span class="hljs-keyword">uint32_t</span> sampleX,
+    <span class="hljs-keyword">uint32_t</span> sampleY,
+    <span class="hljs-keyword">const</span> SIMDEdgeCoefficients&amp; simdEERegs,
+    __m128* pSSEf0XY,
+    __m128* pSSEf1XY)</span>
+</span>{
+    <span class="hljs-comment">// R(x, y) = F0(x, y) + F1(x, y) + F2(x, y)</span>
+    <span class="hljs-comment">// r = 1/(F0(x, y) + F1(x, y) + F2(x, y))</span><font></font>
+<font></font>
+    <span class="hljs-comment">// Store X positions of 4 consecutive samples</span><font></font>
+    __m128 sseX4 = _mm_setr_ps(<font></font>
+        sampleX + <span class="hljs-number">0.5f</span>,<font></font>
+        sampleX + <span class="hljs-number">1.5f</span>,<font></font>
+        sampleX + <span class="hljs-number">2.5f</span>,<font></font>
+        sampleX + <span class="hljs-number">3.5f</span>); <span class="hljs-comment">// x x+1 x+2 x+3</span><font></font>
+<font></font>
+    <span class="hljs-comment">// Store Y positions of 4 samples in a row (constant)</span>
+    __m128 sseY4 = _mm_set_ps1(sampleY); <span class="hljs-comment">// y y y y</span><font></font>
+<font></font>
+    <span class="hljs-comment">// Compute F0(x,y)</span><font></font>
+    __m128 sseF0XY4 = _mm_add_ps(simdEERegs.m_SSEC4Edge0,<font></font>
+        _mm_add_ps(<font></font>
+            _mm_mul_ps(sseY4, simdEERegs.m_SSEB4Edge0),<font></font>
+            _mm_mul_ps(sseX4, simdEERegs.m_SSEA4Edge0)));<font></font>
+<font></font>
+    <span class="hljs-comment">// Compute F1(x,y)</span><font></font>
+    __m128 sseF1XY4 = _mm_add_ps(simdEERegs.m_SSEC4Edge1,<font></font>
+        _mm_add_ps(<font></font>
+            _mm_mul_ps(sseY4, simdEERegs.m_SSEB4Edge1),<font></font>
+            _mm_mul_ps(sseX4, simdEERegs.m_SSEA4Edge1)));<font></font>
+<font></font>
+    <span class="hljs-comment">// Compute F2(x,y)</span><font></font>
+    __m128 sseF2XY4 = _mm_add_ps(simdEERegs.m_SSEC4Edge2,<font></font>
+        _mm_add_ps(<font></font>
+            _mm_mul_ps(sseY4, simdEERegs.m_SSEB4Edge2),<font></font>
+            _mm_mul_ps(sseX4, simdEERegs.m_SSEA4Edge2)));<font></font>
+<font></font>
+    <span class="hljs-comment">// Compute F(x,y) = F0(x,y) + F1(x,y) + F2(x,y)</span><font></font>
+    __m128 sseR4 = _mm_add_ps(sseF2XY4, _mm_add_ps(sseF0XY4, sseF1XY4));<font></font>
+<font></font>
+    <span class="hljs-comment">// Compute perspective correction factor</span><font></font>
+    sseR4 = _mm_rcp_ps(sseR4);<font></font>
+<font></font>
+    <span class="hljs-comment">// Assign final f0(x,y) &amp; f1(x,y)</span><font></font>
+    *pSSEf0XY = _mm_mul_ps(sseR4, sseF0XY4);<font></font>
+    *pSSEf1XY = _mm_mul_ps(sseR4, sseF1XY4);<font></font>
+<font></font>
+    <span class="hljs-comment">// Basis functions f0, f1, f2 sum to 1, e.g. f0(x,y) + f1(x,y) + f2(x,y) = 1 so we'll skip computing f2(x,y) explicitly</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さまざまなカバレッジマスク（タイル/ブロック/四角形）の実装はほとんど同じなので、完全を期すために四角形マスクを使用しました。これはコードを実行する最も簡潔な方法であるため、SIMDをできるだけ積極的に使用するように努めています。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">PipelineThread::FragmentShadeQuad</span><span class="hljs-params">(CoverageMask* pMask, <span class="hljs-keyword">const</span> SIMDEdgeCoefficients&amp; simdEERegs)</span>
+</span>{<font></font>
+    FragmentShader FS = m_pRenderEngine-&gt;m_FragmentShader;<font></font>
+<font></font>
+    <span class="hljs-comment">// Vertex attributes to be interpolated and passed to FS</span><font></font>
+    InterpolatedAttributes interpolatedAttribs;<font></font>
+<font></font>
+    <span class="hljs-comment">// Parameter interpolation basis functions</span><font></font>
+    __m128 ssef0XY, ssef1XY;<font></font>
+<font></font>
+    <span class="hljs-comment">// Calculate basis functions f0(x,y) &amp; f1(x,y) once</span><font></font>
+    ComputeParameterBasisFunctions(<font></font>
+        pMask-&gt;m_SampleX,<font></font>
+        pMask-&gt;m_SampleY,<font></font>
+        simdEERegs,            <font></font>
+        &amp;ssef0XY,<font></font>
+        &amp;ssef1XY);<font></font>
+<font></font>
+    <span class="hljs-comment">// Interpolate depth values prior to depth test</span><font></font>
+    __m128 sseZInterpolated = InterpolateDepthValues(pMask-&gt;m_PrimIdx, ssef0XY, ssef1XY);<font></font>
+<font></font>
+    <span class="hljs-comment">// Load current depth buffer contents</span><font></font>
+    __m128 sseDepthCurrent = m_pRenderEngine-&gt;FetchDepthBuffer(pMask-&gt;m_SampleX, pMask-&gt;m_SampleY);<font></font>
+<font></font>
+    <span class="hljs-comment">// Perform LESS_THAN_EQUAL depth test</span><font></font>
+    __m128 sseDepthRes = _mm_cmple_ps(sseZInterpolated, sseDepthCurrent);<font></font>
+<font></font>
+    <span class="hljs-comment">// Interpolate active vertex attributes</span><font></font>
+    InterpolateVertexAttributes(pMask-&gt;m_PrimIdx, ssef0XY, ssef1XY, &amp;interpolatedAttribs);<font></font>
+<font></font>
+    <span class="hljs-comment">// 4-sample fragment colors</span><font></font>
+    FragmentOutput fragmentOutput;<font></font>
+<font></font>
+    <span class="hljs-comment">// Invoke FS and update color/depth buffer with fragment output</span><font></font>
+    FS(&amp;interpolatedAttribs, m_pRenderEngine-&gt;m_pConstantBuffer, &amp;fragmentOutput);<font></font>
+<font></font>
+    <span class="hljs-comment">// Generate color mask from 4-bit int mask set during rasterization</span><font></font>
+    __m128i sseColorMask = _mm_setr_epi32(<font></font>
+        pMask-&gt;m_QuadMask &amp; g_scQuadMask0,<font></font>
+        pMask-&gt;m_QuadMask &amp; g_scQuadMask1,<font></font>
+        pMask-&gt;m_QuadMask &amp; g_scQuadMask2,<font></font>
+        pMask-&gt;m_QuadMask &amp; g_scQuadMask3);<font></font>
+<font></font>
+    sseColorMask = _mm_cmpeq_epi32(sseColorMask,<font></font>
+        _mm_set_epi64x(<span class="hljs-number">0x800000004</span>, <span class="hljs-number">0x200000001</span>));<font></font>
+<font></font>
+    <span class="hljs-comment">// AND depth mask &amp; coverage mask for quads of fragments</span><font></font>
+    __m128 sseWriteMask = _mm_and_ps(sseDepthRes, _mm_castsi128_ps(sseColorMask));<font></font>
+<font></font>
+    <span class="hljs-comment">// Write interpolated Z values</span><font></font>
+    m_pRenderEngine-&gt;UpdateDepthBuffer(sseWriteMask, sseZInterpolated, pMask-&gt;m_SampleX, pMask-&gt;m_SampleY);<font></font>
+<font></font>
+    <span class="hljs-comment">// Write fragment output</span><font></font>
+    m_pRenderEngine-&gt;UpdateColorBuffer(sseWriteMask, fragmentOutput, pMask-&gt;m_SampleX, pMask-&gt;m_SampleY);<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+基底関数を計算した後、まずZの値を補間し、深度テストを実行します。</font><font style="vertical-align: inherit;">深度テストの結果を思い出して、VSの後に指定された他のすべてのユーザー属性を補間し、それらを次に呼び出すFSプロシージャに渡して、4つのサンプルのフラグメントのカラー出力を取得します。</font><font style="vertical-align: inherit;">タイル/ブロックの場合、TA承認済みのすべてのタイル/ブロックが確実に表示されるため、深度テストの結果である1つの記録マスクがあります。</font><font style="vertical-align: inherit;">フラグメントの四角形の場合、カバレッジマスクを使用して、フレームマスクごとに</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">深度</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">色の</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">値を保存します</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">そして、これでシンプルなタイルラスタライザの研究は終わりです。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最終的に</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+タイルラスタライザの内部作業の調査が終了したので、実験とその改善のためのアイデアが浮かび上がります。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">試し</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ラスタライザの構成は</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、このすべてがパフォーマンスにどのように影響するかを確認するために、などスレッドの数、反復サイズを、異なるタイルのサイズを試してみてください</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TRの結果をTAの結果に置き換えて、TRによってドロップされたタイルのレンダリングを確認する</font></font></li>
+<li><font style="vertical-align: inherit;"></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">tileIdx</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">変数</font><font style="vertical-align: inherit;">を</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シェーダーメタデータに</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">挿入し、</font><font style="vertical-align: inherit;">それをFSに渡して、レンダリングされるタイルのインデックスに応じて、メッシュの部分に色を付けます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AVXパイプライン（またはAVX-512でさえも！）への統合それがさまざまな負荷でのパフォーマンスにどのように影響するかを確認するには（スポイラー：</font><font style="vertical-align: inherit;">ほとんどのシーンでパフォーマンスが約30-50％向上</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">したAVX</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で行いました）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">さまざまなシーンの「ボトルネック」を見つけ、最適化を試みる</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">単純なデバッガー接続と</font><font style="vertical-align: inherit;">パイプライン内</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">三角形の</font><font style="vertical-align: inherit;">段階的な</font><em><font style="vertical-align: inherit;">トレース</font></em></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、私は誰もがプロジェクトをコンパイルして自分で試してみることをお勧めします！</font><font style="vertical-align: inherit;">実際の動作を確認したい場合は、Hello、Triangle！の例を見つけてください。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ここでは</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、シーンのレンダリングの例</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ここでは</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（とリソースパック</font></font><a rel="nofollow" href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、ここで</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">あなたはもっと複雑なシーンをレンダリングする場合）</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/124/a6b/664/124a6b6641f5c341aa2951534c82f10c.png"></div><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">約60ミリ秒でインテルi7 6700-HQを搭載したラップトップでレンダリングされた約275,000の三角形の必須のSponzaシーン</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">参考資料</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私は主に次の記事や研究からインスピレーションを得て/借りて/コピーしたので、もっと知りたいのなら、それらを研究してください：</font></font><br>
+<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Larrabeeのラスター化-適応ラスター化は効率の向上に役立ちます</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ソフトウェアのラスタライズへの最新のアプローチ</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">増分および階層ヒルベルト次数エッジ方程式のポリゴンラスタライズ</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2D同種座標を使用した三角形スキャン変換</font></font></a></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja473092/index.html">HabrによるAMA、＃13：ユーザーと企業にとって重要なニュース</a></li>
+<li><a href="../ja473094/index.html">すばらしい開発者の物語、パート5：宇宙の秘密</a></li>
+<li><a href="../ja473096/index.html">高度なデータ構造。パート1：方向性非循環グラフ</a></li>
+<li><a href="../ja473098/index.html">FFmpegをWebAssembly（= ffmpeg.js）にコンパイルする：パート1-クッキング</a></li>
+<li><a href="../ja473100/index.html">非同期通信は、リモート作業がより効率的な本当の理由です。</a></li>
+<li><a href="../ja473108/index.html">AngularのAgularコンポーネント</a></li>
+<li><a href="../ja473114/index.html">Laravel：基本的な概念を分析します。パート3：最終</a></li>
+<li><a href="../ja473118/index.html">Siemens Digital Industries Softwareが電気システム設計アプローチを変更</a></li>
+<li><a href="../ja473120/index.html">開発者はスタートアップに行きたがっています。雇用主に何をすべきか？</a></li>
+<li><a href="../ja473124/index.html">ソリューションの評価とバグの発見にマルコフチェーンを使用する方法。Pythonスクリプトを使用</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

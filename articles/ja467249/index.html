@@ -1,0 +1,330 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🍋 🤴🏿 🍇 V8、React、パフォーマンス低下の物語。パート2 😘 🐁 🧕🏾</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="本日、V8の内部メカニズムに特化した資料の翻訳の第2部と、Reactパフォーマンスの問題の調査を公開します。 → 前編
+ 
+ 
+ 
+
+ 
+ オブジェクトフォームの陳腐化と移行
+ フィールドに最初にSmi-valueが含まれていて、状況が変化し、ビューがSmi適さない値を格納する必要がある場合はどうな...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>V8、React、パフォーマンス低下の物語。パート2</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/ruvds/blog/467249/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">本日、V8の内部メカニズムに特化した資料の翻訳の第2部と、Reactパフォーマンスの問題の調査を公開します。</font><font style="vertical-align: inherit;">
+→ </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">前編</font></a></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><img src="https://habrastorage.org/webt/de/g6/0r/deg60r8mwme-o8ihiv3mlbuqhmq.jpeg"></a><br>
+<br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><br>
+<a name="habracut"></a><br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オブジェクトフォームの陳腐化と移行</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フィールドに最初に</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-valueが</font><font style="vertical-align: inherit;">含まれていて</font><font style="vertical-align: inherit;">、状況が変化し、ビューが</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">適さない</font><font style="vertical-align: inherit;">値を格納する必要がある場合は</font><font style="vertical-align: inherit;">どうなりますか？</font><font style="vertical-align: inherit;">たとえば、次の例のように、2つのオブジェクトが、</font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">元はフォームに格納されて</font><font style="vertical-align: inherit;">いた同じフォームのオブジェクトを使用して表される場合</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">const</span> a = { <span class="hljs-attr">x</span>: <span class="hljs-number">1</span> };
+<span class="hljs-keyword">const</span> b = { <span class="hljs-attr">x</span>: <span class="hljs-number">2</span> };
+<span class="hljs-comment">//  `x`       `Smi`</span><font></font>
+<font></font>
+b.x = <span class="hljs-number">0.2</span>;
+<span class="hljs-comment">//  `b.x`     `Double`</span><font></font>
+<font></font>
+y = a.x;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例の最初に、2つのオブジェクトがあり、そのプレゼンテーションで</font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は</font><font style="vertical-align: inherit;">、</font><font style="vertical-align: inherit;">形式が</font><font style="vertical-align: inherit;">ストレージに</font><font style="vertical-align: inherit;">使用さ</font><font style="vertical-align: inherit;">れているのと同じ形式のオブジェクトを</font><font style="vertical-align: inherit;">使用</font><font style="vertical-align: inherit;">しています</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/7a0/02d/43f/7a002d43f6d9e7b6e702173b32256513.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オブジェクトを表すために同じフォームが使用されます。</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+プロパティ</font></font><code>b.x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">が変更され、それを表すため</font></font><code>Double</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に</font><font style="vertical-align: inherit;">フォーマットを使用する必要がある場合</font><font style="vertical-align: inherit;">、V8</font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は</font><font style="vertical-align: inherit;">、</font><font style="vertical-align: inherit;">プレゼンテーションが割り当てられ</font></font><code>Double</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、空のフォームを示す</font><font style="vertical-align: inherit;">オブジェクトの新しいフォームにメモリ内の場所を割り当てます</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">さらに、V8</font></font><code>MutableHeapNumber</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、プロパティの値0.2を格納するために使用される</font><font style="vertical-align: inherit;">エンティティ</font><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">作成</font><font style="vertical-align: inherit;">します</font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">次に</font></font><code>b</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、この新しいフォームを参照するよう</font><font style="vertical-align: inherit;">にオブジェクトを更新し、</font></font><code>MutableHeapNumber</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オフセット0で</font><font style="vertical-align: inherit;">以前に作成されたエンティティ</font><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">参照するようにオブジェクトのスロットを変更します。</font><font style="vertical-align: inherit;">最後に、オブジェクトの古いフォームを廃止としてマークし、遷移ツリーから切断します。</font><font style="vertical-align: inherit;">これは、</font></font><code>'x'</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 空のフォームから先ほど作成したフォームまで。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/e7c/8f0/361/e7c8f03616b29cd8c1bea799c6527546.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オブジェクトプロパティに新しい値を割り当てることの結果</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+現在、古いフォームはまだオブジェクトによって使用されているため、完全に削除することはできません</font></font><code>a</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。さらに、古いフォームを参照するすべてのオブジェクトの検索ですべてのメモリをバイパスし、これらのオブジェクトの状態をすぐに更新することは非常にコストがかかります。代わりに、V8はここで「遅延」アプローチを使用します。つまり、オブジェクトのプロパティの読み取りまたは書き込みに関するすべての操作は、</font></font><code>a</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最初に新しいフォームの使用に移されます。このアクションの背後にある考え方は、オブジェクトの廃止された形式を最終的に達成不可能にすることです。これにより、ガベージコレクターが処理します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/656/bfa/7a3/656bfa7a3138ace8f68a09553b718af6.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">廃止されたフォームによって占有されていたメモリは、ガベージコレクタによって解放されます。</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ビューを変更するフィールドがチェーンの最後ではない場合、状況はさらに複雑になります。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">const</span> o = {
+&nbsp;&nbsp;<span class="hljs-attr">x</span>: <span class="hljs-number">1</span>,
+&nbsp;&nbsp;<span class="hljs-attr">y</span>: <span class="hljs-number">2</span>,
+&nbsp;&nbsp;<span class="hljs-attr">z</span>: <span class="hljs-number">3</span>,<font></font>
+};<font></font>
+<font></font>
+o.y = <span class="hljs-number">0.1</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この場合、V8はいわゆる分割形状を見つける必要があります。</font><font style="vertical-align: inherit;">これは、対応するプロパティが表示されるフォームの前にある、チェーンの最後のフォームです。</font><font style="vertical-align: inherit;">ここでは、変更を加えています</font></font><code>y</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。つまり、</font><font style="vertical-align: inherit;">変更さ</font><font style="vertical-align: inherit;">れていない最後のフォームを見つける必要があり</font></font><code>y</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">この例では、これが表示されるフォーム</font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/042/210/2e3/0422102e38310aa94fecc13f38048222.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">値が変更されなかった最後のフォームを検索します。</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ここでは、このフォームから始めて、の新しい遷移チェーンを作成します</font></font><code>y</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。これにより、以前のすべての遷移が再現されます。</font><font style="vertical-align: inherit;">今だけプロパティ</font></font><code>'y'</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">がフォームに表示され</font></font><code>Double</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">次に、この新しい遷移チェーンをに使用</font></font><code>y</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">し、廃止された古いサブツリーとしてマークします。</font><font style="vertical-align: inherit;">最後のステップでは、オブジェクトのインスタンスを</font></font><code>o</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">新しいフォームに</font><font style="vertical-align: inherit;">移行</font><font style="vertical-align: inherit;">し、</font></font><code>y</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エンティティ</font><font style="vertical-align: inherit;">を使用して値を格納します</font></font><code>MutableHeapNumber</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">このアプローチでは、新しいオブジェクトは古い遷移ツリーのフラグメントを使用せず、古いフォームへのすべての参照が消えた後、ツリーの古い部分も消えます。</font></font><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">拡張性と移行の完全性</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このコマンドを</font></font><code>Object.preventExtensions()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用すると、オブジェクトへの新しいプロパティの追加を完全に禁止できます。</font><font style="vertical-align: inherit;">このコマンドでオブジェクトを処理し、それに新しいプロパティを追加しようとすると、例外がスローされます。</font><font style="vertical-align: inherit;">（実際、コードがストリクトモードで実行されない場合、例外はスローされませんが、プロパティを追加しようとしても、結果にはなりません）。</font><font style="vertical-align: inherit;">次に例を示します。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">const</span> object = { <span class="hljs-attr">x</span>: <span class="hljs-number">1</span> };
+<span class="hljs-built_in">Object</span>.preventExtensions(object);<font></font>
+object.y = <span class="hljs-number">2</span>;
+<span class="hljs-comment">// TypeError: Cannot add property y;</span>
+<span class="hljs-comment">//&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; object is not extensible</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このメソッド</font></font><code>Object.seal()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、オブジェクトと同じように動作しますが、</font></font><code>Object.preventExtensions()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">すべてのプロパティを構成不可能としてマークします。</font><font style="vertical-align: inherit;">これは、それらを削除したり、それらをリスト、設定、または書き換えたりする可能性に関してプロパティを変更できないことを意味します。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">const</span> object = { <span class="hljs-attr">x</span>: <span class="hljs-number">1</span> };
+<span class="hljs-built_in">Object</span>.seal(object);<font></font>
+object.y = <span class="hljs-number">2</span>;
+<span class="hljs-comment">// TypeError: Cannot add property y;</span>
+<span class="hljs-comment">//&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; object is not extensible</span>
+<span class="hljs-keyword">delete</span> object.x;
+<span class="hljs-comment">// TypeError: Cannot delete property x</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+メソッド</font></font><code>Object.freeze()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">はと同じアクションを実行しますが</font></font><code>Object.seal()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、これを使用すると、既存のプロパティの値を変更できないという事実につながります。</font><font style="vertical-align: inherit;">それらは、新しい値を書き込むことができないプロパティとしてマークされています。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">const</span> object = { <span class="hljs-attr">x</span>: <span class="hljs-number">1</span> };
+<span class="hljs-built_in">Object</span>.freeze(object);<font></font>
+object.y = <span class="hljs-number">2</span>;
+<span class="hljs-comment">// TypeError: Cannot add property y;</span>
+<span class="hljs-comment">//&nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; object is not extensible</span>
+<span class="hljs-keyword">delete</span> object.x;
+<span class="hljs-comment">// TypeError: Cannot delete property x</span>
+object.x = <span class="hljs-number">3</span>;
+<span class="hljs-comment">// TypeError: Cannot assign to read-only property x</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+具体的な例を考えてみましょう。</font><font style="vertical-align: inherit;">2つのオブジェクトがあり、それぞれに固有の意味があり</font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">次に、2番目のオブジェクトの拡張を禁止します。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">const</span> a = { <span class="hljs-attr">x</span>: <span class="hljs-number">1</span> };
+<span class="hljs-keyword">const</span> b = { <span class="hljs-attr">x</span>: <span class="hljs-number">2</span> };<font></font>
+<font></font>
+<span class="hljs-built_in">Object</span>.preventExtensions(b);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このコードの処理は、すでに知っているアクションから始まります。</font><font style="vertical-align: inherit;">つまり、オブジェクトの空のフォームから、プロパティ</font></font><code>'x'</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（エンティティとして表される</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">を含む新しいフォームへの遷移が行われます</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">オブジェクトの展開を禁止すると</font></font><code>b</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、これにより</font><font style="vertical-align: inherit;">、展開</font><font style="vertical-align: inherit;">不可としてマークされた新しいフォームに特別に移行します。</font><font style="vertical-align: inherit;">この特別な移行は、いくつかの新しいプロパティの出現にはつながりません。</font><font style="vertical-align: inherit;">これは実際には単なるマーカーです。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/958/2f4/94a/9582f494ae02d57ddc0c17db4749f767.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Object.preventExtensions（）メソッドを使用したオブジェクトの処理結果</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+既存のフォームをその値で変更することはできないことに注意してください。</font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これは、別のオブジェクト、つまり</font></font><code>a</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">まだ拡張可能な</font><font style="vertical-align: inherit;">オブジェクトが必要とするためです</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">反応パフォーマンスの問題</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、話し合ったすべてを収集し、最近の</font><font style="vertical-align: inherit;">Reactパフォーマンス</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">問題の</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">本質を理解するために得た知識を使用し</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">Reactチームが実際のアプリケーションのプロファイルを作成したとき、彼らは、Reactコアに作用するV8パフォーマンスの奇妙な低下に気づきました。</font><font style="vertical-align: inherit;">これは、コードの問題部分を単純化して再現したものです。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">const</span> o = { <span class="hljs-attr">x</span>: <span class="hljs-number">1</span>, <span class="hljs-attr">y</span>: <span class="hljs-number">2</span> };
+<span class="hljs-built_in">Object</span>.preventExtensions(o);<font></font>
+o.y = <span class="hljs-number">0.2</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+エンティティとして表される2つのフィールドを持つオブジェクトがあります</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">オブジェクトがそれ以上展開されないようにしてから、2番目のフィールドをフォーマットで表す必要があるという事実につながるアクションを実行します</font></font><code>Double</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+オブジェクトの展開を禁止すると、次のような状況になることはすでにわかっています。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/bf7/d6e/3b8/bf7d6e3b8783a06c2923e76aa830f64b.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オブジェクトの展開禁止の結果</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+エンティティは</font><i><font color="#999999"><font style="vertical-align: inherit;">、オブジェクトの</font></font></i><font style="vertical-align: inherit;">両方のプロパティを表すために使用されます</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。最後の遷移は、オブジェクトの形状を非展開可能としてマークするために必要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、プロパティが</font></font><code>y</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">によって</font><font style="vertical-align: inherit;">表さ</font><font style="vertical-align: inherit;">れる</font><font style="vertical-align: inherit;">方法を変更する必要があり</font></font><code>Double</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。これは、ある種の分離を探し始める必要があることを意味します。この場合、これはプロパティが表示されるフォームです</font></font><code>x</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。しかし今、V8は混乱しています。事実、分離フォームは拡張可能であり、現在のフォームは拡張不可能としてマークされていました。 V8は、同様の状況で移行プロセスを再現する方法を知りません。その結果、エンジンは単にそれをすべて理解しようとすることを拒否します。代わりに、現在のフォームツリーに接続されておらず、他のオブジェクトと共有されていない別のフォームを作成するだけです。これは、孤立したオブジェクトのようなものです。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/abc/581/82d/abc58182dd6e657649af6e934aef04f7.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「孤立した」形式</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+多くのオブジェクトでこれが発生する場合、これは非常に悪いと簡単に推測できます。これにより、V8オブジェクトフォームのシステム全体が役に立たなくなります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Reactで最近問題が発生したとき、次のことが起こりました。各クラスオブジェクトに</font></font><code>FiberNode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、プロファイリングが有効な場合にタイムスタンプを格納するためのフィールドがありました。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">FiberNode</span> </span>{
+&nbsp;&nbsp;<span class="hljs-keyword">constructor</span>() {
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">this</span>.actualStartTime = <span class="hljs-number">0</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-built_in">Object</span>.preventExtensions(<span class="hljs-keyword">this</span>);<font></font>
+&nbsp;&nbsp;}<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">const</span> node1 = <span class="hljs-keyword">new</span> FiberNode();
+<span class="hljs-keyword">const</span> node2 = <span class="hljs-keyword">new</span> FiberNode();</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらのフィールド（たとえば- </font></font><code>actualStartTime</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）は0または-1に初期化されました。これは、エンティティが内部でその意味を表すために使用されているという事実につながりました</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。しかし、後で、実際のタイムスタンプを</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">performance.now（）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メソッドによって返される浮動小数点数の形式で保存しました</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">。</font></a><font style="vertical-align: inherit;">これは、これらの値がフォームで表されなくなるという事実につながりました</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。エンティティは、これらのフィールドを表す必要があります</font></font><code>Double</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。さらに、Reactはクラスインスタンスの拡張も防止しました</font></font><code>FiberNode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初は、単純化した例を次の形式で提示できます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/7db/972/e7f/7db972e7fc38fe7ffe228a765a401509.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">システムの初期状態</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+オブジェクトの形状の同じ遷移ツリーを共有するクラスの2つのインスタンスがあります。厳密に言うと、これはV8のオブジェクトの形状のシステムが設計されたものです。しかし、リアルタイムスタンプがオブジェクトに格納されている場合、V8は分離の形式を見つける方法を理解できません。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/6b6/443/bc9/6b6443bc9ea1c84dcc88ed9b6e9a0a03.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">V8は混乱しています</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+。V8はオブジェクトに新しい「孤立した」フォームを割り当てます</font></font><code>node1</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。同じことがオブジェクトの少し後で起こります</font></font><code>node2</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。その結果、孤立したフォームが2つになり、それぞれが1つのオブジェクトでのみ使用されます。多くの実際のReactアプリケーションでは、そのようなオブジェクトの数は2つをはるかに超えています。これらは、数十または数千のクラスオブジェクトになる可能性があります</font></font><code>FiberNode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。この状況がV8のパフォーマンスにあまり影響しないことは簡単に理解できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+幸い、</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"> V8 v7.4</font></a><font style="vertical-align: inherit;">で</font><font style="vertical-align: inherit;">この問題</font><font style="vertical-align: inherit;">を</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">修正し</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">現在</font></font></a><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">調査中です。</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オブジェクトのフィールドの表現を変更する操作をリソース集約型にする機能。</font><font style="vertical-align: inherit;">これにより、このような状況で発生する残りのパフォーマンスの問題を解決できます。</font><font style="vertical-align: inherit;">修正のおかげで、V8は上記の問題状況で正しく動作するようになりました。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/23e/556/574/23e556574e5e5b2a462adc3e983d8f37.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">システムの初期状態。</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+これは次のようになります。</font><font style="vertical-align: inherit;">クラスの2つのインスタンスが</font></font><code>FiberNode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">拡張不可能なフォームを参照しています。</font><font style="vertical-align: inherit;">-</font><font style="vertical-align: inherit;">フィールド</font></font><code>'actualStartTime'</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の形式で表示され</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">プロパティに値を割り当てる最初の操作</font></font><code>node1.actualStartTime</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">が</font><font style="vertical-align: inherit;">実行される</font><font style="vertical-align: inherit;">と、新しい遷移チェーンが作成され、前のチェーンは廃止されたものとしてマークされます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/81b/34f/c12/81b34fc121c16ff52582f33cd01e1389.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Node1.actualStartTimeプロパティに新しい値を割り当てた結果</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+展開できないフォームへの遷移が新しいチェーンで正しく再生されるようになりました。これは、値を変更した後のシステムの状態です</font></font><code>node2.actualStartTime</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/834/dbf/25c/834dbf25c0436caa37a871d3b985dc5a.png"></div><br>
+<i><font color="#999999"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">node2.actualStartTimeプロパティに新しい値を割り当てた結果</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+新しい値がproperty</font></font><code>node2.actualStartTime</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に</font><font style="vertical-align: inherit;">割り当てられた後</font><font style="vertical-align: inherit;">、両方のオブジェクトが新しいフォームを参照し、トランジションツリーの古い部分はガベージコレクターによって破棄できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+オブジェクトのフォームを古いものとしてマークする操作とその移行は、複雑に見える場合があることに注意してください。実際-それがそうである方法。実際のWebサイトでは、これは（パフォーマンス、メモリ使用量、複雑さの点で）害よりも害が大きいと考えられます。特に、その後、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ポインター圧縮</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の場合、</font><font style="vertical-align: inherit;">このアプローチを使用</font></font><code>Double</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">して、フィールドをオブジェクトに埋め込まれた値の形式で</font><font style="vertical-align: inherit;">格納することはできません</font><font style="vertical-align: inherit;">。その結果、私たちは</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">完全に放棄し</font></a><font style="vertical-align: inherit;">たいと考えています</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">V8オブジェクトフォームの陳腐化メカニズムから、このメカニズム自体を廃止します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Reactチームが</font><font style="vertical-align: inherit;">この問題を自分で</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">解決</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">し、クラスオブジェクトのフィールド</font></font><code>FiberNodes</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">が最初にDouble値で表され</font><font style="vertical-align: inherit;">ていることを確認して</font><font style="vertical-align: inherit;">ください。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">FiberNode</span> </span>{
+&nbsp;&nbsp;<span class="hljs-keyword">constructor</span>() {
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-comment">//     `Double`   .</span><font></font>
+<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">this</span>.actualStartTime = <span class="hljs-built_in">Number</span>.NaN;
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-comment">//       ,  :</span>
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">this</span>.actualStartTime = <span class="hljs-number">0</span>;
+&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-built_in">Object</span>.preventExtensions(<span class="hljs-keyword">this</span>);<font></font>
+&nbsp;&nbsp;}<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">const</span> node1 = <span class="hljs-keyword">new</span> FiberNode();
+<span class="hljs-keyword">const</span> node2 = <span class="hljs-keyword">new</span> FiberNode();</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここ</font></font><code>Number.NaN</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">では、範囲に収まらない任意の浮動小数点値を</font><font style="vertical-align: inherit;">代わり</font><font style="vertical-align: inherit;">に使用できます</font></font><code>Smi</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。そのような値の中には、0.000001、</font></font><code>Number.MIN_VALUE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-0、およびがあり</font></font><code>Infinity</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Reactで説明されている問題はV8に固有のものであり、一部のコードを作成している間、開発者は特定のJavaScriptエンジンの特定のバージョンに基づいてそれを最適化するよう努力する必要がないことに注意する価値があります。ただし、一部のエラーの原因がエンジンの機能に起因している場合は、コードを最適化することで何かを修正できると便利です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+JSエンジンの内部には、あらゆる種類の驚くべきことがたくさんあることを覚えておく価値があります。</font><font style="vertical-align: inherit;">JS開発者は、可能な場合、異なるタイプの同じ変数値を割り当てることなく、これらのメカニズムすべてを支援できます。</font><font style="vertical-align: inherit;">たとえば、数値フィールドを値</font></font><code>null</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で</font><font style="vertical-align: inherit;">初期化しないでください。</font><font style="vertical-align: inherit;">これにより、フィールド表現を観察することのすべての利点が無効になり、コードが読みやすくなります。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-comment">//   !</span>
+<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Point</span> </span>{<font></font>
+&nbsp;&nbsp;x = <span class="hljs-literal">null</span>;<font></font>
+&nbsp;&nbsp;y = <span class="hljs-literal">null</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">const</span> p = <span class="hljs-keyword">new</span> Point();<font></font>
+p.x = <span class="hljs-number">0.1</span>;<font></font>
+p.y = <span class="hljs-number">402</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+つまり、読み取り可能なコードを記述すれば、パフォーマンスはそれ自体で実現します。</font></font><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">概要</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この記事では、次の重要な問題について検討しました。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JavaScriptは「プリミティブ」と「オブジェクト」の値を区別し、結果</font></font><code>typeof</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は信頼できません。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同じJavaScriptタイプの値でさえ、エンジンの腸内で異なる方法で表すことができます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">V8は、JSプログラムで使用される各オブジェクトプロパティを表す最適な方法を見つけようとしています。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">特定の状況では、V8はオブジェクトのフォームを廃止としてマークする操作を実行し、フォームの移行を実行します。</font><font style="vertical-align: inherit;">含む-オブジェクトの展開の禁止に関連する遷移を実装します。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上記に基づいて、コードのパフォーマンス向上に役立つ実用的なJavaScriptプログラミングのヒントをいくつか紹介します。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">常に同じ方法でオブジェクトを初期化します。</font><font style="vertical-align: inherit;">これは、オブジェクトのフォームでの効果的な作業に貢献します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">責任を持ってオブジェクトのフィールドの初期値を選択します。</font><font style="vertical-align: inherit;">これは、JavaScriptエンジンがこれらの値を内部的に表現する方法を選択するのに役立ちます。</font></font></li>
+</ul><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">読者の皆様！</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">特定のJavaScriptエンジンの内部機能に基づいてコードを最適化したことがありますか？</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><img src="https://habrastorage.org/webt/it/t5/3p/itt53pns2iucwylb3bwn1fmmtnu.png"></a></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja467237/index.html">DNS-over-HTTPSサーバーを上げる</a></li>
+<li><a href="../ja467239/index.html">スポーツカーにおけるデータサイエンティストとティーンエイジャーの違い</a></li>
+<li><a href="../ja467241/index.html">ROSトラックトロリー。パート4. rvizおよびgazeboエディターを使用したロボットシミュレーションの作成</a></li>
+<li><a href="../ja467245/index.html">Dmitry Matskevich、Dbrain：精神障害、AIおよび感情的安全保障としての起業家精神について</a></li>
+<li><a href="../ja467247/index.html">V8、React、パフォーマンス低下の物語。パート1</a></li>
+<li><a href="../ja467251/index.html">COBOL人質と数学。パート1</a></li>
+<li><a href="../ja467253/index.html">COBOL人質と数学。パート2</a></li>
+<li><a href="../ja467255/index.html">すべてのReact開発者が知っておくべき3つの一般的なセキュリティミス</a></li>
+<li><a href="../ja467257/index.html">一度にすべての卵を1つのバスケットに保管しないでください</a></li>
+<li><a href="../ja467259/index.html">DPI（SSLインスペクション）は暗号化の意味に矛盾しますが、企業はそれを実装しています</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

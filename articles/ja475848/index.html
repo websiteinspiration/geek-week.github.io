@@ -1,0 +1,363 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤚 💂 😾 Yandex.Market検索の仕組みと、サーバーの1つがクラッシュした場合の動作 🚄 🥦 🦎</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="こんにちは、私の名前はユージーンです。私はYandex.Market検索インフラストラクチャで働いています。マーケットの内部キッチンについてHabrコミュニティに伝えたいのですが、伝えるべきことがいくつかあります。まず、マーケット検索、プロセス、アーキテクチャの仕組みについて説明します。緊急事態への...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Yandex.Market検索の仕組みと、サーバーの1つがクラッシュした場合の動作</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/475848/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">こんにちは、私の名前はユージーンです。</font><font style="vertical-align: inherit;">私はYandex.Market検索インフラストラクチャで働いています。</font><font style="vertical-align: inherit;">マーケットの内部キッチンについてHabrコミュニティに伝えたいのですが、伝えるべきことがいくつかあります。</font><font style="vertical-align: inherit;">まず、マーケット検索、プロセス、アーキテクチャの仕組みについて説明します。</font><font style="vertical-align: inherit;">緊急事態への対処方法：1つのサーバーがクラッシュした場合はどうなりますか？</font><font style="vertical-align: inherit;">そして、そのようなサーバーが100台あるとしたら？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、多数のサーバーに新しい機能を実装する方法もすぐにわかります。</font><font style="vertical-align: inherit;">また、ユーザーに不便をかけずに、本番環境で複雑なサービスを直接テストする方法。</font><font style="vertical-align: inherit;">一般的に、マーケットの検索がどのように機能するか、誰もがうまくいくように。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-x/ye/eb/-xyeebvixa2pxxh3ad-peaoukyo.png"><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私たちについて少し：どのような問題を解決しますか</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テキストを入力したり、パラメータで製品を検索したり、さまざまな店舗で価格を比較したりすると、すべてのリクエストが検索サービスに到着します。</font><font style="vertical-align: inherit;">検索は市場で最大のサービスです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべての検索クエリを処理します。market.yandex.ru、beru.ru、Supercheckサービス、Yandex.Advisor、モバイルアプリケーションなどのサイトからです。</font><font style="vertical-align: inherit;">また、yandex.ruの検索結果には商品のオファーも含まれます。</font></font><br>
+<br>
+<img width="500" src="https://habrastorage.org/webt/yt/_h/5d/yt_h5de7hmx0zmkv8gdk7glq-kc.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+検索サービスとは、検索自体だけでなく、市場で提供されているすべての情報を含むデータベースも意味します。</font><font style="vertical-align: inherit;">規模はこれです：1日に10億以上の検索クエリが処理されます。</font><font style="vertical-align: inherit;">そして、すべてが中断することなく迅速に機能し、常に望ましい結果が得られるはずです。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">何が：市場のアーキテクチャ</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+市場の現在のアーキテクチャについて簡単に説明してください。従来は、以下のスキームで記述できます</font></font><br>
+<img src="https://habrastorage.org/webt/ra/yq/jv/rayqjvvmbjvxhsc8lokpysg_rvw.jpeg"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。提携店がやってきたとしましょう。彼は私がおもちゃを売りたいと言います：きしむ人を持つこの邪悪な猫。そしてツイーターのない邪悪な猫。そしてただの猫。次に、ストアはマーケットが検索するオファーを準備する必要があります。ストアはオファーを含む特別なxmlを形成し、アフィリエイトインターフェイスを介してこのxmlへのパスを報告します。次に、インデクサーは定期的にこのxmlをダウンロードし、エラーをチェックして、すべての情報を巨大なデータベースに格納します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+保存されたxmlがたくさんあります。このデータベースから検索インデックスが作成されます。インデックスは内部形式で保存されます。インデックスを作成した後、Layoutsサービスはそれを検索エンジンにアップロードします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その結果、きしみを持つ悪猫がデータベースに表示され、猫のインデックスがサーバーに表示されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+検索アーキテクチャの部分で猫を探す方法についてお話します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">市場検索アーキテクチャ</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちはマイクロサービスの世界に住んでいます</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。market.yandex.ru</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">へのリクエストが着信する</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">たびに</font></a><font style="vertical-align: inherit;">多くのサブクエリが発生し、数十のサービスがその処理に参加します。図に示されているのはごくわずかです：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/92/n9/iu/92n9iutvet9ls6k7djh29brfdq0.jpeg"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">単純化されたリクエスト処理スキーム</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+各サービスには素晴らしいものがあります-独自の名前を持つ独自の</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/qb/_c/t4/qb_ct4mdpio2xprdlos2pi1oym8.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バランサー</font><font style="vertical-align: inherit;">：</font><font style="vertical-align: inherit;">バランサーはサービスを管理する上で大きな柔軟性を提供します。たとえば、更新にしばしば必要なサーバーをオフにすることができます。バランサーは、サーバーが利用できないことを確認し、要求を他のサーバーまたはデータセンターに自動的にリダイレクトします。サーバーを追加または削除すると、負荷はサーバー間で自動的に再分散されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バランサーの一意の名前は、データセンターに依存しません。サービスAがBにリクエストを送信すると、デフォルトでは、バランサーBがリクエストを現在のデータセンターにリダイレクトします。現在のデータセンターでサービスが利用できないか存在しない場合、要求は他のデータセンターにリダイレクトされます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてのデータセンターの単一のFQDNにより、サービスAは通常、ロケーションから切り離すことができます。サービスBへの彼の要求は常に処理されます。例外は、サービスがすべてのデータセンターにある場合です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、このバランサーですべてがバラ色であるわけではありません。追加の中間コンポーネントがあります。バランサーは不安定に動作する可能性があり、この問題は冗長サーバーによって解決されます。サービスAとBの間にも追加の遅延があります。しかし、実際には1ミリ秒未満であり、ほとんどのサービスにとってこれは重要ではありません。</font></font><br>
+<br>
+<h3>  :     </h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+折りたたみが起こったと想像してください。きしむ猫を見つける必要がありますが、サーバーがクラッシュします。または100サーバー。どうやって出るの？本当に猫なしでユーザーを残しますか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+状況はひどいですが、準備はできています。順番にご説明します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+検索インフラストラクチャは複数のデータセンターに配置されています。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_i/wa/f9/_iwaf97__hrhmaspgxcl-euqqnq.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+設計時には、1つのデータセンターを切断する可能性があります。人生は驚きに満ちています-たとえば、掘削機は地下ケーブルを切ることができます（そう、それはそのようなものでした）。残りのデータセンターの容量は、ピーク負荷に耐えるのに十分である必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+単一のデータセンターについて考えてみましょう。各データセンターには同じバランサー操作スキームがあります</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/x6/rp/hx/x6rphx-hrlcb1gciennukyjeudi.jpeg"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。1つのバランサーは少なくとも3台の物理サーバーです。そのような冗長性は信頼性のために作られています。バランサーはHAProxで動作します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+HAProxを選択したのは、その高性能、小さなリソース要件、および幅広い機能性のためです。各サーバー内で、検索ソフトウェアが機能します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1台のサーバーで障害が発生する可能性は低いです。ただし、サーバーが多数ある場合は、少なくとも1つのサーバーが落ちる可能性が高くなります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これが実際に起こっていることです。サーバーがクラッシュしています。したがって、常にすべてのサーバーのステータスを監視する必要があります。サーバーが応答を停止すると、サーバーはトラフィックから自動的に切断されます。これを行うために、HAProxyには組み込みのヘルスチェックがあります。 1秒に1回、HTTPリクエスト「/ ping」ですべてのサーバーに送信されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+HAProxyの別の機能：agent-checkを使用すると、すべてのサーバーを均等にロードできます。これを行うために、HAProxyはすべてのサーバーに接続し、現在の負荷に応じて1〜100の重みを返します。重みは、処理キュー内のリクエスト数とプロセッサの負荷に基づいて計算されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+今猫を見つけることについて。フォーム</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/検索の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">お問い合わせは</font><b><font style="vertical-align: inherit;">？Text =怒り+猫</font></b><font style="vertical-align: inherit;">が</font><b><font style="vertical-align: inherit;">検索に</font></b><font style="vertical-align: inherit;">到着</font><font style="vertical-align: inherit;">。検索を高速にするには、猫のインデックス全体をRAMに配置する必要があります。 SSDからの読み取りでさえ、十分に高速ではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+むかしむかし、オファーベースは小さく、1台のサーバーに十分なRAMがありました。プロポーザルデータベースが大きくなるにつれて、すべてがこのRAMに収まらなくなり、データは2つの部分に分割されました。シャード1とシャード2です。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/kz/od/j5/kzodj5ghrqccc_necth6gmylzgy.jpeg"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、それは常に起こります。どんな良い解決策でも、他の問題を引き起こします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バランサーはまだ任意のサーバーに行きました。しかし、リクエストがあったマシンでは、インデックスの半分しかありませんでした。残りは他のサーバー上にありました。したがって、サーバーは隣接するマシンに移動する必要がありました。両方のサーバーからデータを受信した後、結果が結合され、再編成されました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バランサーはリクエストを均等に分散するため、すべてのサーバーはデータの提供だけでなく、再配置にも従事していました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+隣接サーバーが利用できない場合に問題が発生しました。解決策は、優先度の異なる複数のサーバーを「隣接」サーバーとして指定することでした。まず、現在のラック内のサーバーにリクエストが送信されました。応答が受信されなかった場合、要求はこのデータセンターのすべてのサーバーに送信されました。そして最後に重要なことですが、リクエストは他のデータセンターに送られました。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+提案の数が増えるにつれて、データは4つの部分に分割されました。しかし、これは限界ではありませんでした。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、8つのシャードの構成が使用されます。さらに、メモリをさらに節約するために、インデックスは検索部分（検索が行われる部分）とスニペット部分（検索に含まれない）に分割されました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1つのサーバーには、1つのシャードに関する情報のみが含まれます。したがって、完全なインデックスで検索を実行するには、異なるシャードを含む8つのサーバーで検索する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サーバーはクラスターにグループ化されます。各クラスターには、8つの検索エンジンと1つのスニペットが含まれています。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/1b/om/dl/1bomdlbzui-uxhswoq1kfq9h7os.jpeg"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+静的データを含むKey-Valueデータベースは、スニペットサーバー上で実行されます。それらは、例えば、きしむ猫を持つ猫の説明などの文書を発行するために必要です。検索エンジンのメモリを読み込まないように、別のサーバーで特別にデータが取り出されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ドキュメントIDは1つのインデックスのフレームワーク内でのみ一意であるため、スニペットにドキュメントがない場合があります。まあそれとも1つのIDに他のコンテンツがあります。したがって、検索が機能し、検索が行われるためには、クラスター全体の整合性が必要になります。整合性を監視する方法については、以下で少し説明します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+検索自体は次のように構成されています。検索クエリは、8台のサーバーのいずれかに到達できます。彼がサーバー1に来たとします。このサーバーはすべての引数を処理し、何をどのように探すかを理解しています。着信要求に応じて、サーバーは外部サービスに必要な情報を要求します。 1つの要求の後に、最大10個の外部サービスへの要求を続けることができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+必要な情報を収集した後、オファーのデータベースで検索が開始されます。これを行うには、クラスター内の8つのサーバーすべてに対してサブクエリを作成します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+回答を受け取った後、結果が結合されます。結局、問題を生成するために、スニペットサーバーに対してさらにいくつかのサブクエリが必要になる場合があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クラスター内の検索クエリは次の</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">とおりです。/ shard1？Text = angry + cat</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。さらに、次の形式のサブクエリ：</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ status</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、1秒に1回、クラスター内のすべてのサーバー間で常に行われます</font><font style="vertical-align: inherit;">。</font><b><font style="vertical-align: inherit;">/ステータス</font></b></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+要求</font><font style="vertical-align: inherit;">は、サーバーが利用できない状況を検出します。</font><font style="vertical-align: inherit;">
+また、すべてのサーバーで検索エンジンのバージョンとインデックスのバージョンが同じであることを制御します。そうでない場合、クラスター内のデータに一貫性がなくなります。</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1つのスニペットサーバーが8つの検索エンジンからの要求を処理するという事実にもかかわらず、そのプロセッサは非常に軽くロードされます。</font><font style="vertical-align: inherit;">そのため、スニペットデータを別のサービスに転送します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/3u/q5/ng/3uq5ngicgxwxg60diggqot7iiky.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データを転送するために、ドキュメントのユニバーサルキーを導入しました。</font><font style="vertical-align: inherit;">現在、別のドキュメントのコンテンツが1つのキーに対して返される場合、状況は不可能です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、別のアーキテクチャへの移行はまだ完全ではありません。</font><font style="vertical-align: inherit;">次に、専用スニペットサーバーを削除します。</font><font style="vertical-align: inherit;">そして、一般的にクラスター構造から離れます。</font><font style="vertical-align: inherit;">これにより、簡単にスケーリングを続けることができます。</font><font style="vertical-align: inherit;">追加のボーナスは、大幅な鉄の節約です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして今、ハッピーエンドで怖い話に。</font><font style="vertical-align: inherit;">サーバーが利用できないいくつかのケースを検討してください。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ひどいことが起こりました：1つのサーバーが利用できません</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1つのサーバーが利用できないとしましょう。その後、クラスタ内の他のサーバーは引き続き応答しますが、検索結果は不完全になります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ステータス</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ステータスを</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チェックすることにより、</font><font style="vertical-align: inherit;">隣接するサーバーは利用できないことがわかります。したがって、完全性を維持するために、クラスター内のすべてのサーバーは</font><font style="vertical-align: inherit;">、バランサーへの</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ ping</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">要求</font><font style="vertical-align: inherit;">に応答して、それらも使用できないことを</font><font style="vertical-align: inherit;">通知</font><font style="vertical-align: inherit;">し</font><b><font style="vertical-align: inherit;">ます</font></b><font style="vertical-align: inherit;">。クラスタ内のすべてのサーバーが停止したことが判明しました（そうではありません）。これがクラスタスキームの主な欠点です。そのため、これを避けたいと考えています。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/hr/ko/2o/hrko2ovb9b5q2hjb8xqgnubynec.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+エラーで終了した要求、バランサーは他のサーバーで再度要求します。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、バランサーは停止中のサーバーへのユーザートラフィックの送信を停止しますが、ステータスを引き続きチェックします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サーバーが使用可能になると、サーバーは応答を開始します</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/ ping</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">停止しているサーバーからのpingに対する通常の応答が届くとすぐに、バランサーはユーザートラフィックをそこに送信し始めます。</font><font style="vertical-align: inherit;">クラスターが復旧しました、乾杯。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">さらに悪いことに、多くのサーバーが利用できません</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データセンターのサーバーのかなりの部分が削減されます。</font><font style="vertical-align: inherit;">何をするか、どこを実行するか？</font><font style="vertical-align: inherit;">バランサーが再び助けに来ます。</font><font style="vertical-align: inherit;">各バランサーは常に、稼働中のサーバーの現在の数をメモリに保持します。</font><font style="vertical-align: inherit;">彼は常に、現在のデータセンターが処理できるトラフィックの最大量を考慮しています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データセンター内の多くのサーバーが落ちた場合、バランサーはこのデータセンターがすべてのトラフィックを処理できないことを理解します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、過剰なトラフィックが他のデータセンターにランダムに分散されます。</font><font style="vertical-align: inherit;">すべてが機能し、誰もが幸せです。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/cp/g-/if/cpg-ifevj3dzyvmedn1v-g5lzpg.jpeg"> <br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">方法：リリースリリース</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、サービスに加えられた変更を公開する方法について説明します。ここでは、プロセスを簡略化する方法を説明しました。新しいリリースのロールアウトはほぼ完全に自動化されています。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロジェクトに一定数の変更が蓄積されると、新しいリリースが自動的に作成され、そのアセンブリが起動されます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/cy/to/0f/cyto0f3qhsuxs7bgd2momnccebe.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、サービスがテストにロールアウトされ、安定性がチェックされます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同時に、自動パフォーマンステストが開始されます。彼は特別なサービスに従事しています。私は彼について今は話しません-彼の説明は別の記事に値するものです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テストでの公開が成功すると、プレステーブルでのリリースの公開が自動的に開始されます。</font><font style="vertical-align: inherit;">Prestableは、通常のユーザートラフィックが送信される特別なクラスターです。</font><font style="vertical-align: inherit;">エラーが返された場合、バランサーは本番環境で再起動します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+prestableでは、応答時間が測定され、本番環境の以前のリリースと比較されます。</font><font style="vertical-align: inherit;">すべてが問題なければ、担当者は接続します。グラフと負荷テストの結果を確認し、本番環境への展開を開始します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ユーザーにとって最善：A / Bテスト</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスの変更が本当のメリットをもたらすかどうかは必ずしも明らかではありません。変更の有用性を測定するために、人々はA / Bテストを思いつきました。 Yandex.Market検索でこれがどのように機能するかを少しお話します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべては、新しい機能を含む新しいCGIパラメータの追加から始まります。パラメータを、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">market_new_functionality = 1とし</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。次に、コードで、フラグを使用してこの機能を有効にします。</font></font><br>
+<br>
+<pre><code class="cpp hljs">If (cgi.experiments.market_new_functionality) {
+<span class="hljs-comment">// enable new functionality</span>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+新しい機能が本番環境に導入されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A / Bテストを自動化するための専用サービスがあり、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ここ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で詳しく説明し</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">サービスで実験が作成されます。</font><font style="vertical-align: inherit;">トラフィックのシェアは、たとえば15％に設定されます。</font><font style="vertical-align: inherit;">インタレストはリクエストではなく、ユーザーに対して設定されます。</font><font style="vertical-align: inherit;">実験の時間、たとえば1週間も表示されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+複数の実験を同時に開始できます。</font><font style="vertical-align: inherit;">設定では、他の実験との交差が可能かどうかを指定できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その結果、サービスは自動的に引数</font><i><font style="vertical-align: inherit;">market_new_functionality = 1を</font></i><font style="vertical-align: inherit;">追加します</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ユーザーの15％に。</font><font style="vertical-align: inherit;">また、選択したメトリックを自動的に計算します。</font><font style="vertical-align: inherit;">実験後、アナリストは結果を見て結論を導きます。</font><font style="vertical-align: inherit;">調査結果に基づいて、本番環境に展開するかファイナライズするかを決定します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">市場の機敏な手：生産テスト</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+本番環境で新しい機能の動作を確認する必要があることがよくありますが、高負荷の「戦闘」状態でどのように動作するかは確実ではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+解決策があります。CGIパラメータのフラグは、A / Bテストだけでなく、新しい機能のテストにも使用できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスをリスクにさらすことなく、数千のサーバーの構成を即座に変更できるツールを作成しました。</font><font style="vertical-align: inherit;">「ストップクレーン」と呼ばれています。</font><font style="vertical-align: inherit;">当初のアイデアは、レイアウトなしで一部の機能をすばやくオフにすることでした。</font><font style="vertical-align: inherit;">その後、ツールは拡張され、より複雑になりました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスのスキームを以下に示します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/va/la/n8/valan8guj5dkld2j788pw7ytbwy.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+APIはフラグ値を設定します。管理サービスは、これらの値をデータベースに格納します。すべてのサーバーは10秒に1回データベースにアクセスし、フラグの値を取り出して、各リクエストにこれらの値を適用します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ストップタップでは2つのタイプの値を設定できます</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。1）条件式。いずれかの値が実行されたときに適用されます。例えば：</font></font><br>
+<br>
+<pre><code class="json hljs">{
+	<span class="hljs-attr">"condition"</span>:<span class="hljs-string">"IS_DC1"</span>,
+	<span class="hljs-attr">"value"</span>:<span class="hljs-string">"3"</span>,<font></font>
+}, <font></font>
+{<font></font>
+	<span class="hljs-attr">"condition"</span>: <span class="hljs-string">"CLUSTER==2 and IS_BERU"</span>, 
+	<span class="hljs-attr">"value"</span>: <span class="hljs-string">"4!"</span> 
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+値「3」は、リクエストがDC1ロケーションで処理されるときに適用されます。</font><font style="vertical-align: inherit;">また、リクエストがサイトberu.ruの2番目のクラスターで処理されるときの値は「4」です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2）無条件の値。</font><font style="vertical-align: inherit;">これらは、どの条件も満たされない場合にデフォルトで使用されます。</font><font style="vertical-align: inherit;">例：</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">値、値！</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+値が感嘆符で終わっている場合、より高い優先順位が与えられます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+CGIパラメータのパーサーはURLを解析します。</font><font style="vertical-align: inherit;">次に、ストップタップの値を適用します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下の優先順位の値が適用されます。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ストップタップ（感嘆符）からの優先度が高い。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クエリの値。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">デフォルト値はストップタップからです。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コードのデフォルト値。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+条件付き値で示されているフラグはたくさんあります-それらは私たちに知られているすべてのシナリオに十分です：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データセンター。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">環境：実稼働、テスト、シャドウ。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">会場：市場、ベル。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クラスター番号。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このツールを使用すると、サーバーグループ（たとえば、1つのデータセンター内のみ）で新しい機能を有効にして、サービス全体に特別なリスクを与えることなく、この機能の機能をテストできます。</font><font style="vertical-align: inherit;">どこかで深刻なミスを犯したとしても、すべてが落ち始め、データセンター全体がダウンしましたが、バランサーは他のデータセンターにリクエストをリダイレクトします。</font><font style="vertical-align: inherit;">エンドユーザーは何も気づきません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+問題に気づいた場合は、フラグの以前の値をすぐに返すことができ、変更はロールバックされます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このサービスには欠点があります。開発者はこのサービスを非常に気に入っており、多くの場合、すべての変更をストップクレーンにプッシュしようとします。</font><font style="vertical-align: inherit;">私たちは誤用と闘おうとしています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Stop Craneアプローチは、安定したコードがあり、本番環境にロールアウトする準備ができている場合にうまく機能します。</font><font style="vertical-align: inherit;">同時に、まだ疑問があり、「戦闘」状態でコードをチェックしたいとします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、ストップコックは開発中のテストには適していません。</font><font style="vertical-align: inherit;">開発者向けに、「シャドウクラスター」と呼ばれる別のクラスターがあります。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">秘密のテスト：シャドウクラスター</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クラスターの1つからの要求は、シャドウクラスターに複製されます。</font><font style="vertical-align: inherit;">ただし、バランサーはこのクラスターの応答を完全に無視します。</font><font style="vertical-align: inherit;">彼の作品のスキームを以下に示します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ie/xt/dp/iextdpgmvcam7ehqatcbwdjyjxe.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際の「戦闘」状態にあるテストクラスターを取得します。</font><font style="vertical-align: inherit;">通常のユーザートラフィックがそこを飛びます。</font><font style="vertical-align: inherit;">両方のクラスターのハードウェアは同じであるため、パフォーマンスとエラーを比較できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、バランサーは応答を完全に無視するため、エンドユーザーにはシャドウクラスターからの応答は表示されません。</font><font style="vertical-align: inherit;">したがって、間違えることは怖くないです。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">調査結果</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+では、どのようにして市場検索を構築しましたか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてがスムーズに進むように、機能を個別のサービスに分離します。したがって、必要なコンポーネントのみをスケーリングして、コンポーネントをより単純にすることができます。別のコンポーネントを別のチームに割り当てて、その作業の責任を共有するのは簡単です。そして、このアプローチによる鉄の大幅な節約は明らかなプラスです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+シャドウクラスターは私たちにも役立ちます。サービスを開発し、その過程でテストし、同時にユーザーを煩わせることはありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ええと、もちろんプロダクションにチェックインします。 1000台のサーバーの構成を変更する必要がありますか？簡単です、停止クレーンを使用してください。そのため、既製の複雑なソリューションをすぐにロールアウトし、問題が発生した場合は安定したバージョンにロールバックできます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+増え続けるオファーの基盤により、市場を迅速かつ安定的にする方法を示すことができたと思います。</font><font style="vertical-align: inherit;">サーバーの問題を解決し、膨大な数のリクエストを処理し、サービスの柔軟性を向上させ、作業プロセスを中断せずにこれを行う方法。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja475834/index.html">スクラムはあなたを助けません。理由はわかります</a></li>
+<li><a href="../ja475836/index.html">アーサーカチュヤンとのインタビュー：ソーシャルネットワークで億万長者を計算する方法？</a></li>
+<li><a href="../ja475838/index.html">人を変える。または...人を変える。変革プロジェクトを「離陸」する方法について</a></li>
+<li><a href="../ja475840/index.html">Badoo Jira APIクライアント：PHPのJiraの魔法</a></li>
+<li><a href="../ja475842/index.html">SIP電話のアクションURLとURIを置き換えるか、Webソケットを介して管理しますか？</a></li>
+<li><a href="../ja475850/index.html">まだ経験がない場合に、ITでキャリアを構築する方法</a></li>
+<li><a href="../ja475854/index.html">JDBCプールと効率的なファイル処理：12月3日のサンクトペテルブルクでのJava mitap</a></li>
+<li><a href="../ja475856/index.html">Google App Script、Mikrotik、Telegram、VPNBookがカルテットの演奏を開始</a></li>
+<li><a href="../ja475858/index.html">面白い暗号エネルギー：人のための鉱業の熱と鉱業のための人の熱</a></li>
+<li><a href="../ja475860/index.html">Apache NiFi。11月28日Deworkacyレクチャーホール</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

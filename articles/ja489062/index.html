@@ -1,0 +1,183 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🌛 👵🏽 🐚 Pythonの驚異的な並列Apache Parquet I / Oパフォーマンス 🚪 🚤 👣</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="データエンジニアコースの開始を見越して、小さいながらも興味深い資料の翻訳を用意しました。
+ 
+ 
+ 
+ この記事では、Parquetが大きなデータセットを小さなフットプリントファイルに圧縮する方法と、同時実行性（マルチスレッド）を使用してI / Oストリームの帯域幅をはるかに超える帯域幅を実現する方...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Pythonの驚異的な並列Apache Parquet I / Oパフォーマンス</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/otus/blog/489062/"><i><b><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データエンジニア</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コースの開始を見越して</font><font style="vertical-align: inherit;">、小さいながらも興味深い資料の翻訳</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">を</font></a><font style="vertical-align: inherit;">用意しました。</font></font></b></i><br>
+<br>
+<img src="https://habrastorage.org/webt/tq/qm/rv/tqqmrv0apg-z17hw8cqzzrgsuo8.png"><br>
+<hr><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この記事では、Parquetが大きなデータセットを小さなフットプリントファイルに圧縮する方法と、同時実行性（マルチスレッド）を使用してI / Oストリームの帯域幅をはるかに超える帯域幅を実現する方法について説明します。</font></font><a name="habracut"></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Apache Parquet：低エントロピーデータで最高</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Apache Parquet </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">形式の</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+仕様から理解できるように</font><font style="vertical-align: inherit;">、ファイルサイズを大幅に削減できるいくつかのレベルのコーディングが含まれています。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">辞書を使用したエンコード（圧縮）（pandas.Categoricalのデータ表示方法に似ていますが、概念自体は異なります）;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データページの圧縮（Snappy、Gzip、LZOまたはBrotli）;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">実行長のエンコーディング（null-辞書のポインタとインデックス）および整数ビットパッキング。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これがどのように機能するかを示すために、データセットを見てみましょう。</font></font><br>
+<br>
+<pre><code class="python hljs">[<span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>,
+ <span class="hljs-string">'banana'</span>, <span class="hljs-string">'banana'</span>, <span class="hljs-string">'apple'</span>, <span class="hljs-string">'apple'</span>, <span class="hljs-string">'apple'</span>]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ほとんどすべてのParquet実装は、圧縮にデフォルトの辞書を使用します。</font><font style="vertical-align: inherit;">したがって、エンコードされたデータは次のようになります。</font></font><br>
+<br>
+<pre><code class="python hljs">dictionary: [<span class="hljs-string">'banana'</span>, <span class="hljs-string">'apple'</span>]<font></font>
+indices: [<span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, <span class="hljs-number">1</span>, <span class="hljs-number">1</span>]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+辞書のインデックスは、繰り返しコーディングアルゴリズムによってさらに圧縮されます。</font></font><br>
+<br>
+<pre><code class="python hljs">dictionary: [<span class="hljs-string">'banana'</span>, <span class="hljs-string">'apple'</span>]<font></font>
+indices (RLE): [(<span class="hljs-number">8</span>, <span class="hljs-number">0</span>), (<span class="hljs-number">3</span>, <span class="hljs-number">1</span>)]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リターンパスをたどると、文字列の元の配列を簡単に復元できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+前回の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">記事で</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、この方法で非常によく圧縮されるデータセットを作成しました。</font><font style="vertical-align: inherit;">で作業する場合</font></font><code>pyarrow</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、我々は、これはファイルサイズにどのように影響するかを確認するために（デフォルトで有効になっている）の辞書を使用して有効または無効エンコーディングすることができます：</font></font><br>
+<br>
+<pre><code class="python hljs"><span class="hljs-keyword">import</span> pyarrow.parquet <span class="hljs-keyword">as</span> pq<font></font>
+<font></font>
+pq.write_table(dataset, out_path, use_dictionary=<span class="hljs-literal">True</span>,<font></font>
+               compression=<span class="hljs-string">'snappy)</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+で1 GB（1024 MB）を</font></font><code>pandas.DataFrame</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用する</font><font style="vertical-align: inherit;">データセットは</font><font style="vertical-align: inherit;">、Snappy圧縮とディクショナリを使用した圧縮を使用すると、わずか1.436 MBで済みます。つまり、ディスケットに書き込むこともできます。</font><font style="vertical-align: inherit;">辞書を使用して圧縮しないと、44.4 MBになります。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PyArrowを使用したparquet-cppでの同時読み取り</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PythonでPyArrowで利用できるように</font><font style="vertical-align: inherit;">
+したC ++のApache </font><font style="vertical-align: inherit;">Parquetの実装-parquet </font></font><i><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-cppに</font></font></a></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、列を並列に読み取る機能が追加されました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この機能を試すには、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">conda-forge</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">から</font><i><font style="vertical-align: inherit;">PyArrowを</font></i><font style="vertical-align: inherit;">インストールしてください</font><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="python hljs">conda install pyarrow -c conda-forge</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、Parquetファイルを読み取るときに、引数を使用できます</font></font><code>nthreads</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="python hljs"><span class="hljs-keyword">import</span> pyarrow.parquet <span class="hljs-keyword">as</span> pq<font></font>
+<font></font>
+table = pq.read_table(file_path, nthreads=<span class="hljs-number">4</span>)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ エントロピーが低いデータの場合、解凍とデコードはプロセッサに強く結びついています。 C ++がすべての作業を行うので、GILの同時実行性に問題はなく、速度を大幅に向上させることができます。</font><font style="vertical-align: inherit;">クアッドコアラップトップ（Xeon E3-1505M、NVMe SSD）のpandas DataFrameで</font><font style="vertical-align: inherit;">1 GBの</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データセットを</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">読み取ることで達成できた</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/8e/y-/6b/8ey-6bfhwivej3ikb9vjhyscuhs.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ことを確認して</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ください</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ここで</font></a><font style="vertical-align: inherit;">、ベンチマークの完全なシナリオを確認でき</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。</font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは、辞書を使用する圧縮ケースと辞書を使用しない圧縮ケースの両方のパフォーマンスを示しました。</font><font style="vertical-align: inherit;">エントロピーの低いデータの場合、すべてのファイルが小さいという事実（辞書を使用して約1.5 MB、それ以外の場合は約45 MB）にもかかわらず、辞書を使用した圧縮はパフォーマンスに大きな影響を与えます。</font><font style="vertical-align: inherit;">4スレッドの場合、パンダの読み取りパフォーマンスは4 GB /秒に向上します。</font><font style="vertical-align: inherit;">これは、フェザー形式または私が知っている他の形式よりもはるかに高速です。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">結論</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バージョン1.0 </font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">parquet-cpp（C ++のApache Parquet）</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">のリリースにより、</font><font style="vertical-align: inherit;">Pythonユーザーが利用できるようになったI / Oパフォーマンスの向上を確認できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべての基本的なメカニズムはC ++で実装されているため、他の言語（Rなど）では、Apache Arrow（列データ構造）と</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">parquet-cppの</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インターフェースを作成できます</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">Pythonバインディングは、コア</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">libarrow</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">および</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">libparquet</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> C ++ライブラリの</font><font style="vertical-align: inherit;">軽量シェルです</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それで全部です。</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コースの詳細を知りたい場合は</font><font style="vertical-align: inherit;">、本日開催される</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オープンデー</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">にご登録ください。</font></font></b></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja489046/index.html">自動運転GAZ66モンスタートラック1/16</a></li>
+<li><a href="../ja489048/index.html">ログとクエリのトレースはベストプラクティスです。Yandexレポート</a></li>
+<li><a href="../ja489050/index.html">Windows対Sysmon</a></li>
+<li><a href="../ja489058/index.html">PyTorchとSklearnを使用したニューラルネットワークのアンサンブル</a></li>
+<li><a href="../ja489060/index.html">分析：高リスク投資と低リスク投資の違いは何ですか</a></li>
+<li><a href="../ja489068/index.html">デジタル不死-エンジニアリングアプローチ</a></li>
+<li><a href="../ja489070/index.html">それは靴下の354ペアの費用がかかります。2月23日のギフトのセレクション</a></li>
+<li><a href="../ja489072/index.html">分散ネットワークの構築における3CXの利点</a></li>
+<li><a href="../ja489074/index.html">電話番号でオペレーターと地域を特定する方法</a></li>
+<li><a href="../ja489076/index.html">CNC旋盤で切削して材料を加工するプロセスのシミュレーションモデル</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

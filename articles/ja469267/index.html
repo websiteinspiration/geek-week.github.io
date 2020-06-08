@@ -1,0 +1,727 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😍 📍 🗞️ 単一のエントリポイントを持つLD_PRELOADを使用したシステムコールの処理 💪🏽 🔵 🙌🏿</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="LLVMでQInstを再実装しているときに、次の問題に遭遇しました。1つのプロセスのエミュレーションモードのQEMUは、すべての「ゲスト」システムコールを自然にインターセプトします。その結果、インストルメンテーションプラグインには、前処理のための単一のエントリポイントがSYS_*あり、引数の数と値に...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>単一のエントリポイントを持つLD_PRELOADを使用したシステムコールの処理</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/469267/"><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LLVMで</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">QInst</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を再実装している</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">とき</font></a><font style="vertical-align: inherit;">に、次の問題に遭遇しました。1つのプロセスのエミュレーションモードのQEMUは、すべての「ゲスト」システムコールを自然にインターセプトします。その結果、インストルメンテーションプラグインには、前処理のための単一のエントリポイントが</font></font><code>SYS_*</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">あり、引数の</font><font style="vertical-align: inherit;">数</font><font style="vertical-align: inherit;">と値</font><font style="vertical-align: inherit;">によって</font><font style="vertical-align: inherit;">決定</font><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">行う</font><font style="vertical-align: inherit;">ことができ</font><font style="vertical-align: inherit;">ます。これはかなり便利です。問題は、すべてのシステムコールが主に行われ</font></font><code>libc</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、コードを静的に書き換えることです。ほとんどの場合、この部分には到達できません。もちろん使用できます</font></font><code>ptrace</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、これも同様に設計されています。</font><font style="vertical-align: inherit;">しかし、別のプロセスなしで実行できるかどうかはわかりません。QInstのセマンティクスは、些細な「同期」インターセプトを暗示していました。どういうわけか、ハンドラーへの呼び出しを挿入する必要があり、これは通常よりもはるかに複雑です</font></font><code>LD_PRELOAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">各システムコールをラップできますが、これは少なくとも不便です（この場合、システムコール自体ではなく、特定のラッパーをインターセプトしないため、何かをスキップできます）。</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Under the cut-ソリューションはLLVMに関連付けられていませんが、Linux on x86_64で強化されています（ただし、他のアーキテクチャのLinuxに適応しています）。</font></font></p><br>
+<p><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注：</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この記事では、汎用の既製のソリューションを紹介していません- </font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">かなり幅広い</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ケースのリストに</font><font style="vertical-align: inherit;">のみ適してい</font><em><font style="vertical-align: inherit;">ます</font></em><font style="vertical-align: inherit;">。しかし、この記事はレビュー-金曜日と見なすことができます。興味深い（願わくば）新しい（ほとんどの場合）情報、ブルートフォースプログラミングのピンチと実例。そして、今日が木曜日であるという事実によって私たちの金曜日が曖昧にならないようにしてください！</font></font></p><a name="habracut"></a><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">まず、決定してみましょう。この記事では、目標はデバッグ防止メカニズムをバイパスすることではなく、一般にプログラムがシステムコールのインターセプトに抵抗しないことを前提としています。一方で、プログラム</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">が</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私たちを</font><em><font style="vertical-align: inherit;">助ける</font></em><font style="vertical-align: inherit;">ように手動でソースコードを書き直すこと</font><font style="vertical-align: inherit;">も、純粋に労働集約度の点でまあまあの見込みです。したがって</font></font><code>LD_PRELOAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。ただし、そのようなメカニズムを独自のプログラムに静的にコンパイルする場合、</font></font><code>LD_PRELOAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それは絶対に必須ではありません。</font></font></p><br>
+<p><em> :</em>       Linux?     . -  ( x86)    <code>eax</code>   ,  <code>ebx</code>     ,    <code>int 0x80</code>.  -  ,       ,      ,    -,  .   .     vDSO —        shared object,     ,     ,     (, <code>time</code>).  ,     ,  :        ( ,  ,    ),     -  ...</p><br>
+<p>      , ,          (<code>int 0x80</code> / <code>sysenter</code> / ...) —  ,     —    .       <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><code>seccomp</code></a>,        .</p><br>
+<p>Seccomp  secure computing        .   <code>man seccomp (2)</code>:</p><br>
+<pre><code class="plaintext hljs">Strict secure computing mode is useful for number-crunching applications that may need to<font></font>
+execute untrusted byte code, perhaps obtained by reading from a pipe or socket.</code></pre><br>
+<p>,  Meltdown&amp;Co   JavaScript      —  ,      . ,      —  ,   ,   seccomp   , ,    ,  , ,            .  ,  «» malware      .</p><br>
+<p>            .  ,   <code>SECCOMP_SET_MODE_STRICT</code>,         <code>read</code>, <code>write</code>, <code>_exit</code>  <code>sigreturn</code>,  <code>SECCOMP_SET_MODE_FILTER</code> —    BPF-,       ,    ,  .      ,     <code>SECCOMP_RET_TRAP</code>:        <code>SIGSYS</code>,    ,  :       ,     .</p><br>
+<h2 id="podgotovka"></h2><br>
+<p>     <strong>syscall-handler.c</strong>:</p><br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;linux/seccomp.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;linux/filter.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;linux/audit.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;linux/signal.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;sys/ptrace.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">uint64_t</span> <span class="hljs-title">handle_syscall</span><span class="hljs-params">(<span class="hljs-keyword">uint32_t</span> num, <span class="hljs-keyword">uint32_t</span> *drop_syscall,
+                        <span class="hljs-keyword">uint64_t</span> arg1, <span class="hljs-keyword">uint64_t</span> arg2, <span class="hljs-keyword">uint64_t</span> arg3,
+                        <span class="hljs-keyword">uint64_t</span> arg4, <span class="hljs-keyword">uint64_t</span> arg5, <span class="hljs-keyword">uint64_t</span> arg6)</span></span>;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">initialize_handler</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">static</span> <span class="hljs-keyword">void</span> __attribute__((constructor))constr(<span class="hljs-keyword">void</span>)<font></font>
+{<font></font>
+  initialize_handler();<font></font>
+}</code></pre><br>
+<p> ,    —     :     , ()     () ,       ,   ,      .    :  <code>initialize_handler</code>     .</p><br>
+<p>      <code>constr</code>?    <code>initialize_handler</code>, ,    <code>constructor</code>,       (   ),   .          ,  <code>ifdef</code> <code>constr</code>   <code>initialize_handler</code> .</p><br>
+<h2 id="pishem-bpf-programmu"> BPF-</h2><br>
+<p>    BPF,           <code>SECCOMP_RET_TRAP</code>.     ,  ,     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">Documentation/networking/filter.txt</a>,    seccomp     ,  eBPF.   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">linux/seccomp.h</a>, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">linux/filter.h</a>,   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">linux/bpf_common.h</a>,    ,    .      ,   <code>man seccomp</code>  ,  - :</p><br>
+<pre><code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">sock_filter</span> <span class="hljs-title">filt</span>[] = {</span>
+    BPF_STMT(BPF_LD  | BPF_W   | BPF_ABS, (offsetof(struct seccomp_data, args[<span class="hljs-number">5</span>]))),<font></font>
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K  , MARKER, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>),<font></font>
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_ALLOW),<font></font>
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_TRAP),<font></font>
+  };</code></pre><br>
+<p>      ,         ,     <del>,   </del>     .  ,     (<code>LD</code> / <code>JMP</code>   0  1 / <code>RET</code>),  (<code>JEQ</code>),   immediate operand (<code>BPF_K</code>) —      <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">filter.txt</a>.            .</p><br>
+<p>   <code>MARKER</code>?   ,   -   ,   userspace-  . ,  —        . ,         ,    . </p><br>
+<p>  <code>MARKER</code>         ,   « »      .         BPF-:     — <code>offsetof(struct seccomp_data, args[5])</code> —     <code>seccomp_data</code> (. <code>man seccomp</code>):</p><br>
+<pre><code class="cpp hljs"><span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">seccomp_data</span> {</span>
+    <span class="hljs-keyword">int</span>   nr;                   <span class="hljs-comment">/* System call number */</span>
+    __u32 arch;                 <span class="hljs-comment">/* AUDIT_ARCH_* value
+                                   (see &lt;linux/audit.h&gt;) */</span>
+    __u64 instruction_pointer;  <span class="hljs-comment">/* CPU instruction pointer */</span>
+     __u64 args[<span class="hljs-number">6</span>];              <span class="hljs-comment">/* Up to 6 system call arguments */</span>
+};</code></pre><br>
+<p>…         : <code>offsetof(struct seccomp_data, args[5])</code>. <i><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="></a>   — <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" class="user_link">aol-nnov</a></i></p><br>
+<p>  - :</p><br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">uint64_t</span> <span class="hljs-title">handle_syscall</span><span class="hljs-params">(<span class="hljs-keyword">uint32_t</span> num, <span class="hljs-keyword">uint32_t</span> *drop_syscall,
+                        <span class="hljs-keyword">uint64_t</span> arg1, <span class="hljs-keyword">uint64_t</span> arg2, <span class="hljs-keyword">uint64_t</span> arg3,
+                        <span class="hljs-keyword">uint64_t</span> arg4, <span class="hljs-keyword">uint64_t</span> arg5, <span class="hljs-keyword">uint64_t</span> arg6)</span>
+</span>{
+  <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> MARKER 0x12345678</span><font></font>
+<font></font>
+<span class="hljs-keyword">static</span> <span class="hljs-keyword">int</span> in_handler;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">void</span> <span class="hljs-title">handle_sigsys</span><span class="hljs-params">(<span class="hljs-keyword">int</span> num, <span class="hljs-keyword">siginfo_t</span> *si, <span class="hljs-keyword">void</span> *arg)</span>
+</span>{
+  <span class="hljs-keyword">ucontext_t</span> *ctx = arg;
+  <span class="hljs-keyword">greg_t</span> *gregs = ctx-&gt;uc_mcontext.gregs;
+  <span class="hljs-keyword">uint32_t</span> drop = <span class="hljs-number">0</span>;
+  <span class="hljs-keyword">uint64_t</span> res;
+  <span class="hljs-keyword">if</span> (!in_handler) {<font></font>
+    in_handler = <span class="hljs-number">1</span>;<font></font>
+    res = handle_syscall(gregs[REG_RAX], &amp;drop,<font></font>
+                         gregs[REG_RDI], gregs[REG_RSI], gregs[REG_RDX],<font></font>
+                         gregs[REG_R10], gregs[REG_R8], gregs[REG_R9]);<font></font>
+    in_handler = <span class="hljs-number">0</span>;<font></font>
+  }<font></font>
+  <span class="hljs-keyword">if</span> (!drop) {<font></font>
+    res = syscall(gregs[REG_RAX],<font></font>
+                  gregs[REG_RDI], gregs[REG_RSI], gregs[REG_RDX],<font></font>
+                  gregs[REG_R10], gregs[REG_R8], MARKER);<font></font>
+  }<font></font>
+  gregs[REG_RAX] = res;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">initialize_handler</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{
+  <span class="hljs-comment">//  BPF- </span>
+  <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">sock_filter</span> <span class="hljs-title">filt</span>[] = {</span>
+    BPF_STMT(BPF_LD  | BPF_W   | BPF_ABS, (offsetof(struct seccomp_data, args[<span class="hljs-number">5</span>]))),<font></font>
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K  , MARKER, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>),<font></font>
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_ALLOW),<font></font>
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_TRAP),<font></font>
+  };<font></font>
+<font></font>
+  <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">sock_fprog</span> <span class="hljs-title">prog</span> = {</span>
+    <span class="hljs-keyword">sizeof</span>(filt) / <span class="hljs-keyword">sizeof</span>(filt[<span class="hljs-number">0</span>]), filt<font></font>
+  };<font></font>
+<font></font>
+  <span class="hljs-comment">//  userspace-</span>
+  <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">sigaction</span> <span class="hljs-title">sig</span>;</span>
+  <span class="hljs-built_in">memset</span>(&amp;sig, <span class="hljs-number">0</span>, <span class="hljs-keyword">sizeof</span>(sig));<font></font>
+  sig.sa_sigaction = handle_sigsys;<font></font>
+  sig.sa_flags = SA_SIGINFO;<font></font>
+  sigaction(SIGSYS, &amp;sig, <span class="hljs-literal">NULL</span>);<font></font>
+<font></font>
+  <span class="hljs-comment">// ,  </span>
+  prctl(PR_SET_NO_NEW_PRIVS, <span class="hljs-number">1</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>);<font></font>
+  syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, <span class="hljs-number">0</span>, &amp;prog);<font></font>
+}</code></pre><br>
+<p><code>handle_sigsys</code> —  new-style  ,  ,     <code>sigaction</code>.      <code>man sigaction</code> :</p><br>
+<pre><code class="plaintext hljs">    ucontext<font></font>
+        This is a pointer to a ucontext_t structure, cast to void *.  The structure<font></font>
+        pointed to by this field contains signal context information that was saved<font></font>
+        on the user-space stack by the kernel; for details, see sigreturn(2). Further<font></font>
+        information  about the ucontext_t structure can be found in getcontext(3).<font></font>
+        Commonly, the handler function doesn't make any use of the third argument.</code></pre><br>
+<p> ,     common case,  <del> </del>     —      ,     .     ,      .  , <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">libseccomp</a>     ,      —        , , ,   —       ,   ,    —  ,  …        <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">man syscall</a>   ,    — x86_64.</p><br>
+<p>         : <code>syscall</code> — ,     man    .        ,    .       ABI  «» 64-   32-  (     man-) —  ,  x86_64   ,           ,  ,  <code>syscall()</code>      .     ,  ,     ,   ,     -   libc-    . ,     <code>seccomp</code>   :</p><br>
+<pre><code class="cpp hljs">  syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, <span class="hljs-number">0</span>, &amp;prog);</code></pre><br>
+<p>  <code>prctl</code>    :  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><code>man seccomp</code></a>  ,          set-user-ID    ,   <code>setuid</code>  ,    ,         .</p><br>
+<p>    :</p><br>
+<pre><code class="plaintext hljs">$ gcc -fPIC --shared syscall-handler.c -o syscall-handler.so<font></font>
+$ LD_PRELOAD=syscall-handler.so ls<font></font>
+ERROR: ld.so: object 'syscall-handler.so' from LD_PRELOAD cannot be preloaded (cannot open shared object file): ignored.<font></font>
+article.md  example.c  syscall-handler.c  syscall-handler.so<font></font>
+$ LD_PRELOAD=./syscall-handler.so ls<font></font>
+article.md  example.c  syscall-handler.c  syscall-handler.so</code></pre><br>
+<p> ,          .  ,  .  ,     .     <em> </em> .</p><br>
+<h2 id="otladka"></h2><br>
+<p>    ? , ,   <code>catch syscall</code>  gdb,     (    ,  )     <code>strace</code>:</p><br>
+<pre><code class="plaintext hljs">strace -E LD_PRELOAD=./syscall-handler.so ls</code></pre><br>
+<p> <code>-E</code>   ,        .            —   .</p><br>
+<div class="spoiler"><b class="spoiler_title"> strace</b><div class="spoiler_text"><pre><code class="plaintext hljs">$ strace -E LD_PRELOAD=./syscall-handler.so ls<font></font>
+execve("/bin/ls", ["ls"], 0x5652b17024d0 /* 61 vars */) = 0<font></font>
+brk(NULL)                               = 0x55a2f556d000<font></font>
+arch_prctl(0x3001 /* ARCH_??? */, 0x7fffe8e949b0) = -1 EINVAL ( )<font></font>
+openat(AT_FDCWD, "./syscall-handler.so", O_RDONLY|O_CLOEXEC) = 3<font></font>
+read(3, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0\3\0&gt;\0\1\0\0\0 \21\0\0\0\0\0\0"..., 832) = 832<font></font>
+fstat(3, {st_mode=S_IFREG|0775, st_size=16504, ...}) = 0<font></font>
+mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f29f6baf000<font></font>
+getcwd("/home/trosinenko/some/path", 128) = 63<font></font>
+mmap(NULL, 16480, PROT_READ, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7f29f6baa000<font></font>
+mmap(0x7f29f6bab000, 4096, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x1000) = 0x7f29f6bab000<font></font>
+mmap(0x7f29f6bac000, 4096, PROT_READ, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x2000) = 0x7f29f6bac000<font></font>
+mmap(0x7f29f6bad000, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x2000) = 0x7f29f6bad000<font></font>
+close(3)                                = 0<font></font>
+access("/etc/ld.so.preload", R_OK)      = -1 ENOENT (    )<font></font>
+openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3<font></font>
+fstat(3, {st_mode=S_IFREG|0644, st_size=254851, ...}) = 0<font></font>
+mmap(NULL, 254851, PROT_READ, MAP_PRIVATE, 3, 0) = 0x7f29f6b6b000<font></font>
+close(3)                                = 0<font></font>
+openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libselinux.so.1", O_RDONLY|O_CLOEXEC) = 3<font></font>
+read(3, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0\3\0&gt;\0\1\0\0\0\300p\0\0\0\0\0\0"..., 832) = 832<font></font>
+fstat(3, {st_mode=S_IFREG|0644, st_size=163240, ...}) = 0<font></font>
+mmap(NULL, 174640, PROT_READ, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7f29f6b40000<font></font>
+mprotect(0x7f29f6b46000, 135168, PROT_NONE) = 0<font></font>
+mmap(0x7f29f6b46000, 102400, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x6000) = 0x7f29f6b46000<font></font>
+mmap(0x7f29f6b5f000, 28672, PROT_READ, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x1f000) = 0x7f29f6b5f000<font></font>
+mmap(0x7f29f6b67000, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x26000) = 0x7f29f6b67000<font></font>
+mmap(0x7f29f6b69000, 6704, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_ANONYMOUS, -1, 0) = 0x7f29f6b69000<font></font>
+close(3)                                = 0<font></font>
+openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY|O_CLOEXEC) = 3<font></font>
+read(3, "\177ELF\2\1\1\3\0\0\0\0\0\0\0\0\3\0&gt;\0\1\0\0\0\360r\2\0\0\0\0\0"..., 832) = 832<font></font>
+lseek(3, 64, SEEK_SET)                  = 64<font></font>
+read(3, "\6\0\0\0\4\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0\0"..., 784) = 784<font></font>
+lseek(3, 848, SEEK_SET)                 = 848<font></font>
+read(3, "\4\0\0\0\20\0\0\0\5\0\0\0GNU\0\2\0\0\300\4\0\0\0\3\0\0\0\0\0\0\0", 32) = 32<font></font>
+lseek(3, 880, SEEK_SET)                 = 880<font></font>
+read(3, "\4\0\0\0\24\0\0\0\3\0\0\0GNU\0!U\364U\255V\275\207\34\202%\274\312\205\356%"..., 68) = 68<font></font>
+fstat(3, {st_mode=S_IFREG|0755, st_size=2025032, ...}) = 0<font></font>
+lseek(3, 64, SEEK_SET)                  = 64<font></font>
+read(3, "\6\0\0\0\4\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0\0@\0\0\0\0\0\0\0"..., 784) = 784<font></font>
+lseek(3, 848, SEEK_SET)                 = 848<font></font>
+read(3, "\4\0\0\0\20\0\0\0\5\0\0\0GNU\0\2\0\0\300\4\0\0\0\3\0\0\0\0\0\0\0", 32) = 32<font></font>
+lseek(3, 880, SEEK_SET)                 = 880<font></font>
+read(3, "\4\0\0\0\24\0\0\0\3\0\0\0GNU\0!U\364U\255V\275\207\34\202%\274\312\205\356%"..., 68) = 68<font></font>
+mmap(NULL, 2032984, PROT_READ, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7f29f694f000<font></font>
+mmap(0x7f29f6974000, 1540096, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x25000) = 0x7f29f6974000<font></font>
+mmap(0x7f29f6aec000, 303104, PROT_READ, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x19d000) = 0x7f29f6aec000<font></font>
+mmap(0x7f29f6b36000, 24576, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x1e6000) = 0x7f29f6b36000<font></font>
+mmap(0x7f29f6b3c000, 13656, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_ANONYMOUS, -1, 0) = 0x7f29f6b3c000<font></font>
+close(3)                                = 0<font></font>
+openat(AT_FDCWD, "/usr/lib/x86_64-linux-gnu/libpcre2-8.so.0", O_RDONLY|O_CLOEXEC) = 3<font></font>
+read(3, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0\3\0&gt;\0\1\0\0\0\200!\0\0\0\0\0\0"..., 832) = 832<font></font>
+fstat(3, {st_mode=S_IFREG|0644, st_size=539176, ...}) = 0<font></font>
+mmap(NULL, 541448, PROT_READ, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7f29f68ca000<font></font>
+mmap(0x7f29f68cc000, 376832, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x2000) = 0x7f29f68cc000<font></font>
+mmap(0x7f29f6928000, 151552, PROT_READ, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x5e000) = 0x7f29f6928000<font></font>
+mmap(0x7f29f694d000, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x82000) = 0x7f29f694d000<font></font>
+close(3)                                = 0<font></font>
+openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libdl.so.2", O_RDONLY|O_CLOEXEC) = 3<font></font>
+read(3, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0\3\0&gt;\0\1\0\0\0 \22\0\0\0\0\0\0"..., 832) = 832<font></font>
+fstat(3, {st_mode=S_IFREG|0644, st_size=18816, ...}) = 0<font></font>
+mmap(NULL, 20752, PROT_READ, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7f29f68c4000<font></font>
+mmap(0x7f29f68c5000, 8192, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x1000) = 0x7f29f68c5000<font></font>
+mmap(0x7f29f68c7000, 4096, PROT_READ, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x3000) = 0x7f29f68c7000<font></font>
+mmap(0x7f29f68c8000, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x3000) = 0x7f29f68c8000<font></font>
+close(3)                                = 0<font></font>
+openat(AT_FDCWD, "/lib/x86_64-linux-gnu/libpthread.so.0", O_RDONLY|O_CLOEXEC) = 3<font></font>
+read(3, "\177ELF\2\1\1\0\0\0\0\0\0\0\0\0\3\0&gt;\0\1\0\0\0\360\201\0\0\0\0\0\0"..., 832) = 832<font></font>
+lseek(3, 824, SEEK_SET)                 = 824<font></font>
+read(3, "\4\0\0\0\24\0\0\0\3\0\0\0GNU\09V\4W\221\35\226\215\236\6\10\215\240\25\227\v"..., 68) = 68<font></font>
+fstat(3, {st_mode=S_IFREG|0755, st_size=158288, ...}) = 0<font></font>
+lseek(3, 824, SEEK_SET)                 = 824<font></font>
+read(3, "\4\0\0\0\24\0\0\0\3\0\0\0GNU\09V\4W\221\35\226\215\236\6\10\215\240\25\227\v"..., 68) = 68<font></font>
+mmap(NULL, 140448, PROT_READ, MAP_PRIVATE|MAP_DENYWRITE, 3, 0) = 0x7f29f68a1000<font></font>
+mmap(0x7f29f68a8000, 69632, PROT_READ|PROT_EXEC, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x7000) = 0x7f29f68a8000<font></font>
+mmap(0x7f29f68b9000, 20480, PROT_READ, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x18000) = 0x7f29f68b9000<font></font>
+mmap(0x7f29f68be000, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_DENYWRITE, 3, 0x1c000) = 0x7f29f68be000<font></font>
+mmap(0x7f29f68c0000, 13472, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_FIXED|MAP_ANONYMOUS, -1, 0) = 0x7f29f68c0000<font></font>
+close(3)                                = 0<font></font>
+mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f29f689f000<font></font>
+mmap(NULL, 12288, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f29f689c000<font></font>
+arch_prctl(ARCH_SET_FS, 0x7f29f689c800) = 0<font></font>
+mprotect(0x7f29f6b36000, 12288, PROT_READ) = 0<font></font>
+mprotect(0x7f29f68be000, 4096, PROT_READ) = 0<font></font>
+mprotect(0x7f29f68c8000, 4096, PROT_READ) = 0<font></font>
+mprotect(0x7f29f694d000, 4096, PROT_READ) = 0<font></font>
+mprotect(0x7f29f6b67000, 4096, PROT_READ) = 0<font></font>
+mprotect(0x7f29f6bad000, 4096, PROT_READ) = 0<font></font>
+mprotect(0x55a2f4670000, 4096, PROT_READ) = 0<font></font>
+mprotect(0x7f29f6bdd000, 4096, PROT_READ) = 0<font></font>
+munmap(0x7f29f6b6b000, 254851)          = 0<font></font>
+set_tid_address(0x7f29f689cad0)         = 31949<font></font>
+set_robust_list(0x7f29f689cae0, 24)     = 0<font></font>
+rt_sigaction(SIGRTMIN, {sa_handler=0x7f29f68a8c50, sa_mask=[], sa_flags=SA_RESTORER|SA_SIGINFO, sa_restorer=0x7f29f68b6540}, NULL, 8) = 0<font></font>
+rt_sigaction(SIGRT_1, {sa_handler=0x7f29f68a8cf0, sa_mask=[], sa_flags=SA_RESTORER|SA_RESTART|SA_SIGINFO, sa_restorer=0x7f29f68b6540}, NULL, 8) = 0<font></font>
+rt_sigprocmask(SIG_UNBLOCK, [RTMIN RT_1], NULL, 8) = 0<font></font>
+prlimit64(0, RLIMIT_STACK, NULL, {rlim_cur=8192*1024, rlim_max=RLIM64_INFINITY}) = 0<font></font>
+statfs("/sys/fs/selinux", 0x7fffe8e94900) = -1 ENOENT (    )<font></font>
+statfs("/selinux", 0x7fffe8e94900)      = -1 ENOENT (    )<font></font>
+brk(NULL)                               = 0x55a2f556d000<font></font>
+brk(0x55a2f558e000)                     = 0x55a2f558e000<font></font>
+openat(AT_FDCWD, "/proc/filesystems", O_RDONLY|O_CLOEXEC) = 3<font></font>
+fstat(3, {st_mode=S_IFREG|0444, st_size=0, ...}) = 0<font></font>
+read(3, "nodev\tsysfs\nnodev\ttmpfs\nnodev\tbd"..., 1024) = 425<font></font>
+read(3, "", 1024)                       = 0<font></font>
+close(3)                                = 0<font></font>
+access("/etc/selinux/config", F_OK)     = -1 ENOENT (    )<font></font>
+rt_sigaction(SIGSYS, {sa_handler=0x7f29f6bab1ff, sa_mask=[], sa_flags=SA_RESTORER|SA_SIGINFO, sa_restorer=0x7f29f6995470}, NULL, 8) = 0<font></font>
+prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)  = 0<font></font>
+seccomp(SECCOMP_SET_MODE_FILTER, 0, {len=4, filter=0x7fffe8e94930}) = 0<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/locale-archive", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/locale-archive", O_RDONLY|O_CLOEXEC) = 3<font></font>
+rt_sigreturn({mask=[]})                 = 3<font></font>
+fstat(3, {st_mode=000, st_size=0, ...}) = 5<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a5f7b9, si_syscall=__NR_fstat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+fstat(3, {st_mode=S_IFREG|0644, st_size=8994080, ...}) = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+mmap(NULL, 8994080, PROT_READ, MAP_PRIVATE, 3, 0) = 0x9<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6aaf6, si_syscall=__NR_mmap, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+mmap(NULL, 8994080, PROT_READ, MAP_PRIVATE, 3, 0x12345678) = -1 EINVAL ( )<font></font>
+rt_sigreturn({mask=[]})                 = -1 EPERM (  )<font></font>
+close(3)                                = 3<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a655bb, si_syscall=__NR_close, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+close(3)                                = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+openat(AT_FDCWD, "/usr/share/locale/locale.alias", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/share/locale/locale.alias", O_RDONLY|O_CLOEXEC) = 3<font></font>
+rt_sigreturn({mask=[]})                 = 3<font></font>
+fstat(3, {st_mode=037, st_size=0, ...}) = 5<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a5f7b9, si_syscall=__NR_fstat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+fstat(3, {st_mode=S_IFREG|0644, st_size=2995, ...}) = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+read(3, "", 4096)                       = 0<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a658d8, si_syscall=__NR_read, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+read(3, "# Locale name alias data base.\n#"..., 4096) = 2995<font></font>
+rt_sigreturn({mask=[]})                 = 2995<font></font>
+read(3, "", 4096)                       = 0<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a658d8, si_syscall=__NR_read, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+read(3, "", 4096)                       = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+close(3)                                = 3<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a655bb, si_syscall=__NR_close, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+close(3)                                = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru_RU.UTF-8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru_RU.UTF-8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (    )<font></font>
+rt_sigreturn({mask=[]})                 = -1 EPERM (  )<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru_RU.utf8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru_RU.utf8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (    )<font></font>
+rt_sigreturn({mask=[]})                 = -1 EPERM (  )<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru_RU/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru_RU/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (    )<font></font>
+rt_sigreturn({mask=[]})                 = -1 EPERM (  )<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru.UTF-8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru.UTF-8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (    )<font></font>
+rt_sigreturn({mask=[]})                 = -1 EPERM (  )<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru.utf8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru.utf8/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (    )<font></font>
+rt_sigreturn({mask=[]})                 = -1 EPERM (  )<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/ru/LC_IDENTIFICATION", O_RDONLY|O_CLOEXEC) = -1 ENOENT (    )<font></font>
+rt_sigreturn({mask=[]})                 = -1 EPERM (  )<font></font>
+ioctl(1, TCGETS, {B4000000 opost -isig icanon -echo ...}) = 16<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a65cea, si_syscall=__NR_ioctl, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+ioctl(1, TCGETS, {B38400 opost isig icanon echo ...}) = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+ioctl(1, TIOCGWINSZ, {ws_row=45567, ws_col=63162, ws_xpixel=32553, ws_ypixel=0}) = 16<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6667b, si_syscall=__NR_ioctl, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+ioctl(1, TIOCGWINSZ, {ws_row=58, ws_col=271, ws_xpixel=0, ws_ypixel=0}) = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+openat(AT_FDCWD, ".", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, ".", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3<font></font>
+rt_sigreturn({mask=[]})                 = 3<font></font>
+fstat(3, {st_mode=037777777777, st_size=139818209035479, ...}) = 5<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a5f7b9, si_syscall=__NR_fstat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+fstat(3, {st_mode=S_IFDIR|0775, st_size=4096, ...}) = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+getdents64(3, /* d_reclen &lt; offsetof(struct dirent64, d_name) */ /* 0 entries */, 32768) = 217<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a3007b, si_syscall=__NR_getdents64, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+getdents64(3, /* 7 entries */, 32768)   = 232<font></font>
+rt_sigreturn({mask=[]})                 = 232<font></font>
+getdents64(3, /* 7 entries */, 32768)   = 217<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a3007b, si_syscall=__NR_getdents64, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+getdents64(3, /* 0 entries */, 32768)   = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+close(3)                                = 3<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a655bb, si_syscall=__NR_close, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+close(3)                                = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+fstat(1, {st_mode=000, st_size=0, ...}) = 5<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a5f7b9, si_syscall=__NR_fstat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+fstat(1, {st_mode=S_IFCHR|0600, st_rdev=makedev(0x88, 0x7), ...}) = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+write(1, "article.md  example.c  syscall-h"..., 61) = 1<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a60317, si_syscall=__NR_write, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+write(1, "article.md  example.c  syscall-h"..., 61article.md  example.c  syscall-handler.c  syscall-handler.so<font></font>
+) = 61<font></font>
+rt_sigreturn({mask=[]})                 = 61<font></font>
+close(1)                                = 3<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a655bb, si_syscall=__NR_close, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+close(1)                                = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+close(2)                                = 3<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a655bb, si_syscall=__NR_close, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+close(2)                                = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+exit_group(0)                           = 231<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a34fe6, si_syscall=__NR_exit_group, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+exit_group(0)                           = ?<font></font>
++++ exited with 0 +++</code></pre></div></div><br>
+<p>        (-,  userspace),     - ,   ...</p><br>
+<pre><code class="plaintext hljs">...<font></font>
+rt_sigaction(SIGSYS, {sa_handler=0x7f29f6bab1ff, sa_mask=[], sa_flags=SA_RESTORER|SA_SIGINFO, sa_restorer=0x7f29f6995470}, NULL, 8) = 0<font></font>
+prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)  = 0<font></font>
+seccomp(SECCOMP_SET_MODE_FILTER, 0, {len=4, filter=0x7fffe8e94930}) = 0<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/locale-archive", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/locale-archive", O_RDONLY|O_CLOEXEC) = 3<font></font>
+rt_sigreturn({mask=[]})                 = 3<font></font>
+fstat(3, {st_mode=000, st_size=0, ...}) = 5<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a5f7b9, si_syscall=__NR_fstat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+fstat(3, {st_mode=S_IFREG|0644, st_size=8994080, ...}) = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+mmap(NULL, 8994080, PROT_READ, MAP_PRIVATE, 3, 0) = 0x9<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6aaf6, si_syscall=__NR_mmap, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+mmap(NULL, 8994080, PROT_READ, MAP_PRIVATE, 3, 0x12345678) = -1 EINVAL ( )<font></font>
+rt_sigreturn({mask=[]})                 = -1 EPERM (  )<font></font>
+close(3)                                = 3<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a655bb, si_syscall=__NR_close, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+close(3)                                = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+openat(AT_FDCWD, "/usr/share/locale/locale.alias", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a6579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+openat(AT_FDCWD, "/usr/share/locale/locale.alias", O_RDONLY|O_CLOEXEC) = 3<font></font>
+rt_sigreturn({mask=[]})                 = 3<font></font>
+fstat(3, {st_mode=037, st_size=0, ...}) = 5<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a5f7b9, si_syscall=__NR_fstat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+fstat(3, {st_mode=S_IFREG|0644, st_size=2995, ...}) = 0<font></font>
+rt_sigreturn({mask=[]})                 = 0<font></font>
+read(3, "", 4096)                       = 0<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f29f6a658d8, si_syscall=__NR_read, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+read(3, "# Locale name alias data base.\n#"..., 4096) = 2995<font></font>
+...</code></pre><br>
+<p>  ,      ,    —  <code>SIGSYS</code>,         .  , ,  <code>fstat</code>:   —     !</p><br>
+<h2 id="uslozhnyaem-eksperiment"> ...</h2><br>
+<p>, -  .   - :  <code>openat</code>,   <code>libc</code>  :   <code>handle_syscall</code></p><br>
+<pre><code class="cpp hljs">  <span class="hljs-keyword">if</span> (num == SYS_openat) {
+    <span class="hljs-built_in">fprintf</span>(<span class="hljs-built_in">stderr</span>, <span class="hljs-string">"openat: %s\n"</span>, (<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *)arg2);<font></font>
+  }</code></pre><br>
+<p>  :</p><br>
+<pre><code class="plaintext hljs">$ gcc -fPIC --shared syscall-handler.c -o syscall-handler.so<font></font>
+$ LD_PRELOAD=./syscall-handler.so ls<font></font>
+  <font></font>
+$ strace -E LD_PRELOAD=./syscall-handler.so ls<font></font>
+...<font></font>
+rt_sigaction(SIGSYS, {sa_handler=0x7f55ef2cb24e, sa_mask=[], sa_flags=SA_RESTORER|SA_SIGINFO, sa_restorer=0x7f55ef0b5470}, NULL, 8) = 0<font></font>
+prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)  = 0<font></font>
+seccomp(SECCOMP_SET_MODE_FILTER, 0, {len=4, filter=0x7ffca47b36e0}) = 0<font></font>
+openat(AT_FDCWD, "/usr/lib/locale/locale-archive", O_RDONLY|O_CLOEXEC) = 257<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f55ef18579c, si_syscall=__NR_openat, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+write(2, "openat: /usr/lib/locale/locale-a"..., 39) = 1<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7f55ef180317, si_syscall=__NR_write, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
++++ killed by SIGSYS +++<font></font>
+  </code></pre><br>
+<p>  :     <code>SA_NODEFER</code>    ,   <code>SIGSYS</code> <em>  </em>      ,    deadlock.     <code>initialize_handler</code>:</p><br>
+<pre><code class="cpp hljs">  sig.sa_flags = SA_SIGINFO | SA_NODEFER;</code></pre><br>
+<pre><code class="plaintext hljs">$ LD_PRELOAD=./syscall-handler.so ls<font></font>
+openat: /usr/lib/locale/locale-archive<font></font>
+openat: /usr/share/locale/locale.alias<font></font>
+openat: /usr/lib/locale/ru_RU.UTF-8/LC_IDENTIFICATION<font></font>
+openat: /usr/lib/locale/ru_RU.utf8/LC_IDENTIFICATION<font></font>
+openat: /usr/lib/locale/ru_RU/LC_IDENTIFICATION<font></font>
+openat: /usr/lib/locale/ru.UTF-8/LC_IDENTIFICATION<font></font>
+openat: /usr/lib/locale/ru.utf8/LC_IDENTIFICATION<font></font>
+openat: /usr/lib/locale/ru/LC_IDENTIFICATION<font></font>
+openat: .<font></font>
+article.md  example.c  syscall-handler.c  syscall-handler.so</code></pre><br>
+<h2 id="no-est-odna-problema">   ...</h2><br>
+<p>  ,             . <code>mmap</code>  :)  ,      ,    -  .</p><br>
+<p><strong>example.c:</strong></p><br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdlib.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">main</span><span class="hljs-params">()</span>
+</span>{
+  <span class="hljs-built_in">fprintf</span>(<span class="hljs-built_in">stderr</span>, <span class="hljs-string">"Allocating 1MB of memory\n"</span>);
+  <span class="hljs-keyword">void</span> *ptr = <span class="hljs-built_in">malloc</span>(<span class="hljs-number">1</span> &lt;&lt; <span class="hljs-number">20</span>);
+  <span class="hljs-built_in">fprintf</span>(<span class="hljs-built_in">stderr</span>, <span class="hljs-string">"Allocated: %p\n"</span>, ptr);<font></font>
+}</code></pre><br>
+<pre><code class="plaintext hljs">$ LD_PRELOAD=./syscall-handler.so ./example<font></font>
+Allocating 1MB of memory<font></font>
+Allocated: 0x564fc07012a0</code></pre><br>
+<p>…  ?!?</p><br>
+<pre><code class="plaintext hljs">$ strace -E LD_PRELOAD=./syscall-handler.so ./example<font></font>
+...<font></font>
+rt_sigaction(SIGSYS, {sa_handler=0x7fd7065cd24e, sa_mask=[], sa_flags=SA_RESTORER|SA_NODEFER|SA_SIGINFO, sa_restorer=0x7fd7063e2470}, NULL, 8) = 0<font></font>
+prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)  = 0<font></font>
+seccomp(SECCOMP_SET_MODE_FILTER, 0, {len=4, filter=0x7fff8ea97810}) = 0<font></font>
+write(2, "Allocating 1MB of memory\n", 25) = 1<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7fd7064ad317, si_syscall=__NR_write, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+write(2, "Allocating 1MB of memory\n", 25Allocating 1MB of memory<font></font>
+) = 25<font></font>
+rt_sigreturn({mask=[]})                 = 25<font></font>
+brk(NULL)                               = 0xc<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7fd7064b355b, si_syscall=__NR_brk, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+brk(NULL)                               = 0x55e31f74f000<font></font>
+rt_sigreturn({mask=[]})                 = 94433973694464<font></font>
+brk(0x55e31f770000)                     = 0xc<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7fd7064b355b, si_syscall=__NR_brk, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+brk(0x55e31f770000)                     = 0x55e31f770000<font></font>
+rt_sigreturn({mask=[]})                 = 94433973829632<font></font>
+mmap(NULL, 1052672, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x9<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7fd7064b7af6, si_syscall=__NR_mmap, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+mmap(NULL, 1052672, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0x12345678) = -1 EINVAL ( )<font></font>
+rt_sigreturn({mask=[]})                 = -1 EPERM (  )<font></font>
+brk(0x55e31f870000)                     = 0xc<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7fd7064b355b, si_syscall=__NR_brk, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+brk(0x55e31f870000)                     = 0x55e31f870000<font></font>
+rt_sigreturn({mask=[]})                 = 94433974878208<font></font>
+write(2, "Allocated: 0x55e31f74f2a0\n", 26) = 1<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7fd7064ad317, si_syscall=__NR_write, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+write(2, "Allocated: 0x55e31f74f2a0\n", 26Allocated: 0x55e31f74f2a0<font></font>
+) = 26<font></font>
+rt_sigreturn({mask=[]})                 = 26<font></font>
+exit_group(0)                           = 231<font></font>
+--- SIGSYS {si_signo=SIGSYS, si_code=SYS_SECCOMP, si_call_addr=0x7fd706481fe6, si_syscall=__NR_exit_group, si_arch=AUDIT_ARCH_X86_64} ---<font></font>
+exit_group(0)                           = ?<font></font>
++++ exited with 0 +++</code></pre><br>
+<p> :  <code>mmap</code>  , <code>libc</code>   <code>brk</code>.   ...</p><br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;sys/types.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;sys/stat.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;fcntl.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;sys/mman.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdlib.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">int</span> <span class="hljs-title">main</span><span class="hljs-params">()</span>
+</span>{
+  <span class="hljs-built_in">fprintf</span>(<span class="hljs-built_in">stderr</span>, <span class="hljs-string">"Allocating 1MB of memory\n"</span>);
+  <span class="hljs-keyword">void</span> *ptr = <span class="hljs-built_in">malloc</span>(<span class="hljs-number">1</span> &lt;&lt; <span class="hljs-number">20</span>);
+  <span class="hljs-built_in">fprintf</span>(<span class="hljs-built_in">stderr</span>, <span class="hljs-string">"Allocated: %p\n"</span>, ptr);<font></font>
+<font></font>
+  <span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *fname = <span class="hljs-string">"test.bin"</span>;
+  <span class="hljs-keyword">int</span> fd = open(fname, O_RDONLY);
+  <span class="hljs-built_in">fprintf</span>(<span class="hljs-built_in">stderr</span>, <span class="hljs-string">"Mapping first 1MB of %s\n"</span>, fname);
+  <span class="hljs-keyword">void</span> *ptr2 = mmap(<span class="hljs-literal">NULL</span>, <span class="hljs-number">1</span> &lt;&lt; <span class="hljs-number">20</span>, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, fd, <span class="hljs-number">0</span>);
+  <span class="hljs-built_in">fprintf</span>(<span class="hljs-built_in">stderr</span>, <span class="hljs-string">"Mapped: %p\n"</span>, ptr2);
+  <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;<font></font>
+}<font></font>
+</code></pre><br>
+<pre><code class="plaintext hljs">$ gcc example.c -o example<font></font>
+$ ./example<font></font>
+Allocating 1MB of memory<font></font>
+Allocated: 0x7f1aa7d09010<font></font>
+Mapping first 1MB of test.bin<font></font>
+Mapped: 0x7f1aa7c09000<font></font>
+$ LD_PRELOAD=./syscall-handler.so ./example<font></font>
+Allocating 1MB of memory<font></font>
+Allocated: 0x556a51df52a0<font></font>
+openat: test.bin<font></font>
+Mapping first 1MB of test.bin<font></font>
+Mapped: 0xffffffffffffffff</code></pre><br>
+<p>«! —    ...»  <code>0xffffffffffffffff</code>,   <code>-1</code>,   <code>MAP_FAILED</code>.</p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">したがって、傍受</font></font><code>mmap</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に</font><font style="vertical-align: inherit;">興味がないと想像して</font><font style="vertical-align: inherit;">、次のようにプログラムを書き直してください。</font></font></p><br>
+<pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> ALLOW(sys) \
+    BPF_STMT(BPF_LD  | BPF_W   | BPF_ABS, (offsetof(struct seccomp_data, nr))), \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K  , sys, 0, 1), \
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_ALLOW),</span><font></font>
+<font></font>
+  <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">sock_filter</span> <span class="hljs-title">filt</span>[] = {</span>
+    BPF_STMT(BPF_LD  | BPF_W   | BPF_ABS, (offsetof(struct seccomp_data, args[<span class="hljs-number">5</span>]))),<font></font>
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K  , MARKER, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>),<font></font>
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_ALLOW),<font></font>
+    ALLOW(SYS_mmap)<font></font>
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_TRAP),<font></font>
+  };</code></pre><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これですべてが機能します：</font></font></p><br>
+<pre><code class="plaintext hljs">$ LD_PRELOAD=./syscall-handler.so ./example<font></font>
+Allocating 1MB of memory<font></font>
+Allocated: 0x7fad45a6f010<font></font>
+openat: test.bin<font></font>
+Mapping first 1MB of test.bin<font></font>
+Mapped: 0x7fad4596f000</code></pre><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最終的なソースコード</font></font></b><div class="spoiler_text"><pre><code class="cpp hljs"><span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> _GNU_SOURCE</span><font></font>
+<font></font>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;errno.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stddef.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdio.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdint.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;stdlib.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;unistd.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;linux/audit.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;linux/filter.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;linux/seccomp.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;sys/prctl.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;unistd.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;syscall.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;signal.h&gt;</span></span>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">include</span> <span class="hljs-meta-string">&lt;string.h&gt;</span></span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">uint64_t</span> <span class="hljs-title">handle_syscall</span><span class="hljs-params">(<span class="hljs-keyword">uint32_t</span> num, <span class="hljs-keyword">uint32_t</span> *drop_syscall,
+                        <span class="hljs-keyword">uint64_t</span> arg1, <span class="hljs-keyword">uint64_t</span> arg2, <span class="hljs-keyword">uint64_t</span> arg3,
+                        <span class="hljs-keyword">uint64_t</span> arg4, <span class="hljs-keyword">uint64_t</span> arg5, <span class="hljs-keyword">uint64_t</span> arg6)</span>
+</span>{
+  <span class="hljs-keyword">if</span> (num == SYS_openat) {
+    <span class="hljs-built_in">fprintf</span>(<span class="hljs-built_in">stderr</span>, <span class="hljs-string">"openat: %s\n"</span>, (<span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *)arg2);<font></font>
+  }<font></font>
+  <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> MARKER 0x12345678</span><font></font>
+<font></font>
+<span class="hljs-keyword">static</span> <span class="hljs-keyword">int</span> in_handler;<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">void</span> <span class="hljs-title">handle_sigsys</span><span class="hljs-params">(<span class="hljs-keyword">int</span> num, <span class="hljs-keyword">siginfo_t</span> *si, <span class="hljs-keyword">void</span> *arg)</span>
+</span>{
+  <span class="hljs-keyword">ucontext_t</span> *ctx = arg;
+  <span class="hljs-keyword">greg_t</span> *gregs = ctx-&gt;uc_mcontext.gregs;
+  <span class="hljs-keyword">uint32_t</span> drop = <span class="hljs-number">0</span>;
+  <span class="hljs-keyword">uint64_t</span> res;
+  <span class="hljs-keyword">if</span> (!in_handler) {<font></font>
+    in_handler = <span class="hljs-number">1</span>;<font></font>
+    res = handle_syscall(gregs[REG_RAX], &amp;drop,<font></font>
+                         gregs[REG_RDI], gregs[REG_RSI], gregs[REG_RDX],<font></font>
+                         gregs[REG_R10], gregs[REG_R8], gregs[REG_R9]);<font></font>
+    in_handler = <span class="hljs-number">0</span>;<font></font>
+  }<font></font>
+  <span class="hljs-keyword">if</span> (!drop) {<font></font>
+    res = syscall(gregs[REG_RAX],<font></font>
+                  gregs[REG_RDI], gregs[REG_RSI], gregs[REG_RDX],<font></font>
+                  gregs[REG_R10], gregs[REG_R8], MARKER);<font></font>
+  }<font></font>
+  gregs[REG_RAX] = res;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">initialize_handler</span><span class="hljs-params">(<span class="hljs-keyword">void</span>)</span>
+</span>{
+<span class="hljs-meta">#<span class="hljs-meta-keyword">define</span> ALLOW(sys) \
+    BPF_STMT(BPF_LD  | BPF_W   | BPF_ABS, (offsetof(struct seccomp_data, nr))), \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K  , sys, 0, 1), \
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_ALLOW),</span>
+  <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">sock_filter</span> <span class="hljs-title">filt</span>[] = {</span>
+    BPF_STMT(BPF_LD  | BPF_W   | BPF_ABS, (offsetof(struct seccomp_data, args[<span class="hljs-number">5</span>]))),<font></font>
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K  , MARKER, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>),<font></font>
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_ALLOW),<font></font>
+    ALLOW(SYS_mmap)<font></font>
+    BPF_STMT(BPF_RET           | BPF_K  , SECCOMP_RET_TRAP),<font></font>
+  };<font></font>
+<font></font>
+  <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">sock_fprog</span> <span class="hljs-title">prog</span> = {</span>
+    <span class="hljs-keyword">sizeof</span>(filt) / <span class="hljs-keyword">sizeof</span>(filt[<span class="hljs-number">0</span>]), filt<font></font>
+  };<font></font>
+<font></font>
+  <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">sigaction</span> <span class="hljs-title">sig</span>;</span>
+  <span class="hljs-built_in">memset</span>(&amp;sig, <span class="hljs-number">0</span>, <span class="hljs-keyword">sizeof</span>(sig));<font></font>
+  sig.sa_sigaction = handle_sigsys;<font></font>
+  sig.sa_flags = SA_SIGINFO | SA_NODEFER;<font></font>
+  sigaction(SIGSYS, &amp;sig, <span class="hljs-literal">NULL</span>);<font></font>
+<font></font>
+  prctl(PR_SET_NO_NEW_PRIVS, <span class="hljs-number">1</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>, <span class="hljs-number">0</span>);<font></font>
+  syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, <span class="hljs-number">0</span>, &amp;prog);<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-keyword">static</span> <span class="hljs-keyword">void</span> __attribute__((constructor))constr(<span class="hljs-keyword">void</span>)<font></font>
+{<font></font>
+  initialize_handler();<font></font>
+}</code></pre></div></div></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja469253/index.html">アプリはどれくらいビルドしますか</a></li>
+<li><a href="../ja469257/index.html">PowerShellとWSLを使用してWindowsでLinuxコマンドを統合する</a></li>
+<li><a href="../ja469259/index.html">気候変動：過去100年間のさまざまな都市の気温を分析します</a></li>
+<li><a href="../ja469263/index.html">Почему карма на Хабре — это хорошо?</a></li>
+<li><a href="../ja469265/index.html">RESTを介したマルチプロセッシングIntel Neural Computer Stickアクセス</a></li>
+<li><a href="../ja469271/index.html">.NET CoreとGoデータのシリアライズとデシリアライズ</a></li>
+<li><a href="../ja469275/index.html">米国の18の大学で私がしたこと</a></li>
+<li><a href="../ja469277/index.html">DevOpsとは誰ですか？</a></li>
+<li><a href="../ja469287/index.html">カードからバトルゴーレム。ゲームをパロボットカードリーグに変える方法</a></li>
+<li><a href="../ja469289/index.html">取引所の証拠金取引とは何ですか？</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,380 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🏹 👃🏼 ✌🏻 Postgres：膨張、pg_repackおよび遅延制約 🧓🏾 🧑🏿‍🤝‍🧑🏿 🚸</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="テーブルとインデックスの膨張（膨張）の影響は広く知られており、Postgresだけに存在するわけではありません。VACUUM FULLやCLUSTERのように「そのまま」使用する方法がありますが、操作中にテーブルをブロックするため、常に使用できるわけではありません。
+ 
+ この記事では、膨張の発生方...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Postgres：膨張、pg_repackおよび遅延制約</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/miro/blog/499444/"><img src="https://habrastorage.org/webt/vf/eu/y5/vfeuy53s9e1md_jhdwxbkkmr-8e.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テーブルとインデックスの膨張（膨張）の影響は広く知られており、Postgresだけに存在するわけではありません。</font><font style="vertical-align: inherit;">VACUUM FULLやCLUSTERのように「そのまま」使用する方法がありますが、操作中にテーブルをブロックするため、常に使用できるわけではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この記事では、膨張の発生方法、膨張方法、遅延制約、およびpg_repack拡張機能の使用に伴う問題について、少し理論を説明します。</font></font><a name="habracut"></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この記事は</font><font style="vertical-align: inherit;">、PgConf.Russia 2020 </font><font style="vertical-align: inherit;">での</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私のプレゼンテーションに</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">基づいて</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">い</font></a><font style="vertical-align: inherit;">ます。</font></font><br>
+<br>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/8vaVeCKuz6M" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">膨満が発生する理由</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Postgresはマルチバージョンモデル（</font></font><abbr title="マルチバージョン同時実行制御"><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MVCC</font></font></a></abbr><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）に</font><font style="vertical-align: inherit;">基づいてい</font><font style="vertical-align: inherit;">ます。その本質は、テーブルの各行が複数のバージョンを持つことができる一方で、トランザクションはこれらのバージョンの1つだけを参照しますが、必ずしも同じバージョンである必要はないということです。これにより、複数のトランザクションが同時に機能し、実質的に相互に影響を及ぼしません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+明らかに、これらすべてのバージョンを保存する必要があります。 Postgresはメモリをページごとに処理し、ページはディスクから読み取ったり書き込んだりできる最小量のデータです。これがどのように行われるかを理解するために小さな例を見てみましょう。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+複数のレコードを追加したテーブルがあるとします。テーブルが保存されているファイルの最初のページに、新しいデータが表示されています。これらは、コミット後に他のトランザクションで使用できる文字列のライブバージョンです（簡単にするために、コミット読み取り分離レベルと想定します）。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pb/ep/av/pbepavyhm5_alpqup33j8vfcocm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、エントリの1つを更新し、古いバージョンを無関係としてマークしました。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/na/tr/tg/natrtgitck2f7ymtdalnr_coecu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ステップバイステップで、行のバージョンを更新および削除して、データの約半分が「ゴミ」であるページを取得しました。このデータはどのトランザクションからも見えません。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_j/8d/ji/_j8djifah3idpuohxwseop01xcw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Postgresには</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">VACUUM</font></a><font style="vertical-align: inherit;">メカニズムがあります</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、無関係なバージョンをクリーンアップし、新しいデータのためにスペースを解放します。しかし、十分に積極的に構成されていない場合や、他のテーブルでの作業で忙しい場合は、「ジャンクデータ」が残り、新しいデータ用に追加のページを使用する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、この例では、ある時点で、テーブルは4ページで構成されますが、ライブデータの半分しかありません。その結果、テーブルにアクセスすると、必要以上のデータが読み取られます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/nz/ni/rn/nznirnw2kenpvkn7kv7hqwi1k08.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+VACUUMが関係のないバージョンの文字列をすべて削除しても、状況は劇的に改善されません。新しい行のために、ページまたはページ全体に空き領域がありますが、必要以上のデータを読み取り続けます。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ちなみに、完全に空白のページ（この例では2番目）がファイルの最後にある場合、VACUUMはそれをトリミングできます。</font><font style="vertical-align: inherit;">しかし、今、彼女は真ん中にいるので、彼女では何もできません。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fy/ix/rq/fyixrqdxzpivbooplfjoqpeyc-q.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このような空白または非常にフラットなページの数が増えると、これは膨張と呼ばれ、パフォーマンスに影響を及ぼし始めます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上記のすべては、テーブル内の膨張のメカニズムです。</font><font style="vertical-align: inherit;">インデックスでは、これはほとんど同じ方法で発生します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">膨らみはありますか？</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+膨満があるかどうかを判断する方法はいくつかあります。最初の考え方は、Postgresの内部統計を使用することです。これには、テーブルの行数、「ライブ」行の数などに関するおおよその情報が含まれています。インターネットでは、既成のスクリプトのさまざまなバリエーションを見つけることができます。</font><font style="vertical-align: inherit;">PostgreSQLエキスパートから</font><font style="vertical-align: inherit;">の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スクリプト</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">ベースとして、</font><font style="vertical-align: inherit;">トーストおよびブロートbtreeインデックスとともに、ブロートテーブルを評価できます。私たちの経験では、その誤差は10〜20％です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の方法は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgstattuple</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">拡張機能を使用する</font><font style="vertical-align: inherit;">ことです。これにより、ページ内を調べて、推定された正確な膨張値を取得できます。しかし、2番目のケースでは、テーブル全体をスキャンする必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+20％までの小さな膨満値。</font><font style="vertical-align: inherit;">これは、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テーブル</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インデックスの</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> fillfactorの類似物と考えることができ</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">50％以上になると、パフォーマンスの問題が発生する可能性があります。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">膨満に対処する方法</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Postgresの箱から出してすぐに膨らみに対処する方法はいくつかありますが、それらは常にすべての人に適しているわけではありません。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">膨張が発生しないようにAUTOVACUUMを設定します</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。より正確には、それを許容できるレベルに保つためです。これは「船長」のアドバイスのようですが、実際には必ずしも簡単に実現できるとは限りません。たとえば、データスキーマを定期的に変更して積極的に開発している場合や、ある種のデータ移行が発生している場合です。その結果、負荷プロファイルは頻繁に変更される可能性があり、原則として、テーブルによって異なる場合があります。つまり、常に少し前に作業し、AUTOVACUUMを各テーブルの変化するプロファイルに合わせて調整する必要があります。しかし、これが容易ではないことは明らかです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+AUTOVACUUMがテーブルを処理する時間がないもう1つの一般的な理由は、これらのトランザクションで使用できるという事実により、AUTOVACUUMがデータをクリアできない長いトランザクションの存在です。ここでの推奨事項も明白です。ハングしているトランザクションを削除し、アクティブなトランザクションの時間を最小限に抑えます。ただし、アプリケーションの負荷がOLAPとOLTPのハイブリッドである場合、同時に、レポートの作成など、長時間の操作だけでなく、頻繁な更新や短いリクエストが多数発生する可能性があります。このような状況では、さまざまなベースに負荷を分散することを検討する価値があります。これにより、それぞれのベースをより細かく調整できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の例-プロファイルは均一ですが、データベースの負荷が非常に高い場合でも、最も強力なAUTOVACUUMでさえ処理できず、膨張が発生します。スケーリング（垂直または水平）が唯一のソリューションです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、AUTOVACUUMを構成したときの状況についてはどうでしょうか。</font><b><font style="vertical-align: inherit;">VACUUM FULL</font></b></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+コマンド</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テーブルとインデックスの内容を再構築し、関連するデータのみを残します。膨らみをなくすために、それは完全に機能しますが、実行中に、テーブルへの排他ロック（AccessExclusiveLock）がキャプチャされます。これにより、このテーブルへのクエリは許可されません。サービスまたはその一部をしばらく（データベースとハードウェアのサイズによっては数十分から数時間）停止する余裕がある場合は、このオプションが最適です。残念ながら、定期メンテナンス中にVACUUM FULLを実行する時間がないため、この方法は適していません。</font><b><font style="vertical-align: inherit;">CLUSTER</font></b></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+コマンド</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">また、VACUUM FULLと同様に、テーブルの内容を再構築します。同時に、ディスク上でデータが物理的に順序付けられるインデックスを指定できます（ただし、将来は順序は保証されません）。特定の状況では、これはいくつかのクエリ（インデックスで複数のレコードを読み取る）の最適な最適化です。このコマンドの不利な点は、VACUUM FULLと同じです-操作中にテーブルをロックします。</font><b><font style="vertical-align: inherit;">REINDEX</font></b></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+コマンド</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前の2つと似ていますが、テーブルの特定のインデックスまたはすべてのインデックスを再構築します。ロックは少し弱いです：テーブルへのShareLock（変更はできませんが、選択はできます）と再構築可能なインデックスへのAccessExclusiveLock（このインデックスを使用してリクエストをブロックします）。ただし、Postgresのバージョン12では、</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">CONCURRENTLY</font></a><font style="vertical-align: inherit;">パラメータ</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これにより、レコードの並行した追加、変更、削除をブロックすることなく、インデックスを再構築できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Postgresの以前のバージョンでは、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CREATE INDEX CONCURRENTLYを使用</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">してREINDEX CONCURRENTLYと同様の結果を得ることができます</font><font style="vertical-align: inherit;">。これにより、厳密なブロックなしでインデックスを作成し（ShareUpdateExclusiveLock、並列クエリに干渉しません）、古いインデックスを新しいインデックスで置き換え、古いインデックスを削除できます。これにより、アプリケーションに干渉することなく膨張インデックスを排除できます。インデックスを再構築する場合、ディスクサブシステムに追加の負荷がかかることを考慮することが重要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、インデックスが「ホット」な膨張を排除する方法がある場合、テーブルにはありません。ここでさまざまな外部拡張機能が登場し</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_repack</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（以前はpg_reorg）、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgcompact</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pgcompacttable</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">など。</font><font style="vertical-align: inherit;">この記事のフレームワークでは、それらを比較せずに、pg_repackについてのみ説明します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_repackの仕組み</font></font></h2><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/5j/bp/ng/5jbpng5ietzdlekjqc32gdf_5cs.gif"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+非常に通常のテーブルがあり、インデックス、制限付き、そして残念ながら膨張しているとしましょう。最初のステップは、pg_repackが操作中にすべての変更に関するデータを格納するログテーブルを作成することです。トリガーは、これらの変更を各挿入、更新、削除に複製します。次に、元の構造と同様のテーブルが作成されますが、データの挿入プロセスが遅くならないように、インデックスと制限はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、pg_repackは古いテーブルから新しいテーブルにデータを転送し、関係のないすべての行を自動的にフィルタリングしてから、新しいテーブルのインデックスを作成します。これらすべての操作の実行中、変更はログテーブルに蓄積されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次のステップは、変更を新しいテーブルに転送することです。</font><font style="vertical-align: inherit;">移行は数回の反復で実行され、ログテーブルに残っているエントリが20未満の場合、pg_repackは厳密なロックを取得し、最新のデータを転送して、Postgresシステムテーブルの古いテーブルを新しいテーブルに置き換えます。</font><font style="vertical-align: inherit;">これは、テーブルを操作できない唯一の非常に短い時点です。</font><font style="vertical-align: inherit;">その後、古いテーブルとログのあるテーブルが削除され、ファイルシステムの領域が解放されます。</font><font style="vertical-align: inherit;">プロセスが完了しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+理論的には、すべてが素晴らしいように見えますが、実際には何ですか？</font><font style="vertical-align: inherit;">pg_repackを無負荷時と負荷時の両方でテストし、途中で停止した場合の動作を確認しました（つまり、Ctrl + C）。</font><font style="vertical-align: inherit;">すべてのテストは陽性でした。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちは製品に行きました-そして、すべてが予想通りにうまくいきませんでした。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">製品版の最初のパンケーキ</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初のクラスターで、固有の制限の違反に関するエラーを受け取りました。</font></font><br>
+<br>
+<pre><code class="bash hljs">$ ./pg_repack -t tablename -o id<font></font>
+INFO: repacking table <span class="hljs-string">"tablename"</span><font></font>
+ERROR: query failed: <font></font>
+    ERROR: duplicate key value violates unique constraint <span class="hljs-string">"index_16508"</span><font></font>
+DETAIL:  Key (id, index)=(100500, 42) already exists.<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この制限には、自動生成された名前index_16508があり、pg_repackによって作成されました。</font><font style="vertical-align: inherit;">その構成に含まれる属性によって、それに対応する「私たちの」制限を決定しました。</font><font style="vertical-align: inherit;">問題は、これは通常の制限ではなく、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">遅延制約</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、つまり </font><font style="vertical-align: inherit;">検証はsqlコマンドよりも後に実行されるため、予期しない結果が生じます。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">遅延制約：なぜ必要なのか、どのように機能するのか</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+遅延制約に関する理論のビット。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+簡単な例を考えてみましょう。2つの属性を持つ車の参照テーブルがあります。ディレクトリ内の車の名前と順序です。</font></font><br>
+<img src="https://habrastorage.org/webt/n8/1s/td/n81stdw9kie5wll03ylnel18aie.png" align="right"><br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> cars<font></font>
+(<font></font>
+  <span class="hljs-type">name</span> <span class="hljs-type">text</span> <span class="hljs-keyword">constraint</span> pk_cars <span class="hljs-keyword">primary key</span>,<font></font>
+  ord <span class="hljs-type">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">null</span> <span class="hljs-keyword">constraint</span> uk_cars <span class="hljs-keyword">unique</span><font></font>
+);<font></font>
+</code></pre><br>
+<br clear="all"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初の車と2番目の車を入れ替える必要があるとしましょう。</font><font style="vertical-align: inherit;">「額の」解決策は、最初の値を2番目の値に更新し、2番目の値を最初の値に更新することです。</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">begin</span>;
+  <span class="hljs-keyword">update</span> cars <span class="hljs-keyword">set</span> ord = <span class="hljs-number">2</span> <span class="hljs-keyword">where</span> <span class="hljs-type">name</span> = <span class="hljs-string">'audi'</span>;
+  <span class="hljs-keyword">update</span> cars <span class="hljs-keyword">set</span> ord = <span class="hljs-number">1</span> <span class="hljs-keyword">where</span> <span class="hljs-type">name</span> = <span class="hljs-string">'bmw'</span>;
+<span class="hljs-keyword">commit</span>;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、このコードを実行すると、テーブル内の値の順序が一意であるため、制約違反が予想されます。</font></font><br>
+<br>
+<pre><code class="bash hljs">[23305] ERROR: duplicate key value violates unique constraint “uk_cars”<font></font>
+Detail: Key (ord)=(2) already exists.<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の方法で行うには？オプション1：テーブルに存在しないことが保証されている順序（「-1」など）で値をさらに置き換えます。プログラミングでは、これは「2番目の変数から3番目の変数の値を交換する」と呼ばれます。この方法の唯一の欠点は、追加の更新です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+オプション2：テーブルを再設計して、整数の代わりに順序値に浮動小数点データ型を使用します。次に、値を1からたとえば2.5に更新すると、最初のレコードは2番目と3番目の間で自動的に「立ち上がり」ます。このソリューションは機能しますが、2つの制限があります。まず、値がインターフェイスのどこかで使用されている場合は機能しません。 2番目に、データ型の精度に応じて、すべてのレコードの値を再計算する前に、可能な挿入の数が制限されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+オプション3：制限が据え置かれるようにして、コミット時にのみチェックされるようにします。</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> cars<font></font>
+(<font></font>
+  <span class="hljs-type">name</span> <span class="hljs-type">text</span> <span class="hljs-keyword">constraint</span> pk_cars <span class="hljs-keyword">primary key</span>,<font></font>
+  ord <span class="hljs-type">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">null</span> <span class="hljs-keyword">constraint</span> uk_cars <span class="hljs-keyword">unique</span> <span class="hljs-keyword">deferrable</span> <span class="hljs-keyword">initially</span> <span class="hljs-keyword">deferred</span>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初のリクエストのロジックにより、すべての値がコミット時までに一意であることが保証されるため、成功します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上記の例は、もちろん非常に総合的ですが、アイデアを明らかにしています。</font><font style="vertical-align: inherit;">このアプリケーションでは、遅延制約を使用してロジックを実装します。これは、ボード上の共通ウィジェットオブジェクトを同時に処理しながら、競合を解決する責任があります。</font><font style="vertical-align: inherit;">このような制限を使用すると、アプリケーションコードを少し簡単にすることができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般に、Postgresの制約のタイプに応じて、それらをチェックするために、行レベル、トランザクション、および式の3つのレベルの粒度があります。</font></font><br>
+<img src="https://habrastorage.org/webt/vn/bw/qq/vnbwqqmhgjpnd7kb8dtxpixb8xi.png"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+出典：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">begriffs</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+CHECKおよびNOT NULLは、行レベルで常にチェックされます。他の制限については、表からわかるように、さまざまなオプションがあります。</font><font style="vertical-align: inherit;">詳細は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">こちら</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+簡単にまとめると、状況によっては保留中の制限により、コードが読みやすくなり、コマンドが少なくなります。</font><font style="vertical-align: inherit;">ただし、エラーが発生した瞬間とそれを発見した瞬間が時間的に分離されているため、デバッグプロセスを複雑にすることでこれに対価を支払う必要があります。</font><font style="vertical-align: inherit;">もう1つの考えられる問題は、遅延制約が要求に含まれている場合、スケジューラーが常に最適な計画を作成できるとは限らないことです。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">洗練されたpg_repack</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちは保留中の制限とは何かを理解しましたが、それらは私たちの問題とどのように関連していますか？</font><font style="vertical-align: inherit;">以前に受け取ったエラーを思い出してください：</font></font><br>
+<br>
+<pre><code class="bash hljs">$ ./pg_repack -t tablename -o id<font></font>
+INFO: repacking table <span class="hljs-string">"tablename"</span><font></font>
+ERROR: query failed: <font></font>
+    ERROR: duplicate key value violates unique constraint <span class="hljs-string">"index_16508"</span>
+DETAIL:  Key (id, index)=(100500, 42) already exists.</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログテーブルから新しいテーブルにデータをコピーするときに発生します。奇妙に見えるのでログテーブルのデータは、元のテーブルのデータと共にコミットされます。それらが元のテーブルの制約を満たす場合、新しいものの同じ制約にどのように違反することができますか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+判明したように、問題の根本はpg_repackの前のステップにあります。このステップでは、インデックスのみが作成されますが、制限はありません。古いテーブルには一意の制約があり、新しいテーブルには一意のインデックスが作成されました。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_y/da/fc/_ydafcxizllawi1jo3o5ai-x-kg.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここで、制限が通常で遅延されていない場合、その代わりに作成された一意のインデックスはこの制限と同等であることに注意することが重要です。</font><font style="vertical-align: inherit;">Postgresの一意の制約は、一意のインデックスを作成することによって実装されます。</font><font style="vertical-align: inherit;">ただし、据え置き制約の場合、インデックスを据え置くことができず、sqlコマンドの実行時に常にチェックされるため、動作は同じではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、問題の本質はチェックの「延期」にあります。元のテーブルではコミット時に発生し、新しいテーブルではsqlコマンドの実行時に発生します。</font><font style="vertical-align: inherit;">したがって、チェックが両方のケースで同じ方法で実行されることを確認する必要があります。常に延期されるか、常にすぐに実行されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+では、どのようなアイデアがありましたか？</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">deferredと同様のインデックスを作成する</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初のアイデアは、両方のチェックを即時モードで実行することです。これにより、制限のいくつかの誤検出トリガーが発生する可能性がありますが、それらがほとんどない場合は、ユーザーの作業には影響しないはずです。ユーザーにとっては、このような競合は通常の状況であるためです。たとえば、2人のユーザーが同時に同じウィジェットの編集を開始し、2番目のユーザーのクライアントが、最初のユーザーによる編集のためにウィジェットがすでにロックされているという情報を取得する時間がない場合に発生します。この状況では、サーバーは2番目のユーザーを拒否し、そのクライアントは変更をロールバックしてウィジェットをブロックします。少し後、最初のユーザーが編集を完了すると、2番目のユーザーはウィジェットがロックされなくなったという情報を受け取り、そのアクションを繰り返すことができます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/dw/oq/jw/dwoqjwhuqva3veavihajfcd5t4c.gif"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+チェックが常に緊急モードであることを確認するために、元の遅延制約と同様の新しいインデックスを作成しました。</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">UNIQUE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">CONCURRENTLY</span> uk_tablename__immediate <span class="hljs-keyword">ON</span> tablename (id, <span class="hljs-keyword">index</span>);
+<span class="hljs-comment">-- run pg_repack</span>
+<span class="hljs-keyword">DROP</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">CONCURRENTLY</span> uk_tablename__immediate;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テスト環境では、予想されるエラーはわずかしかありませんでした。成功！ pg_repackをprodで再び起動し、1時間の作業で最初のクラスターで5つのエラーが発生しました。これは許容できる結果です。ただし、すでに2番目のクラスターでは、エラーの数が何度も増加し、pg_repackを停止する必要がありました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+なぜそれが起こったのですか？エラーの確率は、同じウィジェットで同時に作業するユーザーの数によって異なります。明らかに、その時点でデータが最初のクラスターに保存されているため、他のクラスターよりも競争上の変化がはるかに少なかった。私たちはただ「ラッキー」でした。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アイデアはうまくいきませんでした。その時点で、他の2つのソリューションオプションが見つかりました。保留中の制限を破棄するようにアプリケーションコードを書き直すか、pg_repackを「教える」ことでそれらを操作します。 2番目を選択しました。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">新しいテーブルのインデックスをソーステーブルからの遅延制約で置き換える</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+改訂の目的は明白でした。元のテーブルに遅延制約がある場合、新しいテーブルでは、インデックスではなくそのような制約を作成する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+変更をテストするために、簡単なテストを作成しました。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">遅延制限と1つのレコードを持つテーブル。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">既存のレコードと競合するデータをループに挿入します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">更新を行う-データが競合しなくなりました。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">変更をコミットします。</font></font></li>
+</ul><br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> test_table<font></font>
+(<font></font>
+  id <span class="hljs-type">serial</span>,<font></font>
+  val <span class="hljs-type">int</span>,
+  <span class="hljs-keyword">constraint</span> uk_test_table__val <span class="hljs-keyword">unique</span> (val) <span class="hljs-keyword">deferrable</span> <span class="hljs-keyword">initially</span> <span class="hljs-keyword">deferred</span> <font></font>
+);<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> test_table (val) <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">0</span>);
+<span class="hljs-keyword">FOR</span> i <span class="hljs-keyword">IN</span> <span class="hljs-number">1.</span><span class="hljs-number">.10000</span> <span class="hljs-keyword">LOOP</span>
+  <span class="hljs-keyword">BEGIN</span>
+    <span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> test_table <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">0</span>) <span class="hljs-keyword">RETURNING</span> id <span class="hljs-keyword">INTO</span> v_id;
+    <span class="hljs-keyword">UPDATE</span> test_table <span class="hljs-keyword">set</span> val = i <span class="hljs-keyword">where</span> id = v_id;
+    <span class="hljs-keyword">COMMIT</span>;
+  <span class="hljs-keyword">END</span>;
+<span class="hljs-keyword">END</span> <span class="hljs-keyword">LOOP</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+元のバージョンのpg_repackは最初の挿入時に常にクラッシュし、改訂バージョンはエラーなしで機能しました。</font><font style="vertical-align: inherit;">いいね。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+製品に移動すると、ログテーブルから新しいテーブルにデータをコピーする同じフェーズで再びエラーが発生します。</font></font><br>
+<br>
+<pre><code class="bash hljs">$ ./pg_repack -t tablename -o id<font></font>
+INFO: repacking table <span class="hljs-string">"tablename"</span><font></font>
+ERROR: query failed: <font></font>
+    ERROR: duplicate key value violates unique constraint <span class="hljs-string">"index_16508"</span>
+DETAIL:  Key (id, index)=(100500, 42) already exists.</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+古典的な状況：すべてがテスト環境で機能しますが、製品では機能しませんか？</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">APPLY_COUNTおよび2つのバッチの結合</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コードを1行ずつ文字どおり分析し始めたところ、重要なポイントが見つかりました。データはログテーブルからバッチを含む新しいテーブルに転送され、APPLY_COUNT定数はバッチのサイズを示しています。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">for</span> (;;)<font></font>
+{<font></font>
+num = apply_log(connection, table, APPLY_COUNT);<font></font>
+<font></font>
+<span class="hljs-keyword">if</span> (num &gt; MIN_TUPLES_BEFORE_SWITCH)
+     <span class="hljs-keyword">continue</span>;  <span class="hljs-comment">/* there might be still some tuples, repeat. */</span><font></font>
+...<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+問題は、いくつかの操作が制限に違反する可能性がある元のトランザクションのデータが、転送中に2つのバッチのジョイントに転送される可能性があることです-チームの半分は最初の試合でコミットされ、残りの半分は2番目の試合でコミットされます。そして、ここが幸運です：最初のバッチのチームが何も違反していなければ、すべては問題ありませんが、違反している場合は、エラーが発生します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+APPLY_COUNTは1000エントリに相当します。これは、テストが成功した理由を説明しています-「バッチのジャンクション」のケースをカバーしていませんでした。挿入と更新の2つのコマンドを使用したので、2つのチームのちょうど500のトランザクションが常にバッチに配置され、問題は発生しませんでした。 2番目の更新を追加した後、編集が機能しなくなりました。</font></font><br>
+<br>
+<pre><code class="pgsql hljs"><span class="hljs-keyword">FOR</span> i <span class="hljs-keyword">IN</span> <span class="hljs-number">1.</span><span class="hljs-number">.10000</span> <span class="hljs-keyword">LOOP</span>
+  <span class="hljs-keyword">BEGIN</span>
+    <span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> test_table <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">1</span>) <span class="hljs-keyword">RETURNING</span> id <span class="hljs-keyword">INTO</span> v_id;
+    <span class="hljs-keyword">UPDATE</span> test_table <span class="hljs-keyword">set</span> val = i <span class="hljs-keyword">where</span> id = v_id;
+    <span class="hljs-keyword">UPDATE</span> test_table <span class="hljs-keyword">set</span> val = i <span class="hljs-keyword">where</span> id = v_id; <span class="hljs-comment">-- one more update</span>
+    <span class="hljs-keyword">COMMIT</span>;
+  <span class="hljs-keyword">END</span>;
+<span class="hljs-keyword">END</span> <span class="hljs-keyword">LOOP</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、次のタスクは、1つのトランザクションで変更されたソーステーブルのデータが、同じトランザクション内の新しいテーブルにも確実に入るようにすることです。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">肉食の拒否</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、2つのソリューションがありました。</font><font style="vertical-align: inherit;">最初に、バッチ処理を完全に中止し、1つのトランザクションでデータ転送を実行します。</font><font style="vertical-align: inherit;">このソリューションを支持したのは、その単純さでした-必要なコード変更は最小限でした（ところで、古いバージョンでは、pg_reorgはそのまま機能しました）。</font><font style="vertical-align: inherit;">しかし、問題があります。私たちは長いトランザクションを作成しています。これは、先に述べたように、新しい膨張の出現に対する脅威です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2番目のソリューションはより複雑ですが、おそらくより正確です。データをテーブルに追加したトランザクションの識別子を使用して、ログテーブルに列を作成します。次に、データをコピーするときに、この属性でデータをグループ化し、関連する変更が一緒に転送されるようにします。バッチは複数のトランザクション（または1つの大きなトランザクション）から形成され、そのサイズはこれらのトランザクションで変更されたデータの量によって異なります。異なるトランザクションのデータはランダムな順序でログテーブルに分類されるため、以前のように順次読み取ることはできないことに注意することが重要です。 tx_idでフィルタリングされたすべてのリクエストのseqscanは高すぎるため、インデックスが必要ですが、更新のオーバーヘッドが原因でメソッドの速度が低下します。一般に、いつものように、何かを犠牲にする必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そのため、より簡単な方法として、最初のオプションから始めることにしました。まず、長いトランザクションが本当に問題になるかどうかを理解する必要がありました。古いテーブルから新しいテーブルへのメインデータ転送も1つの長いトランザクションで発生するため、問題は「このトランザクションをどれだけ増やすか」に変わりました。最初のトランザクションの期間は、主にテーブルのサイズに依存します。新しい変更の継続時間は、データ転送中にテーブルに蓄積される変更の数によって異なります。負荷の強さから。 pg_repackの実行はサービスの最小負荷時に発生し、変更の量は元のテーブルサイズと比べて比較にならないほど小さかった。新しいトランザクションの時間は無視できると判断しました（比較として、これは平均1時間2〜3分です）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実験はポジティブでした。 prodでも実行しています。わかりやすくするために、実行後のベースの1つのサイズの画像：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/z4/ps/gu/z4psgu_s8jsbhwnxst2pogfcsfa.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このソリューションは完全に適しているため、2番目を実装しようとはしませんでしたが、拡張機能の開発者と話し合うことを検討しています。残念ながら、現在のリビジョンはまだ公開の準備ができていません。これは、保留中の一意の制限によってのみ問題を解決したためです。本格的なパッチでは、他のタイプをサポートする必要があります。将来的にはこれが可能になることを願っています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+おそらくあなたは疑問を抱くかもしれません、なぜ私たちはpg_repackの完了とともにこのストーリーに関与し、たとえばその類似物を使用しなかったのですか？</font><font style="vertical-align: inherit;">ある時点で、これについても考えましたが、以前に制限なしのテーブルでそれを使用したことの良い経験から、問題の本質を理解して修正しようとする動機がありました。</font><font style="vertical-align: inherit;">さらに、他のソリューションを使用するには、テストの実施にも時間がかかるため、まず問題の修正を試みることを決定しました。妥当な時間内にそれを実行できないことがわかった場合は、類似体の検討を開始します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">調査結果</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たち自身の経験に基づいて推奨できるもの：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">あなたの膨らみを監視します。</font><font style="vertical-align: inherit;">監視データに基づいて、autovacuumがどの程度適切に構成されているかを理解できます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">膨張を適度なレベルに保つためにAUTOVACUUMを設定します。</font></font></li>
+<li>   bloat           “ ”,     .  –   .</li>
+<li>        –        ,     .</li>
+</ol></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja499434/index.html">ナレッジマネジメントを実装する方法：「ポーチ」、「オウムの罰金」、およびクリップ思考のメリット</a></li>
+<li><a href="../ja499436/index.html">リモート制御の酵素は、脳卒中や脊髄損傷の治療を加速します</a></li>
+<li><a href="../ja499438/index.html">テスター向けのストリーミングだけでなく</a></li>
+<li><a href="../ja499440/index.html">私たちが世界で最もかっこいい機関車のオートパイロットを書いたとき</a></li>
+<li><a href="../ja499442/index.html">疑似3Dレーシングゲームの作成：丘の実装とゲームの仕上げ</a></li>
+<li><a href="../ja499446/index.html">VR用のSTEP形式のブートローダーのテスト</a></li>
+<li><a href="../ja499448/index.html">TypeScriptとInversifyJSを使用してNode.jsにSOLIDとレイヤードアーキテクチャを実装する</a></li>
+<li><a href="../ja499450/index.html">Pythonで遺伝学/進化を使用してゲームペルシャ語の機器を選択する</a></li>
+<li><a href="../ja499452/index.html">クリニックでの眼科医の日常：医師が足りないとき</a></li>
+<li><a href="../ja499454/index.html">ビデオライブ！Badoo Localization Meetup 4月21日</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,266 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨‍👨‍👦‍👦 🌲 🏠 gitlab-ciでの統合テストのためのClickHouseの構成 🚸 🔊 💣</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="私たちは、golang、別のトピックのカフカ、クリックハウス、gitlab-ciと落下するペイライン、腐ったsshキーなどのサービスを提供していました。休暇シーズン、街のひどい雨、ラップトップの破損、夜のアラート、ホットセール。このすべてがこの記事で必要だったわけではありませんが、テスターの典型的な...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>gitlab-ciでの統合テストのためのClickHouseの構成</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/459860/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私たちは、golang、別のトピックのカフカ、クリックハウス、gitlab-ciと落下するペイライン、腐ったsshキーなどのサービスを提供していました。休暇シーズン、街のひどい雨、ラップトップの破損、夜のアラート、ホットセール。</font><font style="vertical-align: inherit;">このすべてがこの記事で必要だったわけではありませんが、テスターの典型的な日常生活を示したら、最後まで意図を示してください。</font><font style="vertical-align: inherit;">気になったのはp0だけでした。</font><font style="vertical-align: inherit;">世界でそれを逃したテスターほど絶望的で憂鬱で憂鬱なことはありません。</font><font style="vertical-align: inherit;">しかし、すぐにそれに没頭することを知っていました。</font></font><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">なぜこれなのか</font></font></h3> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+共通のサービスバンドル（何かを実行するサービス自体）と、これらの結果が書き込まれるデータベースがあります。これが直接発生することもあります。つまり、「サービス-ベース」です。私の場合、記録は仲介者、つまり「サービス-キュー-ベース」を介して行われます。&nbsp; </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+全体として、いくつかの要素があり、これらの要素の境界（一方の出力と他方の入力）は、問題が発生するまさにその場所です。彼らはそこに現れないだけです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+鮮明な例：サービスでは、価格フィールドはfloat32として処理され、データベースでは10進数（18、5）として構成されます。テストケースとして、サービスの出力からデータベースへのfloat32の最大値を提供します-ああ、データベースは応答しません。</font><font style="vertical-align: inherit;">またはもっと悲しい例-データベースはクラッシュしませんが、データベースのデータログにエラーはありません。</font><font style="vertical-align: inherit;">データベースがもう注がれないだけです。</font><font style="vertical-align: inherit;">または、記録は通過しますが、データ損失または歪みがあります。フィールドはfloat64としてサービスを終了し、float32として記録されます。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+または、サービスライフサイクルの過程で、このフィールドまたはそのフィールドのタイプを変更する必要があると判断しました。</font><font style="vertical-align: inherit;">このフィールドは長い間製品に実装されてきましたが、ここでは編集する必要があります。</font><font style="vertical-align: inherit;">もちろん、1か所だけ変更しました。</font><font style="vertical-align: inherit;">ホバ、何かがまたうまくいかなかった。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">仕事</font></font></h3> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらすべての変更を追跡したくありません。</font><font style="vertical-align: inherit;">落ちないようにしたいです。</font><font style="vertical-align: inherit;">録音を正しく行いたい。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+終了：統合テスト！&nbsp;</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">実装と困難&nbsp;</font></font></h3> <br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">どこで壊す？</font></font></h4> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+開発環境があります。非常に不安定で、通常、開発者がサンドボックスとして使用します。</font><font style="vertical-align: inherit;">ハードバックエンドにはカオスと無秩序の特徴があります。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テスト環境またはqa-standがあります。それはより適切に構成され、開発者もそれを監視していますが、キックするまで何も起こりません。</font><font style="vertical-align: inherit;">この環境は頻繁に更新されます。</font><font style="vertical-align: inherit;">さらに多くの場合、そこで何かが壊れています。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、製品があります-聖なるものの聖：そのようなものをその上で運転しない方が良いです。</font><font style="vertical-align: inherit;">統合テストは、製品に到達する前に発見する必要があるバグの可能性を示唆しています。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それでは、環境が不安定または戦闘の場合、環境をどうするのでしょうか。</font><font style="vertical-align: inherit;">そうです、自分で作成してください！</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ベースはどうするの？</font></font></h4> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データベースはいくつかの方法で起動できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上記で説明したように、この環境またはその環境の実際のベースには接続しません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まず、</font><font style="vertical-align: inherit;">必要な設定を使用し</font><font style="vertical-align: inherit;">て</font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">脆弱なクリック</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ハウスサーバーを発生させ、必要なSQLをロールアウトし、クリックハウスクライアントを介して通信することができます。同様のベースを配置する最初の成功した試みで、ciは悲しかった。テストが点滅し、サーバーは動作せず、動作し続けました。ただ言ってみれば、なぜそれが始まったのか、それはまだ謎のままです。 （それ自体、私はそれとは何の関係もありません）。このオプションはお勧めしません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+箱から出してすぐに使える便利なオプションは、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Dockerイメージの</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用です</font><font style="vertical-align: inherit;">。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+目的のバージョンを車にダウンロードします。 Clickhouseはconfig.xmlを設定で開始する必要があります。詳細は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">こちら</font></font></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+再利用されるクリック画像の場合、正しいdockerfileを作成する必要があります。</font><font style="vertical-align: inherit;">その中にconfig.xlをフォルダーにコピーすることを示し、他の必要な構成をドッキングします。</font><font style="vertical-align: inherit;">必ずスクリプトをコピーして、ベースをデプロイしてください。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+外部から画像にアクセスするため、クリックハウスと通信するためのポートを開く必要があります。</font><font style="vertical-align: inherit;">Clickはhttpでは8123で、tcpでは9000で動作します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次のdockerfileを取得します。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">From yandex/clickhouse-server<font></font>
+<font></font>
+Expose 8123<font></font>
+Expose 9000<font></font>
+<font></font>
+Add config.xml /etc/clickhouse-server/config.xml<font></font>
+Add my_init_script.sql /docker-entrypoint-initdb.d/<font></font>
+</code></pre><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CIで画像をスローする方法は？&nbsp;</font></font></h4> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+どういうわけかciでDockerイメージを操作するには、なんとかしてそこに呼び出す必要があります。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リポジトリ内のイメージをコミットして実行し、テストの実行の一部として必要なパラメーターを指定してdocker runを実行できます。</font><font style="vertical-align: inherit;">ここでのみ、クリックのdocker-imageの重量は350MB未満です。</font><font style="vertical-align: inherit;">そのようなファイルをgitに保存するのは不適切です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さらに、異なるプロジェクトで同じDockerイメージが必要な場合（たとえば、異なるサービスが同じデータベースに書き込まれる場合）は、なおさらそうするべきではありません。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dockerレジストリ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">イメージストレージ</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+を使用できますが、プロジェクトですでに使用されていると考えられます。</font><font style="vertical-align: inherit;">したがって、ログインし、Dockerイメージを収集してそこにプッシュします。&nbsp;</font></font><br>
+<br>
+<pre><code class="plaintext hljs">docker build -t my_clickhouse_image .<font></font>
+docker login my_registry_path.domain.com<font></font>
+docker push my_clickhouse_image<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+下車し、私たちのイメージがレジストリに飛んだ。</font><font style="vertical-align: inherit;">組み立て時にタグを必ず指定してください！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ベースの準備が整いました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+レジストリの詳細は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">こちら</font></font></a><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ciをどうするか？</font></font></h4> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1ステップでサービスとデータベースの両方を起動する方法は？&nbsp; </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべては、サービスの開始方法と使用方法によって異なります。 Dockerイメージと同じようにサービスを操作し、実際に.gitlab-ci.yml全体がそれらでのみ機能する場合、すべてが簡単です。&nbsp; </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+dind-docker </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-in-</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dockerがあり</font><font style="vertical-align: inherit;">ます。これは、CIが動作するメインサービスとして示され、Dockerを完全に使用でき、まったく負担をかけません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最新の画像を取り出し、必要なテスト手順をステージに追加し、一連のアクションを説明します。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">image: docker:stable<font></font>
+services:<font></font>
+- docker:dind<font></font>
+<font></font>
+stages:<font></font>
+- build<font></font>
+  …<font></font>
+- test-click<font></font>
+...<font></font>
+- test<font></font>
+- release<font></font>
+  …<font></font>
+<font></font>
+test-click:<font></font>
+  variables:<font></font>
+    VERY_IMPORTANT_VARIABLE: “its value”<font></font>
+  before_script:<font></font>
+  - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY<font></font>
+  script:<font></font>
+  - docker pull My_Service_Image<font></font>
+  - docker pull My_ClickHouse_Image<font></font>
+  - docker run -FLAGS My_ClickHouse_Image<font></font>
+  - docker run My_Service_Image /path/to/tests<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+公式の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">docker docker</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">では、</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">dindの</font></a><font style="vertical-align: inherit;">使用は推奨されていないことが示されてい</font><font style="vertical-align: inherit;">ますが、本当に必要な場合は... </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私のプロジェクトでは、バイナリの起動を通じてサービスをテストする必要があります。これが魔法の始まりです</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これを行うには、データベースをサービスとして使用します。公式のgitlab-ciドキュメントでは、ciでのdockerコンテナー</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最も一般的な使用</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">例</font></a><font style="vertical-align: inherit;">として、ベース付きのコンテナーの使用を挙げています</font><font style="vertical-align: inherit;">。でも</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">例</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">のmysql、postress、およびRedisの設定が用意されています。しかし、簡単な方法を探しているのではなく、クリックハウスが必要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ベースを接続してください！</font><font style="vertical-align: inherit;">必ずエイリアスを指定してください。</font><font style="vertical-align: inherit;">指定しない場合、ランダムな名前とランダムなIPがデータベースに割り当てられます。</font><font style="vertical-align: inherit;">つまり、彼女に連絡する方法が正確に不明になります。</font><font style="vertical-align: inherit;">エイリアスにはそのような問題はありません-テストコードでは、たとえばhttpsのように呼び出しは次のようになります</font></font><code>http://my_alias_name:8123</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テストの場合も、データベースのイメージが必要です。これをレジストリに慎重に入れました。</font><font style="vertical-align: inherit;">イメージをダウンロードするには、docker loginとdocker pullを行う必要があります。ciだけがdockerを認識していません-インストールする必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+gitlab-ci.ymlのステップの結果コード：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">Integration tests:<font></font>
+Services:<font></font>
+- name: my_clickhouse:latest<font></font>
+&nbsp; alias: clicktest<font></font>
+Stage: tests<font></font>
+Variables:<font></font>
+Variables_for_my_service: “value”<font></font>
+Before_script:<font></font>
+- curl -ssl https://get.docker.com/ | sh<font></font>
+- docker login -u gitlab-ci-token -p $ci_build_token my_registry_path.domain.com<font></font>
+Script:<font></font>
+- ./bin/my_service &amp;<font></font>
+- go test -v ./tests -tags=integration<font></font>
+Dependencies:<font></font>
+- build<font></font>
+</code></pre><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">利益</font></font></h3> <br>
+ <ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 私にはサービス基盤がたくさんあります。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 自動テストの一部として、データベースに簡単にアクセスできます-別名で。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">セットアップテストの一環としてデータベースのレコードと設定をリセットし、サービスを呼び出し、データベースに書き込み、データベースに切り替え、データベースが落ちていないことを確認しました。到着したものを確認し、検証します。</font><font style="vertical-align: inherit;">より多くのテストを投げます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ペンでテストすることはできません！</font></font></li>
+</ul><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">結果</font></font></h3> <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+gitlab-ciでの数行のセットアップのようです。</font><font style="vertical-align: inherit;">Dockerイメージの作成は簡単です。</font><font style="vertical-align: inherit;">ローカルでのベースの起動は簡単です。</font><font style="vertical-align: inherit;">私は1日で問題を発見した最初のテストと統合しました。</font><font style="vertical-align: inherit;">しかし、ciでそれをローンチする試みは、1週間の苦痛と絶望の渦になりました。</font><font style="vertical-align: inherit;">そして今、彼らがプログラミングしたすべてのものを修復しなければならない開発者の苦痛と絶望の数週間で。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">どうにかして</font></font></h3> <br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クリックハウス付きのコンテナを設置しました。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コンテナーをローカルストレージから開始しました。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この画像をステップciに取り込むことを学びました。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ランナーで発売しました。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データをデータベースに簡単に送信し、テストからアクセスしました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+自動化は、手動でピアシングを行うというルーチンを取り除く非常に簡単な方法です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+注意すべき重要なこと：ベースの入力タイプが前のリンクの出力タイプに対応していることを確認してください。</font><font style="vertical-align: inherit;">（およびドキュメント</font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（ある場合</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">））。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja459842/index.html">ルクソール</a></li>
+<li><a href="../ja459844/index.html">ウィンドウ内のペンギン：WSL2の可能性と展望</a></li>
+<li><a href="../ja459850/index.html">アマチュア無線技術：中国の工場でプリント基板の取り付けを注文した方法</a></li>
+<li><a href="../ja459852/index.html">銀行のモバイルアプリケーションで宝くじライブラリを使用する方法</a></li>
+<li><a href="../ja459858/index.html">Android向けの最新のマルウェアCerberusの探索</a></li>
+<li><a href="../ja459862/index.html">Berkeley DB STLインターフェイス</a></li>
+<li><a href="../ja459866/index.html">pwnable.kr 02による問題解決-衝突。ハッシュ衝突</a></li>
+<li><a href="../ja459870/index.html">FのModel-View-Updateアーキテクチャの例＃</a></li>
+<li><a href="../ja459872/index.html">パットンジェフ。ユーザーストーリー。アジャイルソフトウェア開発の芸術</a></li>
+<li><a href="../ja459874/index.html">あなたは何かを隠す必要があります</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

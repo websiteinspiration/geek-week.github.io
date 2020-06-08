@@ -1,0 +1,503 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🖐🏻 🤾🏿 💇🏻 Kubernetesの負荷分散と長期間の接続のスケーリング 👩🏾‍🤝‍👩🏻 🌹 🍜</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="この記事は、Kubernetesでの負荷分散の仕組み、長期間の接続をスケーリングするときに何が起こるか、HTTP / 2、gRPC、RSockets、AMQPまたはその他の長寿命プロトコルを使用する場合にクライアント側の分散を考慮する必要がある理由を理解するのに役立ちます。 
+ 
+ Kubernet...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Kubernetesの負荷分散と長期間の接続のスケーリング</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/493820/"><div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/445/275/8af/4452758afb53f8b3161ace47d8c6ea49.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この記事は、Kubernetesでの負荷分散の仕組み、長期間の接続をスケーリングするときに何が起こるか、HTTP / 2、gRPC、RSockets、AMQPまたはその他の長寿命プロトコルを使用する場合にクライアント側の分散を考慮する必要がある理由を理解するのに役立ちます。&nbsp;</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesでトラフィックが再配布される方法について少し&nbsp;</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetesは、アプリケーションをロールアウトするための2つの便利な抽象化を提供します。サービスとデプロイメントです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+デプロイメントは、特定の時点でアプリケーションを実行する方法と数を記述します。</font><font style="vertical-align: inherit;">各アプリケーションは（Pod）の下にデプロイされ、IPアドレスが割り当てられます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+機能サービスはロードバランサーに似ています。</font><font style="vertical-align: inherit;">それらは複数の炉床にトラフィックを分散するように設計されています。</font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それがどのように見えるか見てみましょう</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">下の図では、同じアプリケーションの3つのインスタンスとロードバランサーが表示されています。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/80f/58d/4f9/80f58d4f9cd1e34a88aa7b8a33c0a82f.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ロードバランサーはサービスと呼ばれ、IPアドレスが割り当てられます。</font><font style="vertical-align: inherit;">着信リクエストはいずれかのポッドにリダイレクトされます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/63e/7ef/b73/63e7efb73e75ce67fcd47f74b03aa04d.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">デプロイメントスクリプトは、アプリケーションインスタンスの数を決定します。</font><font style="vertical-align: inherit;">以下に直接展開する必要はほとんどありません。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a96/121/8c3/a961218c382f2343f72bdcf639f20222.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">各ポッドには独自のIPアドレスが割り当てられています。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/3c0/699/ef3/3c0699ef3d5a60d5b08f7afdfdedac29.png"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスをIPアドレスのセットと見なすと便利です。</font><font style="vertical-align: inherit;">サービスにアクセスするたびに、リストからIPアドレスの1つが選択され、宛先アドレスとして使用されます。</font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これは次のとおり</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サービスへのカールリクエスト10.96.45.152があります。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/60a/52c/539/60a52c539ed6d1791cbafa794db2c4a9.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サービスは、宛先として3つのポッドアドレスの1つを選択します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/2a8/ac4/e23/2a8ac4e23e79da06ee64c01e071b9089.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トラフィックは特定のポッドにリダイレクトされます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/7ec/f2c/38e/7ecf2c38ef0af62d07d169c120ca5def.png"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アプリケーションがフロントエンドとバックエンドで構成されている場合は、それぞれにサービスとデプロイメントの両方があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フロントエンドがバックエンドへのリクエストを実行するとき、バックエンドが提供するヒープの数を正確に知る必要はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、フロントエンドは、バックエンドにサービスを提供する炉のアドレスについて何も知りません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フロントエンドがバックエンドにリクエストを行うとき、バックエンドサービスのIPアドレスを使用します。これは変更されません。</font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これがどのように見えるか</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1未満の場合、バックエンドの内部コンポーネントを要求します。</font><font style="vertical-align: inherit;">バックエンドに特定のものを選択する代わりに、サービスリクエストを実行します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/1ff/50c/a99/1ff50ca9970854efe8af15ac2a7d1791.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サービスは、バックエンドポッドの1つを宛先アドレスとして選択します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/530/dd9/9ad/530dd99add6451742a891d69ef06d03b.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トラフィックは、サービスによって選択されたハース1からハース5に送られます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/2ea/bdb/808/2eabdb8086fefc2c48d171f3c0e2c87e.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1歳未満では、5歳未満のような炉の数がサービスの背後に隠されていることが正確にはわかりません。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/665/f5e/edc/665f5eedc580d007fd9db6ced40f86d1.png"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、サービスはどの程度正確にリクエストを分散しますか？</font><font style="vertical-align: inherit;">ラウンドロビンバランシングが使用されているように見えますか？</font><font style="vertical-align: inherit;">それを正しくしましょう。&nbsp;</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesサービスでの分散</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetesサービスは存在しません。 IPアドレスとポートが割り当てられているサービスのプロセスはありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは、クラスター内の任意のノードに移動し、netstat -ntlpコマンドを実行することで確認できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスに割り当てられたIPアドレスを見つけることもできません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスのIPアドレスは、コントロールレイヤー、コントローラー、およびデータベース（etcd）に記録されています。同じアドレスが別のコンポーネント-kube-proxyによって使用されています。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kube-proxyは、すべてのサービスのIPアドレスのリストを受信し、クラスターの各ノードで一連のiptablesルールを形成します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらのルールは、「サービスのIPアドレスが表示された場合、リクエストの宛先アドレスを変更して、ポッドの1つに送信する必要がある」と述べています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスのIPアドレスはエントリポイントとしてのみ使用され、このIPアドレスとポートをリッスンしているプロセスによって処理されません。</font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それを見てみましょう</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。&nbsp;</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3つのノードのクラスターについて考えます。</font><font style="vertical-align: inherit;">各ノードにはポッドがあります。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/605/ed6/e82/605ed6e82d24139c7122fd0886fb3f5f.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ベージュで塗装されたニットハースはサービスの一部です。</font><font style="vertical-align: inherit;">サービスはプロセスとして存在しないため、グレー表示されています。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/175/57b/919/17557b91988036bf15bdb5fd02b25c44.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最初の1つはサービスを要求し、関連する囲炉裏のいずれかに当てはまるはずです。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/13d/49c/2df/13d49c2dff1c5a15bfced3347ad4bc6c.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">しかし、サービスは存在せず、プロセスはありません。</font><font style="vertical-align: inherit;">どのように機能しますか？</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a7e/362/c43/a7e362c43d31ac5ba0368cbbfceae398.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リクエストがノードを離れる前に、iptablesルールを通過します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/29d/eea/0ef/29deea0efafef803b87c66a7c17cc9cc.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">iptablesルールはサービスがないことを認識し、そのIPアドレスをこのサービスに関連付けられているポッドのIPアドレスの1つに置き換えます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a4e/ec6/0ad/a4eec60ad28fbf16b085d9b8697dce81.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リクエストは、宛先アドレスとして有効なIPアドレスを受け取り、通常は処理されます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/653/ef7/4b8/653ef74b8f34567652c2e0a00c89d9a7.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ネットワークトポロジーに応じて、リクエストは最終的にハースに到達します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/696/c59/873/696c5987341d20780825ff2a4f6f7d12.png"></div></li>
+</ol><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">iptablesは負荷を分散できますか？</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+いいえ、iptablesはフィルタリングに使用され、バランスを取るようには設計されていません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">疑似バランサーの</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ように機能する一連のルールを作成することは可能</font><font style="vertical-align: inherit;">です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、まさにそれがKubernetesが行うことです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3つのポッドがある場合、kube-proxyは次のルールを記述します。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">33％の確率で最初のルールを選択します。それ以外の場合は、次のルールに進みます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">50％の確率で2番目のルールを選択します。それ以外の場合は、次のルールに進みます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3番目の下を選択します。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このようなシステムは、各サブが33％の確率で選択されるという事実につながります。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/08e/d59/2bc/08ed592bc03dd1f9740f29985451aaca.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、2の下では、ファイル1の次に選択されるという保証はありません。</font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：iptablesはランダム分布統計モジュールを使用します。</font><font style="vertical-align: inherit;">したがって、バランシングアルゴリズムはランダム選択に基づいています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスの仕組みを理解したところで、より興味深い作業シナリオを見てみましょう。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesの長期間の接続はデフォルトではスケーリングされません</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フロントエンドからバックエンドへの各HTTP要求は、開いたり閉じたりする個別のTCP接続によって処理されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フロントエンドが1秒あたり100のリクエストをバックエンドに送信する場合、100の異なるTCP接続が開閉します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1つのTCP接続を開き、それを後続のすべてのHTTP要求に使用すると、要求の処理時間を短縮し、負荷を軽減できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+HTTPプロトコルには、HTTPキープアライブまたは接続の再利用と呼ばれる機能が含まれています。この場合、1つのTCP接続を使用して、多くのHTTP要求と応答を送受信します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/a65/cef/c9f/a65cefc9f558265089c48cdf96a1d049.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この機能はデフォルトでは有効になっていません。サーバーとクライアントの両方を適宜設定する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+セットアップ自体はシンプルで、ほとんどのプログラミング言語と環境でアクセスできます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下は、さまざまな言語の例へのリンクです。</font></font><br>
+<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=https://medium.com/%40onufrienkos/keep-alive-connection-on-inter-service-"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Node.jsでのキープアライブ</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=https://www.baeldung.com/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">春のブーツでキープアライブ</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=https://blog.insightdatascience.com/learning-about-the-"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pythonでのキープアライブ</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=https://docs.microsoft.com/en-us/dotnet/api/system.net."><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.NETでのキープアライブ</font></font></a></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetesでキープアライブを使用するとどうなりますか？</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フロントエンドとバックエンドの両方がキープアライブをサポートしていると仮定しましょう。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フロントエンドの1つのコピーとバックエンドの3つのコピーがあります。フロントエンドは最初のリクエストを行い、バックエンドへのTCP接続を開きます。リクエストがサービスに到達し、バックエンドポッドの1つが宛先アドレスとして選択されます。バックエンドに応答を送信し、フロントエンドがそれを受信します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常の状況とは異なり、応答を受信した後にTCP接続が閉じられると、次のHTTP要求のために開いたままになります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フロントエンドがより多くのバックエンドリクエストを送信するとどうなりますか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらのリクエストを転送するために、オープンTCP接続が使用され、すべてのリクエストは、最初のリクエストが取得されたバックエンドの下の同じリクエストに送信されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+iptablesはトラフィックを再分配すべきではありませんか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この場合はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+TCP接続が作成されると、それはiptablesルールを通過します。このルールは、トラフィックが行くバックエンドに特定のルールを選択します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下の要求はすべて、すでに開いているTCP接続を経由するため、iptablesルールは呼び出されなくなりました。</font></font><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それがどのように見えるか見てみましょう</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最初のサブはサービスにリクエストを送信します：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/0d1/235/11b/0d123511bd0e4e5d3806fdd7917e0bd7.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">あなたはすでに次に何が起こるか知っています。</font><font style="vertical-align: inherit;">サービスは存在しませんが、リクエストを処理するiptablesルールがあります：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/0d1/235/11b/0d123511bd0e4e5d3806fdd7917e0bd7.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バックエンドポッドの1つが宛先アドレスとして選択されます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/9ae/5c0/e5b/9ae5c0e5bd3478f20d1546951a298dfd.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リクエストは囲炉裏に届きます。</font><font style="vertical-align: inherit;">この時点で、2つのポッド間に永続的なTCP接続が確立されます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/b23/154/129/b23154129408fd401651880d3b94d816.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最初のポッドからの次のリクエストは、すでに確立されている接続を通過します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/f90/e1c/232/f90e1c232dbc399d39aaff47045b9aa8.gif"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その結果、応答は速くなり、帯域幅は向上しましたが、バックエンドを拡張する機能が失われました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バックエンドに2つのポッドがあり、常時接続されている場合でも、トラフィックは常にいずれかのポッドに送られます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは修正できますか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetesは永続的な接続のバランスをとる方法を知らないため、このタスクはあなたの責任です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスは、エンドポイントと呼ばれるIPアドレスとポートのセットです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アプリケーションは、サービスからエンドポイントのリストを取得し、エンドポイント間でリクエストを分散する方法を決定できます。各ハースへの永続的な接続を開き、ラウンドロビンを使用してこれらの接続間でリクエストのバランスを取ることができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+または、より</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">高度なバランシングアルゴリズムを</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">適用します</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+分散を担当するクライアント側コードは、次のロジックに従う必要があります。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サービスからエンドポイントのリストを取得します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エンドポイントごとに、永続的な接続を開きます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">要求を行う必要がある場合は、開いている接続の1つを使用してください。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エンドポイントのリストを定期的に更新するか、新しいエンドポイントを作成するか、リストが変更された場合は古い永続的な接続を閉じます。</font></font></li>
+</ol><br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これがどのように見えるかです</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最初のリクエストをサービスに送信する代わりに、クライアント側でリクエストのバランスをとることができます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/98f/91a/0c9/98f91a0c9ecae76bd8f286ba3a282ff1.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">どのポッドがサービスの一部であるかを尋ねるコードを記述する必要があります。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/040/203/cb5/040203cb52d6b22bb8179a6870d2485f.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リストを受け取ったらすぐにクライアント側に保存し、それを使用してポッドに接続します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/4e5/741/3e7/4e57413e7b01b017cf57fab312b28089.png"></div></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">あなた自身が負荷分散アルゴリズムに責任があります：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/8d9/bc6/7ad/8d9bc67ad511790b477c8509c91fffb0.gif"></div></li>
+</ol><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここで問題は、この問題はHTTPキープアライブにのみ適用されるのですか？</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クライアント側の負荷分散</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+HTTPは、永続的なTCP接続を使用できる唯一のプロトコルではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アプリケーションがデータベースを使用する場合、TCP接続は、要求を実行したり、データベースからドキュメントを取得したりする必要があるたびに開かれるわけではありません。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+代わりに、データベースへの永続的なTCP接続が開かれ、使用されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データベースがKubernetesにデプロイされ、アクセスがサービスとして提供される場合、前のセクションで説明したのと同じ問題が発生します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1つのデータベースレプリカが残りのデータベースレプリカより多く読み込まれます。</font><font style="vertical-align: inherit;">Kube-proxyとKubernetesは、接続のバランスをとるのに役立ちません。</font><font style="vertical-align: inherit;">データベースへのクエリのバランスをとる必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データベースへの接続に使用するライブラリに応じて、この問題を解決するためのさまざまなオプションがある場合があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下は、Node.jsからMySQLデータベースクラスターにアクセスする例です。</font></font><br>
+<br>
+<pre><code class="javascript hljs"><span class="hljs-keyword">var</span> mysql = <span class="hljs-built_in">require</span>(<span class="hljs-string">'mysql'</span>);
+<span class="hljs-keyword">var</span> poolCluster = mysql.createPoolCluster();<font></font>
+<font></font>
+<span class="hljs-keyword">var</span> endpoints = <span class="hljs-comment">/* retrieve endpoints from the Service */</span><font></font>
+<font></font>
+<span class="hljs-keyword">for</span> (<span class="hljs-keyword">var</span> [index, endpoint] <span class="hljs-keyword">of</span> endpoints) {<font></font>
+&nbsp; poolCluster.add(<span class="hljs-string">`mysql-replica-<span class="hljs-subst">${index}</span>`</span>, endpoint);<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-comment">// Make queries to the clustered MySQL database</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+永続的なTCP接続を使用する他のプロトコルはたくさんあります。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WebSocketsと保護されたWebSockets</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">HTTP / 2</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">gRPC</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RSockets</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AMQP</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらのプロトコルのほとんどは、すでに熟知しているはずです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、これらのプロトコルが非常に人気がある場合、なぜ標準化されたバランシングソリューションがないのですか？クライアントロジックの変更が必要なのはなぜですか？ネイティブのKubernetesソリューションはありますか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kube-proxyとiptablesは、Kubernetesのほとんどの標準的なデプロイシナリオを閉じるように設計されています。これは便宜上のものです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+REST APIを提供するウェブサービスを使用している場合は、幸運です。この場合、永続的なTCP接続は使用されず、任意のKubernetesサービスを使用できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、永続的なTCP接続の使用を開始したらすぐに、バックエンドの負荷を均等に分散する方法を理解する必要があります。 Kubernetesには、このケースの既製のソリューションは含まれていません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、もちろん、役立つオプションがあります。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesでの長期間の接続の分散</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetesには4つのタイプのサービスがあります。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Clusterip</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NodePort</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ロードバランサー</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ヘッドレス</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初の3つのサービスは仮想IPアドレスに基づいており、kube-proxyがiptablesルールを構築するために使用します。</font><font style="vertical-align: inherit;">しかし、すべてのサービスの基本的な基礎は、ヘッドレスタイプのサービスです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ヘッドレスサービスに関連付けられているIPアドレスはありません。関連付けられているハース（エンドポイント）のIPアドレスとポートのリストを取得するメカニズムを提供するだけです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてのサービスはヘッドレスサービスに基づいています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ClusterIPサービスは、いくつかの追加機能を備えたヘッドレスサービスです。&nbsp;</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管理層はそれにIPアドレスを割り当てます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kube-proxyは必要なiptablesルールを形成します。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、kube-proxyを無視して、ヘッドレスサービスから受信したエンドポイントのリストを直接使用して、アプリケーションの負荷を分散できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、クラスターにデプロイされたすべてのアプリケーションに同様のロジックを追加するにはどうすればよいでしょうか。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アプリケーションがすでにデプロイされている場合、そのようなタスクは不可能に見えるかもしれません。</font><font style="vertical-align: inherit;">ただし、代替手段があります。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サービスメッシュはあなたを助けます</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クライアント側の負荷分散戦略が非常に標準的であることはすでにお気づきでしょう。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アプリケーションが起動すると、次のようになります。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サービスからIPアドレスのリストを取得します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">接続プールを開いて維持します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">定期的にプールを更新し、エンドポイントを追加または削除します。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アプリケーションがリクエストを行うとすぐに、次のようになります。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ある種のロジック（ラウンドロビンなど）を使用して利用可能な接続を選択します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リクエストを実行します。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらの手順は、WebSocket、gRPC、およびAMQPで機能します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このロジックを別のライブラリに分離して、アプリケーションで使用できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、代わりにIstioやLinkerdなどのサービスグリッドを使用できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Service Meshは、次のようなプロセスでアプリケーションを補完します。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サービスのIPアドレスを自動的に検索します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WebSocketsやgRPCなどの接続を確認します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">正しいプロトコルを使用してリクエストのバランスをとります。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Service Meshはクラスター内のトラフィックの管理に役立ちますが、かなりのリソースを消費します。</font><font style="vertical-align: inherit;">他のオプションは、Netflix Ribbonなどのサードパーティライブラリ、またはEnvoyなどのプログラム可能なプロキシを使用しています。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バランスの問題を無視するとどうなりますか？</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ロードバランシングを使用できず、変更に気付かない。いくつかの作業シナリオを見てみましょう。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サーバーよりもクライアントが多い場合、これはそれほど大きな問題ではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2つのサーバーに接続する5つのクライアントがあるとします。バランスがない場合でも、両方のサーバーが使用されます。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/3eb/2a3/ebf/3eb2a3ebfd09862d4200744170daec7e.gif"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接続は不均一に分散される可能性があります。おそらく同じサーバーに接続された4つのクライアントですが、両方のサーバーが使用される可能性は十分にあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さらに問題なのは、反対のシナリオです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クライアントとサーバーの数が少ない場合、リソースが十分に使用されず、ボトルネックになる可能性があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2つのクライアントと5つのサーバーがあるとします。</font><font style="vertical-align: inherit;">せいぜい、5つのサーバーのうち2つに2つの永続的な接続が存在します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+他のサーバーはアイドル状態になります：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/ee5/0d2/eaf/ee50d2eaf1dbefd5933dd9ec5221bd58.gif"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これら2つのサーバーがクライアント要求処理を処理できない場合、水平スケーリングは役に立ちません。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">結論</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetesサービスは、ほとんどの標準的なWebアプリケーションシナリオで機能するように設計されています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、データベース、gRPC、WebSocketなど、永続的なTCP接続を使用するアプリケーションプロトコルで作業を開始するとすぐに、サービスは適切ではなくなります。</font><font style="vertical-align: inherit;">Kubernetesは、永続的なTCP接続のバランスをとるための内部メカニズムを提供していません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+つまり、クライアント側でバランスを取る可能性のあるアプリケーションを作成する必要があります。</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><i><font style="vertical-align: inherit;">Mail.ruの</font></i></a></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チーム</font></font></i><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes aaS</font></font></i></a><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;">によって準備された翻訳</font></i></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></i><br>
+<br>
+<strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">このトピックについて他に読むもの</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<ol>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesの自動スケーリングの3つのレベルと、それらを効果的に使用する方法</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。&nbsp;</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">実装テンプレートを使用した著作権侵害の精神に基づくKubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">   Kubernetes  </a>.</li>
+</ol></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja493808/index.html">Corutinによる非同期コードの線形化</a></li>
+<li><a href="../ja493810/index.html">文書認識市場の5年間の集中的な開発</a></li>
+<li><a href="../ja493814/index.html">バルセロナでのインタビューの仕方</a></li>
+<li><a href="../ja493816/index.html">Gitガイド パーツ番号1：.gitディレクトリについて知っておく必要があるすべて</a></li>
+<li><a href="../ja493818/index.html">Gitガイド パート番号2：ゴールデンルールとリベースのその他の基本</a></li>
+<li><a href="../ja493822/index.html">さまざまなプラットフォームでのUEFI実装の問題と機能</a></li>
+<li><a href="../ja493826/index.html">分割統治：水の電気分解の改善</a></li>
+<li><a href="../ja493828/index.html">インターフェイスがビデオゲームのストーリーを伝える方法</a></li>
+<li><a href="../ja493830/index.html">最初のインタビューでジュニアiOS開発者が尋ねる質問</a></li>
+<li><a href="../ja493832/index.html">コロナウイルスCOVID-19配布ダッシュボード（React + Chart.js + BootstrapTable）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

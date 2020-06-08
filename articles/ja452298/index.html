@@ -1,0 +1,585 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>✨ 😈 🕷️ 高負荷の.NETサービスでのガベージコレクションの最適化 🤽 🤽🏼 👩🏽‍🤝‍👩🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="毎日、世界中の数千の組織から数万人の従業員がPyrusで働いています。サービスの応答性（リクエストの処理速度）は、ユーザーエクスペリエンスに直接影響するため、競争上の重要な利点であると考えています。私たちの主要な指標は「遅いクエリの割合」です。その動作を調査したところ、アプリケーションサーバーで1分...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>高負荷の.NETサービスでのガベージコレクションの最適化</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/452298/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">毎日、世界中の数千の組織から数万人の従業員がPyrusで働いています。サービスの応答性（リクエストの処理速度）は、ユーザーエクスペリエンスに直接影響するため、競争上の重要な利点であると考えています。私たちの主要な指標は「遅いクエリの割合」です。その動作を調査したところ、アプリケーションサーバーで1分に1回、約1000 msの長さの一時停止があることがわかりました。これらの間隔では、サーバーは応答せず、数十の要求のキューが発生します。この記事では、アプリケーションでのガベージコレクションによるボトルネックの原因と排除の調査について説明します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fu/1s/j9/fu1sj9ixpj4nc633ikhwblbhlfs.jpeg"><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+現代のプログラミング言語は2つのグループに分けることができます。 C / C ++やRustなどの言語では、手動のメモリ管理が使用されるため、プログラマーはコードの記述、オブジェクトの存続期間の管理、デバッグに多くの時間を費やします。同時に、メモリの不適切な使用に起因するバグは、デバッグが最も困難なものの一部であるため、最新の開発のほとんどは、自動メモリ管理を備えた言語で行われます。これらには、たとえば、Java、C＃、Python、Ruby、Go、PHP、JavaScriptなどが含まれます。プログラマーは開発時間を節約できますが、プログラムがガベージコレクションに定期的に費やす追加のランタイムを支払う必要があります-プログラムにリンクが残っていないオブジェクトによって占有されているメモリを解放します。小さなプログラムでは、この時間はごくわずかですが、ただし、オブジェクトの数が増え、オブジェクトの作成が激しくなると、ガベージコレクションがプログラムの合計実行時間に大きく影響し始めます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pyrus Webサーバーは、自動メモリ管理を使用する.NETプラットフォームで実行されます。ほとんどのガベージコレクションは「stop the world」です。作業時に、アプリケーションのすべてのスレッド（スレッド）を停止します。非ブロッキング（バックグラウンド）アセンブリは、実際にはすべてのスレッドも停止しますが、非常に短時間です。スレッドのブロック中、サーバーは要求を処理せず、既存の要求がフリーズし、新しい要求がキューに追加されます。その結果、ガベージコレクション時に処理されたリクエストは直接スローダウンされ、キューの蓄積により、ガベージコレクションが完了した直後のリクエストの処理速度は遅くなります。これにより、「遅いクエリの割合」という指標が悪化します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最近の</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">Konrad Kokosa：Pro .NETメモリー管理</font></a><font style="vertical-align: inherit;">ブックで武装</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> （2日間で最初のコピーをロシアに持ち込んだ方法については、別の投稿を書くことができます）。これは、.NETでのメモリ管理のトピックに専念し、問題の調査を開始しました。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">測定</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pyrus Webサーバーのプロファイルを作成するために、</font><font style="vertical-align: inherit;">.NETアプリケーションのプロファイリング用にシャープ化</font><font style="vertical-align: inherit;">されたPerfViewユーティリティ（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://github.com/Microsoft/perfview</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">を使用しました</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">このユーティリティは、Event Tracing for Windows（ETW）エンジンに基づいており、プロファイルされたアプリケーションのパフォーマンスへの影響を最小限に抑え、戦闘サーバーでの使用を可能にします。</font><font style="vertical-align: inherit;">さらに、パフォーマンスへの影響は、イベントの種類と収集する情報によって異なります。</font><font style="vertical-align: inherit;">私たちは何も収集しません-アプリケーションは通常通り動作します。</font><font style="vertical-align: inherit;">PerfViewでは、アプリケーションの再コンパイルも再起動も必要ありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+/ GCCollectOnlyスイッチを使用してPerfViewトレースを実行します（トレース時間1.5時間）。</font><font style="vertical-align: inherit;">このモードでは、ガベージコレクションイベントのみを収集し、パフォーマンスへの影響は最小限です。</font><font style="vertical-align: inherit;">Memory Group / GCStatsトレースレポートを見てみましょう。その中には、ガベージコレクターイベントの概要が</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/v4/ia/cd/v4iacdyso10-0toycwyijfm0zbm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+表示され</font><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">ここでは、いくつかの興味深いインジケーターが同時に表示されます。</font></font><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第2世代の平均ビルド一時停止時間は700ミリ秒で、最大一時停止は約1秒です。</font><font style="vertical-align: inherit;">この図は、.NETアプリケーションのすべてのスレッドが停止する時間を示しています。特に、この一時停止は、処理されるすべての要求に追加されます。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第2世代のアセンブリの数は第1世代に匹敵し、第0世代のアセンブリの数よりもわずかに少なくなります。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">誘導列には、第2世代の53個のアセンブリがリストされています。</font><font style="vertical-align: inherit;">誘導アセンブリは、GC.Collect（）への明示的な呼び出しの結果です。</font><font style="vertical-align: inherit;">コードでこのメソッドへの単一の呼び出しが見つかりませんでした。これは、アプリケーションで使用されているライブラリの一部が原因であることを意味します。</font></font><br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ガベージコレクションの数に関する観察結果について説明します。</font><font style="vertical-align: inherit;">生涯でオブジェクトを分割するという考えは、</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">世代の仮説に</font></a><font style="vertical-align: inherit;">基づいています</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）：作成されたオブジェクトのかなりの部分はすぐに死に、残りのほとんどは長く存続します（つまり、「平均的な」存続期間を持つオブジェクトはほとんどありません）。 .NETガベージコレクターが投獄されるのはこのモードのもとであり、このモードでは、第2世代のアセンブリは第0世代よりもはるかに小さいはずです。つまり、ガベージコレクターを最適に動作させるには、世代の仮説に合わせてアプリケーションの作業を調整する必要があります。ルールを次のように定式化してみましょう。オブジェクトはすぐに死んで、古い世代まで生きてはいけないか、それとも生きてそこに永遠に生きなければなりません。このルールは、Javaなど、世代別の自動メモリ管理を使用する他のプラットフォームにも適用されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+関心のあるデータは、GCStatsレポートの別のテーブルから抽出できます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/m5/7y/je/m57yjedgbkwfpbiwmjkvnbhgl4o.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アプリケーションがラージオブジェクトを作成しようとする（.NET Frameworkオブジェクト&gt; 85,000バイトのサイズがLOH-ラージオブジェクトヒープに作成される）場合がいくつかあり、バックグラウンドで並行して実行される第2世代アセンブリの完了を待機する必要があります。</font><font style="vertical-align: inherit;">アロケータのこれらの一時停止は、ガベージコレクタの一時停止ほど重要ではありません。これは、1つのスレッドのみに影響するためです。</font><font style="vertical-align: inherit;">その前は、.NET Framework 4.6.1のバージョンを使用し、バージョン4.7.1ではMicrosoftがガベージコレクターを完成させました。これにより、第2世代のバックグラウンドビルド中にラージオブジェクトヒープにメモリを割り当てることができます</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。https</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">//docs.microsoft.com / ru-ru / dotnet / framework / whats-new /＃common-language-runtime-clr</font></a></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+したがって、その時点で最新バージョン4.7.2にアップグレードしました。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第2世代ビルド</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+古い世代のビルドが非常に多いのはなぜですか？最初の仮定は、メモリリークがあることです。この仮説をテストするために、第2世代のサイズを見てみましょう（Zabbixで対応するパフォーマンスカウンターの監視を設定します）。 2つのPyrusサーバーの第2世代サイズのグラフから、そのサイズは最初は大きくなりますが（主にキャッシュの充填が原因）、その後安定します（グラフ上の大きな障害-バージョンを更新するためのWebサービスの定期的な再起動）：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/gg/lc/ce/gglcce4tssnhzgcjfhesec9rcja.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは、顕著なメモリリークがないこと、つまり、別の理由で多数の第2世代アセンブリが発生することを意味します。</font><font style="vertical-align: inherit;">次の仮説は、メモリトラフィックが多い、つまり、多くのオブジェクトが第2世代に分類され、多くのオブジェクトがそこで死ぬというものです。</font><font style="vertical-align: inherit;">PerfViewでそのようなオブジェクトを見つけるには、/ GCOnlyモードがあります。</font><font style="vertical-align: inherit;">トレースレポートから、「Gen 2 Object Deaths（Coarse Sampling）Stacks」に注目しましょう。このスタックには、第2世代で死ぬオブジェクトの選択と、これらのオブジェクトが作成された場所のコールスタックが含まれています。</font><font style="vertical-align: inherit;">ここで次の結果が表示されます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/h7/r2/d0/h7r2d0htyxsnaqrr_ekn_ybilti.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+行を開くと、内部に、第2世代までのオブジェクトを作成するコード内の場所の呼び出しスタックが表示されます。</font><font style="vertical-align: inherit;">その中で：</font></font><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">System.Byte []内部を見ると、半分以上がJSONのシリアル化用のバッファーであることがわかります。</font></font><br>
+</li>
+</ul><br>
+<img src="https://habrastorage.org/webt/la/up/6v/laup6v0mho5e1tbwjfkfmsgdhog.png"><br>
+<br>
+<ul>
+<li>Slot[System.Int32][] (   HashSet), System.Int32[],  ..   ,     —  , , ,   ..,    ,           :<br>
+</li>
+</ul><br>
+<img src="https://habrastorage.org/webt/dx/et/jy/dxetjyvj2ande72qrod6leza6i8.png"><br>
+<br>
+<img src="https://habrastorage.org/webt/v6/k6/r-/v6k6r-wq0qeof0edb6h5jvct-he.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+興味深いことに、JSONとコンピューティングクライアントキャッシュのバッファーはすべて、同じリクエストで有効な一時オブジェクトです。</font><font style="vertical-align: inherit;">彼らはなぜ第2世代まで生きるのですか？</font><font style="vertical-align: inherit;">これらのオブジェクトはすべて、かなり大きなサイズの配列であることに注意してください。</font><font style="vertical-align: inherit;">85,000バイトを超えるサイズの場合、それらのメモリはラージオブジェクトヒープに割り当てられ、第2世代と一緒にのみ収集されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+確認するには、perfview / GCOnlyの結果のセクション「GC Heap Alloc Ignore Free（Coarse Sampling）stacks」を開きます。</font><font style="vertical-align: inherit;">そこには、LargeObjectという行があり、PerfViewはラージオブジェクトの作成をグループ化しています。内部には、前の分析で見たのと同じ配列がすべて表示されています。</font><font style="vertical-align: inherit;">ガベージコレクターの問題の根本的な原因を認識します。多くの一時的なラージオブジェクトを作成します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sy/kr/lk/sykrlkgbmvl9jyny5hl1_ftg4ee.png"><br>
+<br>
+<img src="https://habrastorage.org/webt/f9/6q/mp/f96qmplnj4devma1buedg6fpo8q.png"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Pyrusシステムの変更</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+測定結果に基づいて、さらなる作業の主な領域、つまりクライアントキャッシュとJSONでのシリアル化を計算する際の大きなオブジェクトとの戦いを特定しました。</font><font style="vertical-align: inherit;">この問題にはいくつかの解決策があります。</font></font><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最も単純なことは、大きなオブジェクトを作成しないことです。</font><font style="vertical-align: inherit;">たとえば、大きなバッファーBが順次データ変換A-&gt; B-&gt; Cで使用されている場合、これらの変換は、A-&gt; Cに変換してオブジェクトBの作成を排除することで組み合わせることができます。このオプションは常に適用できるとは限りませんが、最も単純で最も効果的です。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オブジェクトのプール。</font><font style="vertical-align: inherit;">常に新しいオブジェクトを作成して破棄する代わりに、ガベージコレクターをロードする代わりに、フリーオブジェクトのコレクションを保存できます。</font><font style="vertical-align: inherit;">最も単純なケースでは、新しいオブジェクトが必要な場合、プールからそれを取得するか、プールが空の場合は新しいオブジェクトを作成します。</font><font style="vertical-align: inherit;">オブジェクトが不要になったら、プールに戻します。</font><font style="vertical-align: inherit;">良い例は、.NET CoreのArrayPoolです。これは、.NET FrameworkでもSystem.Buffers Nugetパッケージの一部として利用できます。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大きなオブジェクトの代わりに小さなオブジェクトを使用します。</font></font><br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ラージオブジェクトの両方のケースを個別に検討します-クライアントキャッシュの計算とJSONでのシリアル化。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クライアントキャッシュの計算</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pyrus Webクライアントとモバイルアプリケーションは、ユーザーが利用できるデータ（プロジェクト、フォーム、ユーザーなど）をキャッシュします。キャッシュは、作業をスピードアップするために使用されます。オフラインモードでの作業にも必要です。キャッシュはサーバー上で計算され、クライアントに転送されます。それらはアクセス権に依存するため、ユーザーごとに個別であり、たとえば、ユーザーがアクセスできるディレクトリを変更するときに更新されることがよくあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、多くのクライアントキャッシュ計算がサーバーで定期的に実行され、多くの一時的な一時オブジェクトが作成されます。ユーザーが大規模な組織である場合、ユーザーは多くのオブジェクトにそれぞれアクセスできます。ユーザーのクライアントキャッシュは大きくなります。そのため、ラージオブジェクトヒープ内の大きな一時配列に対するメモリの割り当てを確認しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+大きなオブジェクトの作成を取り除くために提案されたオプションを分析してみましょう：</font></font><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大きなオブジェクトの完全な処分。</font><font style="vertical-align: inherit;">データ準備アルゴリズムは、とりわけ、セットのソートとユニオンを使用し、一時的なバッファーを必要とするため、このアプローチは適用できません。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オブジェクトのプールを使用する。</font><font style="vertical-align: inherit;">このアプローチには困難があります。</font></font><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用されるさまざまなコレクションとその中の要素のタイプ：HashSet、List、およびArrayが使用されます（後者の2つは組み合わせることができます）。</font><font style="vertical-align: inherit;">Int32、Int64、およびすべての種類のデータクラスがコレクションに格納されます。</font><font style="vertical-align: inherit;">使用するタイプごとに、さまざまなサイズのコレクションを格納する独自のプールが必要になります。</font></font><br>
+</li>
+<li>   .     ,       .   ,      .      ,        ,    ,    ,  ..<br>
+</li>
+<li>.  ArrayPool  Microsoft,     List  HashSet.    -  ,      .</li>
+</ul></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">小さなオブジェクトの使用。</font><font style="vertical-align: inherit;">大きな配列はいくつかの小さな断片に分割できます。これらは大きなオブジェクトヒープをロードしませんが、0世代で作成され、1番目と2番目の標準パスに沿って進みます。</font><font style="vertical-align: inherit;">2番目まで生きられないことを願っていますが、0番目、または極端な場合には1番目の世代でガベージコレクターによって収集されます。</font><font style="vertical-align: inherit;">このアプローチの利点は、既存のコードへの変更が最小限であることです。</font><font style="vertical-align: inherit;">難しさ：</font></font><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">実装。</font><font style="vertical-align: inherit;">適切なライブラリが見つからなかったため、クラスを自分で作成する必要がありました。</font><font style="vertical-align: inherit;">「ラージオブジェクトヒープを読み込まないコレクション」のシナリオは非常に狭い範囲であるため、ライブラリの不足は理解できます。</font></font></li>
+</ul></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3番目の方法で</font><font style="vertical-align: inherit;">、ラージオブジェクトヒープを読み込まないListとHashSetを作成</font></font><strike><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">するように自転車</font></font></strike><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><strike><font style="vertical-align: inherit;">発明する</font></strike><font style="vertical-align: inherit;">ことにしました</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ピースリスト</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ChunkedList &lt;T&gt;は、IList &lt;T&gt;を含む標準インターフェイスを実装します。これにより、既存のコードへの変更が最小限で済みます。</font><font style="vertical-align: inherit;">はい、使用しているNewtonsoft.Jsonライブラリは、IEnumerable &lt;T&gt;を実装しているため、自動的にシリアル化できます。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">sealed</span> <span class="hljs-keyword">class</span> <span class="hljs-title">ChunkedList</span>&lt;T&gt; : <span class="hljs-title">IList</span>&lt;T&gt;, <span class="hljs-title">ICollection</span>&lt;T&gt;, <span class="hljs-title">IEnumerable</span>&lt;T&gt;, <span class="hljs-title">IEnumerable</span>, <span class="hljs-title">IList</span>, <span class="hljs-title">ICollection</span>, <span class="hljs-title">IReadOnlyList</span>&lt;T&gt;, <span class="hljs-title">IReadOnlyCollection</span>&lt;T&gt;<font></font>
+{</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+標準リスト&lt;T&gt;には次のフィールドがあります：要素の配列と入力された要素の数。</font><font style="vertical-align: inherit;">ChunkedList &lt;T&gt;には、要素の配列の配列、完全に満たされた配列の数、最後の配列の要素の数があります。</font><font style="vertical-align: inherit;">85,000バイト未満の要素の各配列：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/72/zj/js/72zjjs9q6lcfud-l7nq8cy5prdi.png"><br>
+<pre><code class="cs hljs"><span class="hljs-keyword">private</span> T[][] chunks;
+<span class="hljs-keyword">private</span> <span class="hljs-keyword">int</span> currentChunk;
+<span class="hljs-keyword">private</span> <span class="hljs-keyword">int</span> currentChunkSize;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ChunkedList &lt;T&gt;はかなり複雑であるため、詳細なテストを記述しました。すべての操作は、少なくとも2つのモードでテストする必要があります。リスト全体が85,000バイトまでの1つのピースに収まる場合は「小」、複数のピースで構成される場合は「大」でテストします。さらに、サイズを変更するメソッド（追加など）の場合、シナリオはさらに大きくなります：「小さい」-&gt;「小さい」、「小さい」-&gt;「大きい」、「大きい」-&gt;「大きい」、「大きい」-&gt;「少し」。ここでは、単体テストがうまくいく、いくつかの紛らわしい境界ケースがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+IListインターフェイスの一部のメソッドは使用されず、省略できる（挿入、削除など）ことで、状況が単純化されます。それらの実装とテストはかなりのオーバーヘッドになります。さらに、ユニットテストの記述は、新しい機能を思い付く必要がないという事実によって単純化されています。ChunkedList&lt;T&gt;はList &lt;T&gt;と同じように動作するはずです。つまり、すべてのテストは次のように構成されています。リスト&lt;T&gt;とChunkedList &lt;T&gt;を作成し、それらに対して同じ操作を実行して結果を比較します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+BenchmarkDotNetライブラリを使用してパフォーマンスを測定し、リスト&lt;T&gt;からChunkedList &lt;T&gt;に切り替えるときにコードの速度が大幅に低下しないことを確認しました。たとえば、リストに項目を追加してテストしてみましょう。</font></font><br>
+<br>
+<pre><code class="cs hljs">[<span class="hljs-meta">Benchmark</span>]
+<span class="hljs-function"><span class="hljs-keyword">public</span> ChunkedList&lt;<span class="hljs-keyword">int</span>&gt; <span class="hljs-title">ChunkedList</span>(<span class="hljs-params"></span>)</span><font></font>
+{<font></font>
+	<span class="hljs-keyword">var</span> list = <span class="hljs-keyword">new</span> ChunkedList&lt;<span class="hljs-keyword">int</span>&gt;();
+	<span class="hljs-keyword">for</span> (<span class="hljs-keyword">int</span> i = <span class="hljs-number">0</span>; i &lt; N; i++)<font></font>
+		list.Add(i);<font></font>
+	<span class="hljs-keyword">return</span> list;<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+比較のためにリスト&lt;T&gt;を使用した同じテスト。</font><font style="vertical-align: inherit;">500要素を追加したときの結果（すべてが1つの配列に収まる）：</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">方法</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">平均</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エラー</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">標準偏差</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Gen 0 / 1k Op</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第1世代/ 1kオペレーション</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第2世代/ 1kオペレーション</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">割り当てられたメモリ/操作</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">標準リスト</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.415 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.0149 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.0140 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.6847</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.0095</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4.21 KB</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チャンクリスト</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3.728 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.0238 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.0222 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.6943</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.0076</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4.28 KB</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+50,000要素を追加したときの結果（いくつかの配列に分割）：</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">方法</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">平均</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エラー</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">標準偏差</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Gen 0 / 1k Op</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第1世代/ 1kオペレーション</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第2世代/ 1kオペレーション</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">割り当てられたメモリ/操作</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">標準リスト</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">146.273 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3.1466 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4.8053 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">124.7559</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">124.7559</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">124.7559</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">513.23 KB</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チャンクリスト</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">287.687 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.4630 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.2969 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">41.5039</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">20.5078</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">256.75 KB</font></font></td>
+</tr>
+</tbody></table></div><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">結果の列の詳細な説明</font></font></b><div class="spoiler_text"><pre><code class="cs hljs">BenchmarkDotNet=v0<span class="hljs-number">.11</span><span class="hljs-number">.4</span>, OS=Windows <span class="hljs-number">10.0</span><span class="hljs-number">.17763</span><span class="hljs-number">.379</span> (<span class="hljs-number">1809</span>/October2018Update/Redstone5)<font></font>
+Intel Core i7<span class="hljs-number">-8700</span>K CPU <span class="hljs-number">3.70</span>GHz (Coffee Lake), <span class="hljs-number">1</span> CPU, <span class="hljs-number">12</span> logical and <span class="hljs-number">6</span> physical cores<font></font>
+  [<span class="hljs-meta">Host</span>]     : .NET Framework <span class="hljs-number">4.7</span><span class="hljs-number">.2</span> (CLR <span class="hljs-number">4.0</span><span class="hljs-number">.30319</span><span class="hljs-number">.42000</span>), <span class="hljs-number">64b</span>it RyuJIT-v4<span class="hljs-number">.7</span><span class="hljs-number">.3324</span><span class="hljs-number">.0</span>
+  DefaultJob : .NET Framework <span class="hljs-number">4.7</span><span class="hljs-number">.2</span> (CLR <span class="hljs-number">4.0</span><span class="hljs-number">.30319</span><span class="hljs-number">.42000</span>), <span class="hljs-number">64b</span>it RyuJIT-v4<span class="hljs-number">.7</span><span class="hljs-number">.3324</span><span class="hljs-number">.0</span><font></font>
+<font></font>
+<span class="hljs-comment">// * Hints *</span><font></font>
+Outliers<font></font>
+  ListAdd.StandardList: Default -&gt; <span class="hljs-number">2</span> outliers were removed<font></font>
+  ListAdd.ChunkedList: Default  -&gt; <span class="hljs-number">1</span> outlier  was  removed<font></font>
+<font></font>
+<span class="hljs-comment">// * Legends *</span><font></font>
+  Mean                : Arithmetic mean of all measurements<font></font>
+  Error               : Half of <span class="hljs-number">99.9</span>% confidence interval<font></font>
+  StdDev              : Standard deviation of all measurements<font></font>
+  Gen <span class="hljs-number">0</span>/<span class="hljs-number">1</span>k Op         : GC Generation <span class="hljs-number">0</span> collects per <span class="hljs-number">1</span>k Operations<font></font>
+  Gen <span class="hljs-number">1</span>/<span class="hljs-number">1</span>k Op         : GC Generation <span class="hljs-number">1</span> collects per <span class="hljs-number">1</span>k Operations<font></font>
+  Gen <span class="hljs-number">2</span>/<span class="hljs-number">1</span>k Op         : GC Generation <span class="hljs-number">2</span> collects per <span class="hljs-number">1</span>k Operations<font></font>
+  Allocated Memory/Op : <span class="hljs-function">Allocated memory per single <span class="hljs-title">operation</span> (<span class="hljs-params">managed only, inclusive, <span class="hljs-number">1</span>KB = <span class="hljs-number">1024B</span></span>)
+  1 us                : 1 <span class="hljs-title">Microsecond</span> (<span class="hljs-params"><span class="hljs-number">0.000001</span> sec</span>)</span></code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+平均テスト実行時間を表示する「平均」列を見ると、実装が標準よりも2〜2.5倍遅いだけであることがわかります。</font><font style="vertical-align: inherit;">実際のコードでは、リストを使用した操作は実行されるすべてのアクションのほんの一部にすぎないことを考えると、この違いは重要ではなくなります。</font><font style="vertical-align: inherit;">しかし、列「Gen 2 / 1k op」（1000回のテスト実行に対する第2世代のアセンブリの数）は、目標を達成したことを示しています。多数の要素がある場合、ChunkedListは、第2世代でガベージを作成せず、これが私たちのタスクでした。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ピースセット</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同様に、ChunkedHashSet &lt;T&gt;はISet &lt;T&gt;インターフェイスを実装します。</font><font style="vertical-align: inherit;">ChunkedHashSet &lt;T&gt;を記述する際、ChunkedListにすでに実装されている小さなチャンクロジックを再利用しました。</font><font style="vertical-align: inherit;">これを行うために、MITライセンスの下で利用可能な.NETリファレンスソースからHashSet &lt;T&gt;の既製の実装を取得し、配列をChunkedListsに置き換えました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+単体テストでは、リストの場合と同じトリックを使用します。ChunkedHashSet&lt;T&gt;の動作を参照HashSet &lt;T&gt;と比較します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最後に、パフォーマンステスト。</font><font style="vertical-align: inherit;">私たちが使用する主な操作は、セットの和集合です。そのため、これをテストしています。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">public</span> ChunkedHashSet&lt;<span class="hljs-keyword">int</span>&gt; <span class="hljs-title">ChunkedHashSet</span>(<span class="hljs-params"><span class="hljs-keyword">int</span>[][] source</span>)</span><font></font>
+{<font></font>
+	<span class="hljs-keyword">var</span> <span class="hljs-keyword">set</span> = <span class="hljs-keyword">new</span> ChunkedHashSet&lt;<span class="hljs-keyword">int</span>&gt;();
+	<span class="hljs-keyword">foreach</span> (<span class="hljs-keyword">var</span> arr <span class="hljs-keyword">in</span> source)
+		<span class="hljs-keyword">set</span>.UnionWith(arr);
+	<span class="hljs-keyword">return</span> <span class="hljs-keyword">set</span>;<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、標準のHashSetとまったく同じテストです。</font><font style="vertical-align: inherit;">小さなセットの最初のテスト：</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">var</span> source = <span class="hljs-keyword">new</span> <span class="hljs-keyword">int</span>[][] {<font></font>
+	Enumerable.Range(<span class="hljs-number">0</span>, <span class="hljs-number">300</span>).ToArray(),<font></font>
+	Enumerable.Range(<span class="hljs-number">100</span>, <span class="hljs-number">600</span>).ToArray(),<font></font>
+	Enumerable.Range(<span class="hljs-number">300</span>, <span class="hljs-number">1000</span>).ToArray(),<font></font>
+}</code></pre><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">方法</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">平均</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エラー</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">標準偏差</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Gen 0 / 1k Op</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第1世代/ 1kオペレーション</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第2世代/ 1kオペレーション</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">割り当てられたメモリ/操作</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">StandardHashSet</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">30.16 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.1046 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.0979 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">9.3079</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.6785</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">57.41 KB</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ChunkedHashSet</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">73.54 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.5919 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">0.5247 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">9.5215</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.5869</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">58.84 KB</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+大きなオブジェクトの束で問題を引き起こした大きなセットの2番目のテスト：</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">var</span> source = <span class="hljs-keyword">new</span> <span class="hljs-keyword">int</span>[][] {<font></font>
+	Enumerable.Range(<span class="hljs-number">0</span>, <span class="hljs-number">30000</span>).ToArray(),<font></font>
+	Enumerable.Range(<span class="hljs-number">10000</span>, <span class="hljs-number">60000</span>).ToArray(),<font></font>
+	Enumerable.Range(<span class="hljs-number">30000</span>, <span class="hljs-number">100000</span>).ToArray(),<font></font>
+}</code></pre><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">方法</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">平均</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エラー</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">標準偏差</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Gen 0 / 1k Op</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第1世代/ 1kオペレーション</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">第2世代/ 1kオペレーション</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">割り当てられたメモリ/操作</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">StandardHashSet</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3,031.30 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">32.0797 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">28.4378 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">699.2188</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">667.9688</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">664.0625</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4718.23 KB</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ChunkedHashSet</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">7,189.66 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">25.6319 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">23.9761 us</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">539.0625</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">265.6250</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">7.8125</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3280.71 KB</font></font></td>
+</tr>
+</tbody></table></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+結果はリストと同様です。</font><font style="vertical-align: inherit;">ChunkedHashSetは2〜2.5倍遅くなりますが、同時に大きなセットでは、第2世代のロードが2桁少なくなります。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JSONでのシリアル化</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Pyrus Webサーバーは、異なるシリアル化を使用するいくつかのAPIを提供します。ボットと同期ユーティリティで使用されるAPI（以下、パブリックAPI）でラージオブジェクトが作成されることを発見しました。基本的に、APIは独自のシリアル化を使用しますが、この問題の影響は受けません。これについては、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https：//habr.com/en/post/227595/</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の記事</font><font style="vertical-align: inherit;">「2。アプリケーションのボトルネックがどこにあるのかわかりません。」つまり、メインAPIは既に正常に機能しており、リクエストの数と応答のデータ量が増えるにつれて、パブリックAPIに問題が発生しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+パブリックAPIを最適化しましょう。</font><font style="vertical-align: inherit;">メインAPIの例を使用すると、ストリーミングモードでユーザーに応答を返すことができることがわかります。</font><font style="vertical-align: inherit;">つまり、応答全体を含む中間バッファーを作成する必要はありませんが、応答をすぐにストリームに書き込みます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+詳細な調査の結果、応答をシリアル化するプロセスで、中間結果用の一時バッファーを作成していることがわかりました（「コンテンツ」は、UTF-8エンコードのJSONを含むバイトの配列です）。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">var</span> serializer = Newtonsoft.Json.JsonSerializer.Create(...);<font></font>
+<font></font>
+<span class="hljs-keyword">byte</span>[] content;
+<span class="hljs-keyword">var</span> sw = <span class="hljs-keyword">new</span> StreamWriter(<span class="hljs-keyword">new</span> MemoryStream(), <span class="hljs-keyword">new</span> UTF8Encoding(<span class="hljs-literal">false</span>));
+<span class="hljs-keyword">using</span> (<span class="hljs-keyword">var</span> writer = <span class="hljs-keyword">new</span> Newtonsoft.Json.JsonTextWriter(sw))<font></font>
+{<font></font>
+	serializer.Serialize(writer, result);<font></font>
+	writer.Flush();				<font></font>
+	content = ms.ToArray();<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コンテンツが使用されている場所を見てみましょう。</font><font style="vertical-align: inherit;">歴史的な理由から、Public APIはWCFに基づいており、XMLは標準の要求および応答形式です。</font><font style="vertical-align: inherit;">私たちの場合、XML応答には単一の「Binary」要素があり、その中にBase64でエンコードされたJSONが書き込まれます。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">class</span> <span class="hljs-title">RawBodyWriter</span> : <span class="hljs-title">BodyWriter</span><font></font>
+{<font></font>
+	<span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> <span class="hljs-keyword">byte</span>[] _content;<font></font>
+<font></font>
+	<span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-title">RawBodyWriter</span>(<span class="hljs-params"><span class="hljs-keyword">byte</span>[] content</span>)
+		: <span class="hljs-title">base</span>(<span class="hljs-params"><span class="hljs-literal">true</span></span>)</span><font></font>
+	{<font></font>
+		_content = content;<font></font>
+	}<font></font>
+<font></font>
+	<span class="hljs-function"><span class="hljs-keyword">protected</span> <span class="hljs-keyword">override</span> <span class="hljs-keyword">void</span> <span class="hljs-title">OnWriteBodyContents</span>(<span class="hljs-params">XmlDictionaryWriter writer</span>)</span><font></font>
+	{<font></font>
+		writer.WriteStartElement(<span class="hljs-string">"Binary"</span>);<font></font>
+		writer.WriteBase64(_content, <span class="hljs-number">0</span>, _content.Length);<font></font>
+		writer.WriteEndElement();<font></font>
+	}<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは一時バッファは必要ありません。</font><font style="vertical-align: inherit;">JSONは、WCFが提供するXmlWriterバッファーにすぐに書き込み、その場でBase64でエンコードできます。</font><font style="vertical-align: inherit;">したがって、最初の方法で、メモリ割り当てを取り除きます。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">protected</span> <span class="hljs-keyword">override</span> <span class="hljs-keyword">void</span> <span class="hljs-title">OnWriteBodyContents</span>(<span class="hljs-params">XmlDictionaryWriter writer</span>)</span><font></font>
+{<font></font>
+	<span class="hljs-keyword">var</span> serializer = Newtonsoft.Json.JsonSerializer.Create(...);<font></font>
+<font></font>
+	writer.WriteStartElement(<span class="hljs-string">"Binary"</span>);<font></font>
+	Stream stream = <span class="hljs-keyword">new</span> Base64Writer(writer);<font></font>
+	Var sw = <span class="hljs-keyword">new</span> StreamWriter(stream, <span class="hljs-keyword">new</span> UTF8Encoding(<span class="hljs-literal">false</span>));
+	<span class="hljs-keyword">using</span> (<span class="hljs-keyword">var</span> jsonWriter = <span class="hljs-keyword">new</span> Newtonsoft.Json.JsonTextWriter(sw))<font></font>
+	{<font></font>
+		serializer.Serialize(jsonWriter, _result);<font></font>
+		jsonWriter.Flush();<font></font>
+	}<font></font>
+	writer.WriteEndElement();<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでBase64Writerは、Streamインターフェースを実装するXmlWriterの単純なラッパーで、Base64としてXmlWriterに書き込みます。</font><font style="vertical-align: inherit;">同時に、インターフェイス全体から、StreamWriterで呼び出されるWriteメソッドを1つだけ実装するだけで十分です。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-keyword">public</span> <span class="hljs-keyword">class</span> <span class="hljs-title">Base64Writer</span> : <span class="hljs-title">Stream</span><font></font>
+{<font></font>
+	<span class="hljs-keyword">private</span> <span class="hljs-keyword">readonly</span> XmlWriter _writer;<font></font>
+<font></font>
+	<span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-title">Base64Writer</span>(<span class="hljs-params">XmlWriter writer</span>)</span><font></font>
+	{<font></font>
+		_writer = writer;<font></font>
+	}<font></font>
+<font></font>
+	<span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">override</span> <span class="hljs-keyword">void</span> <span class="hljs-title">Write</span>(<span class="hljs-params"><span class="hljs-keyword">byte</span>[] buffer, <span class="hljs-keyword">int</span> offset, <span class="hljs-keyword">int</span> count</span>)</span><font></font>
+	{<font></font>
+		_writer.WriteBase64(buffer, offset, count);<font></font>
+	}<font></font>
+	<font></font>
+	&lt;...&gt;<font></font>
+}</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">誘導されたGC</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+神秘的な誘導ガベージコレクションを処理してみましょう。</font><font style="vertical-align: inherit;">GC.Collect呼び出しについてコードを10回再確認しましたが、これは機能しませんでした。</font><font style="vertical-align: inherit;">私はこれらのイベントをPerfViewでキャッチすることができましたが、コールスタックはあまり指標ではありません（DotNETRuntime / GC / Triggered event）：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ye/j0/qg/yej0qglbieyx_tg05hdgutajhmc.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+小さな手がかり-誘導されたガベージコレクションの前にRecycleLimitMonitor.RaiseRecycleLimitEventを呼び出します。</font><font style="vertical-align: inherit;">RaiseRecycleLimitEventメソッドの呼び出しのスタックをトレースしてみましょう。</font></font><br>
+<br>
+<pre><code class="cs hljs">RecycleLimitMonitor.RaiseRecycleLimitEvent(...)<font></font>
+RecycleLimitMonitor.RecycleLimitMonitorSingleton.AlertProxyMonitors(...)<font></font>
+RecycleLimitMonitor.RecycleLimitMonitorSingleton.CollectInfrequently(...)<font></font>
+RecycleLimitMonitor.RecycleLimitMonitorSingleton.PBytesMonitorThread(...)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+メソッドの名前は、その機能に対応しています。</font></font><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RecycleLimitMonitor.RecycleLimitMonitorSingletonのコンストラクターでは、一定の間隔でPBytesMonitorThreadを呼び出すタイマーが作成されます。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PBytesMonitorThreadは、メモリ使用量に関する統計を収集し、特定の状況下ではCollectInfrequencyを呼び出します。</font></font><br>
+</li>
+<li>CollectInfrequently  AlertProxyMonitors,    bool,   GC.Collect(),   true.     ,      ,      .<br>
+</li>
+<li>AlertProxyMonitors     IIS -,      RecycleLimitMonitor,   RaiseRecycleLimitEvent.<br>
+</li>
+<li>RaiseRecycleLimitEvent   IObserver&lt;RecycleLimitInfo&gt;.      RecycleLimitInfo,       RequestGC,     CollectInfrequently,    .<br>
+</li>
+</ul><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さらに調査すると、IObserver &lt;RecycleLimitInfo&gt;ハンドラーが、AspNetMemoryMonitor.Subscribe（）メソッドで呼び出されるRecycleLimitMonitor.Subscribe（）メソッドに追加されていることがわかります。また、デフォルトのIObserver &lt;RecycleLimitInfo&gt;ハンドラー（RecycleLimitObserverクラス）は、ASP.NETキャッシュをクリーンアップし、場合によってはガベージコレクションを要求するAspNetMemoryMonitorクラスでハングアップします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+誘導GCのなぞなぞはほぼ解決されました。</font><font style="vertical-align: inherit;">なぜこのガベージコレクションが呼び出されるのかという疑問を見つけることはまだ残っています。</font><font style="vertical-align: inherit;">RecycleLimitMonitorはIISメモリの使用（より正確にはプライベートバイト数）を監視し、その使用が特定の制限に近づくと、やや混乱を招くアルゴリズムによって開始され、RaiseRecycleLimitEventイベントを発生させます。</font><font style="vertical-align: inherit;">AspNetMemoryMonitor.ProcessPrivateBytesLimitの値はメモリ制限として使用され、次のロジックが含まれます。</font></font><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">IISのアプリケーションプールが「プライベートメモリ制限（KB）」に設定されている場合、キロバイト単位の値がそこから取得されます。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それ以外の場合、64ビットシステムの場合、物理メモリの60％が使用されます（32ビットシステムの場合、ロジックはより複雑になります）。</font></font><br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+調査の結論は次のとおりです。ASP.NETはメモリの制限に近づいており、ガベージコレクションを定期的に呼び出し始めています。</font><font style="vertical-align: inherit;">「プライベートメモリ制限（KB）」が設定されていなかったため、ASP.NETは物理メモリの60％に制限されていました。</font><font style="vertical-align: inherit;">タスクマネージャーサーバーで大量の空きメモリが表示され、それで十分であるように見えるという事実によって、問題は覆い隠されました。</font><font style="vertical-align: inherit;">IISのアプリケーションプール設定の「プライベートメモリ制限（KB）」の値を物理メモリの80％に増やしました。</font><font style="vertical-align: inherit;">これにより、ASP.NETはより多くの使用可能なメモリを使用するようになります。</font><font style="vertical-align: inherit;">また、ASP.NETがメモリ使用量の限界に近づいていると次に判断したときに見逃さないように、パフォーマンスカウンター '.NET CLR Memory /＃Induced GC'の監視も追加しました。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">繰り返し測定</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらの変更をすべて行った後、ガベージコレクションで何が起こったかを見てみましょう。</font><font style="vertical-align: inherit;">まず、perfview / GCCollectOnly（トレース時間-1時間）、GCStatsレポートから始めましょう。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/8b/l3/fn/8bl3fnxpuymka28coyzbo0r5ak4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第2世代のアセンブリは、0番目と1番目のアセンブリよりも2桁小さいことが</font><font style="vertical-align: inherit;">わかり</font><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">また、これらのアセンブリの時間が短縮されました。</font><font style="vertical-align: inherit;">誘発されたアセンブリはもはや観察されません。</font><font style="vertical-align: inherit;">第2世代のアセンブリのリストを見てみましょう</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mx/oy/tv/mxoytvprkypunnhwtao6o6fboai.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。Gen列から</font><font style="vertical-align: inherit;">、第2世代の</font><font style="vertical-align: inherit;">すべてのアセンブリが背景になっていることは明らかです（「2B」は第2世代、背景を意味します）。</font><font style="vertical-align: inherit;">つまり、ほとんどの作業はアプリケーションの実行と並行して実行され、すべてのスレッドが短時間ブロックされます（「一時停止MSec」）。</font><font style="vertical-align: inherit;">大きなオブジェクトを作成するときの一時停止を見てみましょう</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/qp/04/hp/qp04hpcq35buinfnfjn5uuudnyg.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。大きなオブジェクトを作成するときの一時停止の数が大幅に減少していることがわかります。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">概要</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+記事に記載されている変更のおかげで、第2世代のアセンブリの数と期間を大幅に減らすことができました。私は何とか誘発されたアセンブリの原因を見つけ、それらを取り除くことができました。第0世代と第1世代のアセンブリの数は増加しましたが、それらの平均期間は減少しました（約200ミリ秒から約60ミリ秒）。 0世代と1世代のアセンブリの最大期間は減少しましたが、それほど顕著ではありませんでした。第2世代のアセンブリが高速になり、最大1000ミリ秒の長いポーズが完全になくなりました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+主要な指標である「遅いクエリの割合」は、すべての変更後に40％減少しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちの作業のおかげで、メモリとガベージコレクションで状況を評価するためにどのパフォーマンスカウンターが必要かを認識し、Zabbixに追加して継続的な監視を行いました。</font><font style="vertical-align: inherit;">以下は、注意を払い、その理由を見つける最も重要なもののリストです（たとえば、要求のフローの増加、大量の送信データ、アプリケーションのバグ）。</font></font><br>
+<div class="scrollable-table"><table>
+<tbody><tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パフォーマンスカウンター</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">説明</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意すべき時</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">\プロセス（*）\プライベートバイト</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">アプリケーションに割り当てられたメモリの量</font></font></td>
+<td rowspan="3"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">値がしきい値をはるかに超えています。</font><font style="vertical-align: inherit;">しきい値として、1日の最大値から2週間の中央値を取ることができます。</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">\ .NET CLRメモリ（*）\＃Gen 2コレクション</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">古い世代のメモリの量</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">\ .NET CLRメモリ（*）\ラージオブジェクトヒープサイズ</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ラージオブジェクトのメモリ量</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">\ .NET CLRメモリ（*）\％GCの時間</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ごみの収集に費やされた時間の割合</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">値は5％以上です。</font></font></td>
+</tr>
+<tr>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">\ .NET CLRメモリ（*）\＃誘導GC</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">誘導されたアセンブリの数</font></font></td>
+<td><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">値は0より大きいです。</font></font></td>
+</tr>
+</tbody></table></div></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja452284/index.html">eo-learnを使用した土地被覆の分類。パート1</a></li>
+<li><a href="../ja452288/index.html">状況：サブスクライバージオデータの違法取引で告発された米国の携帯電話会社</a></li>
+<li><a href="../ja452290/index.html">PHDaysで銀行を破るときにハッカーが見逃すもの</a></li>
+<li><a href="../ja452294/index.html">ウェビナー「従業員-バックドア：ソーシャルエンジニアリングの最新技術」</a></li>
+<li><a href="../ja452296/index.html">Positive Hack Days 9：競争情報コンテスト5月18日</a></li>
+<li><a href="../ja452302/index.html">PyConRu-2019予備プログラム：2人のPythonコア開発者、Anaconda、Intel、JetBrains、Yandexのスピーカー</a></li>
+<li><a href="../ja452304/index.html">詩、記事、ニュースを書くことを学んだOpenAI AI</a></li>
+<li><a href="../ja452306/index.html">フィンテックはどこへ行くのか、どのように単位経済を数えるのか、そしてなぜ国内起業家を育成するのか。ミタップ・ヤンデックス・マネー</a></li>
+<li><a href="../ja452312/index.html">英国の通信は加入者に切断のための補償を支払います</a></li>
+<li><a href="../ja452314/index.html">Cogmindの例に関するレベルとローグライクのデザイン</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

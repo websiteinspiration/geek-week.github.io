@@ -1,0 +1,391 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>😽 🗺️ 🥗 すべてのMS SQL Serverデータベースを別のマシンに転送する 🔫 👩🏽‍🤝‍👩🏼 👙</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="最近、すべてのデータベース（SQL Serverの1つのインスタンスで50を超える）を開発環境から別のハードウェアにあるSQL Serverの別のインスタンスに転送する必要がありました。手作業を最小限に抑え、できるだけ早くすべてを実行したいと考えていました。
+ 
+ 免責事項
+ スクリプトは1つの特定...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>すべてのMS SQL Serverデータベースを別のマシンに転送する</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/488478/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最近、すべてのデータベース（SQL Serverの1つのインスタンスで50を超える）を開発環境から別のハードウェアにあるSQL Serverの別のインスタンスに転送する必要がありました。</font><font style="vertical-align: inherit;">手作業を最小限に抑え、できるだけ早くすべてを実行したいと考えていました。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">免責事項</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+スクリプトは1つの特定の状況向けに作成されています。これは開発環境であり、単純な復旧モデルのすべてのデータベース、データファイル、トランザクションログが同じヒープ上にあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下に記載されている内容はすべてこの状況にのみ当てはまりますが、自分で簡単に終了できます（条件）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+スクリプトは新しいSTRING_AGGなどの優れた機能を使用しないため、SQL Server 2008（または2008 R2、バックアップ圧縮がどこに現れたか覚えていません）以降、すべてが機能するはずです。古いバージョンの場合、WITH COMPRESSIONをバックアップコマンドから削除する必要がありますが、ファイルのコピーに時間差がない場合があります。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これは指示ではありません-そのような転送の「方法」。これは、動的SQLでメタデータを使用する方法のデモです。</font></font></b><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もちろん、最も速い方法はディスクシェルフを新しいサーバーに再接続することですが、それは私たちの選択肢ではありませんでした。デタッチ-コピー-アタッチが考慮されましたが、チャネルが非常に狭く、データベースを非圧縮形式で転送するとかなり長い時間がかかるため、適合しませんでした。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その結果、新しいサーバーのボールを圧縮してバックアップを作成し、そこに復元することにしました。古い場所と新しい場所の両方のアイアンは悪くありません。バックアップも悪くありません。時間の増加も悪くありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、「スクリプトジェネレータ」が作成されました。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">DECLARE</span> @unc_backup_path <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'\\newServer\backup_share\'</span>
+	, @local_backup_path <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'E:\Backup\'</span>
+	, @new_data_path <span class="hljs-keyword">as</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'D:\SQLServer\data\'</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">name</span>	
+	, <span class="hljs-string">'BACKUP DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] TO DISK = '''</span> + @unc_backup_path + <span class="hljs-keyword">name</span> + <span class="hljs-string">'.bak'' WITH INIT, COPY_ONLY, STATS = 5;'</span> <span class="hljs-keyword">AS</span> backup_command<font></font>
+	, <span class="hljs-string">'ALTER DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] SET OFFLINE WITH ROLLBACK IMMEDIATE;'</span> <span class="hljs-keyword">AS</span> offline_command<font></font>
+	, <span class="hljs-string">'RESTORE DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] FROM DISK = '''</span> + @local_backup_path + <span class="hljs-keyword">name</span> + <span class="hljs-string">'.bak'' WITH '</span> <font></font>
+		+ (<font></font>
+			<span class="hljs-keyword">SELECT</span> <span class="hljs-string">'MOVE '''</span> + mf.name + <span class="hljs-string">''' TO '''</span> + <font></font>
+				@new_data_path + <span class="hljs-keyword">REVERSE</span>(<span class="hljs-keyword">LEFT</span>(<span class="hljs-keyword">REVERSE</span>(mf.physical_name), <span class="hljs-keyword">CHARINDEX</span>(<span class="hljs-string">'\'</span>, <span class="hljs-keyword">REVERSE</span>(mf.physical_name))<span class="hljs-number">-1</span>)) +
+				<span class="hljs-string">''', '</span>
+			<span class="hljs-keyword">FROM</span> sys.master_files mf
+			<span class="hljs-keyword">WHERE</span> mf.database_id = d.database_id
+			<span class="hljs-keyword">FOR</span> <span class="hljs-keyword">XML</span> <span class="hljs-keyword">PATH</span>(<span class="hljs-string">''</span>)<font></font>
+		) + <span class="hljs-string">'REPLACE, RECOVERY, STATS = 5;'</span> <span class="hljs-keyword">AS</span> restore_command
+<span class="hljs-keyword">FROM</span> sys.databases d
+<span class="hljs-keyword">WHERE</span> database_id &gt; <span class="hljs-number">4</span> <span class="hljs-keyword">AND</span> state_desc = N<span class="hljs-string">'ONLINE'</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+出力では、適切な場所にバックアップを作成し、データベースをオフラインで変換するための既製のコマンドを取得します。これにより、ユーザーは古いサーバーでスクリプトを操作したり、新しいサーバーで受信したバックアップを復元したりできません（すべてのデータファイルとトランザクションログを指定した場所に自動転送します）。 ）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これの問題は、誰かが座ってすべてのスクリプトを順番に実行する必要があるか（バックアップオフラインリカバリ）、または誰かが最初にすべてのバックアップを開始してからすべてのデータベースを切断してからすべてを復元する必要があるということです-アクションは少ないですが、座っている必要がありますそして追跡。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらすべての操作を自動化したかったのです。一方では、すべてが簡単です。すでに既製のコマンドがあり、カーソルで囲んで実行します。そして、原則として、私はそれだけを行い、古いサーバーに新しいサーバーをリンクサーバーとして追加して起動しました。ローカルサーバーでは、コマンドはEXECUTE（@sql_text）を介して実行され、リンクサーバーではEXECUTE（@sql_text）AT [linkedServerName]を介して実行されました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、操作は順次実行されました-ローカルでバックアップし、ローカルデータベースをオフラインで変換し、リンクサーバーに復元しました。すべてが元気になりましたが、バックアップと復元を互いに独立して実行すれば、プロセスを少しスピードアップできるように思えました。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、発明されたカーソルは2つの部分に分割されました。カーソル内の古いサーバーでは、各データベースがバックアップされてオフラインで転送されます。その後、2番目のサーバーは新しいタスクが発生したことを理解し、データベースの復元を実行する必要があります。</font><font style="vertical-align: inherit;">このメカニズムを実装するために、リンクサーバーのテーブルのレコードと無限ループ（停止基準を思い付くのが面倒だった）を使用しました。これは、新しいレコードがあるかどうかを確認し、何かがある場合は何かを復元しようとしています。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">決定</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+古いサーバーでは、グローバル一時テーブル## CommandListが作成されてデータが入力され、すべてのコマンドが収集され、バックアップのステータスを同じ場所で追跡することができます。</font><font style="vertical-align: inherit;">テーブルはグローバルなので、別のセッションからいつでも、そこで何が起こっているかを確認できます。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">DECLARE</span> @unc_backup_path <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'D:\SQLServer\backup\'</span> <span class="hljs-comment">--       </span>
+	, @local_backup_path <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'D:\SQLServer\backup\'</span>	<span class="hljs-comment">--        </span>
+	, @new_data_path <span class="hljs-keyword">as</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>) = <span class="hljs-string">'D:\SQLServer\data\'</span>;		<span class="hljs-comment">--      ,    </span><font></font>
+<font></font>
+<span class="hljs-keyword">SET</span> NOCOUNT <span class="hljs-keyword">ON</span>;<font></font>
+<font></font>
+IF OBJECT_ID ('tempdb..<span class="hljs-comment">##CommandList', 'U') IS NULL</span>
+	<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> <span class="hljs-comment">##CommandList (</span>
+		dbName sysname <span class="hljs-keyword">unique</span>			<span class="hljs-comment">-- </span>
+		, backup_command <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)	<span class="hljs-comment">--   </span>
+		, offline_command <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)	<span class="hljs-comment">--        </span>
+		, restore_command <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)	<span class="hljs-comment">--       </span>
+		, processed <span class="hljs-built_in">bit</span>				<span class="hljs-comment">-- : NULL -  , 0 -  , 1 - </span>
+		, start_dt datetime			<span class="hljs-comment">--  </span>
+		, finish_dt datetime			<span class="hljs-comment">--  </span>
+		, error_msg <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)		<span class="hljs-comment">--  ,  </span><font></font>
+	);<font></font>
+<font></font>
+<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> <span class="hljs-comment">##CommandList (dbname, backup_command, offline_command, restore_command)</span>
+<span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">name</span>	
+	, <span class="hljs-string">'BACKUP DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] TO DISK = '''</span> + @unc_backup_path + <span class="hljs-keyword">name</span> + <span class="hljs-string">'.bak'' WITH INIT, COPY_ONLY, STATS = 5;'</span> <span class="hljs-keyword">AS</span> backup_command <span class="hljs-comment">-- INIT -      </span>
+	, <span class="hljs-string">'ALTER DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] SET OFFLINE WITH ROLLBACK IMMEDIATE;'</span> <span class="hljs-keyword">AS</span> offline_command<font></font>
+	, <span class="hljs-string">'RESTORE DATABASE ['</span> + <span class="hljs-keyword">name</span> + <span class="hljs-string">'] FROM DISK = '''</span> + @local_backup_path + <span class="hljs-keyword">name</span> + <span class="hljs-string">'.bak'' WITH '</span> <font></font>
+		+ (<font></font>
+			<span class="hljs-keyword">SELECT</span> <span class="hljs-string">'MOVE '''</span> + mf.name + <span class="hljs-string">''' TO '''</span> + <font></font>
+				@new_data_path + <span class="hljs-keyword">REVERSE</span>(<span class="hljs-keyword">LEFT</span>(<span class="hljs-keyword">REVERSE</span>(mf.physical_name), <span class="hljs-keyword">CHARINDEX</span>(<span class="hljs-string">'\'</span>, <span class="hljs-keyword">REVERSE</span>(mf.physical_name))<span class="hljs-number">-1</span>)) +
+				<span class="hljs-string">''', '</span>	
+			<span class="hljs-keyword">FROM</span> sys.master_files mf
+			<span class="hljs-keyword">WHERE</span> mf.database_id = d.database_id
+			<span class="hljs-keyword">FOR</span> <span class="hljs-keyword">XML</span> <span class="hljs-keyword">PATH</span>(<span class="hljs-string">''</span>)<font></font>
+		) + <span class="hljs-string">'REPLACE, RECOVERY, STATS = 5;'</span> <span class="hljs-keyword">AS</span> restore_command	
+<span class="hljs-keyword">FROM</span> sys.databases d
+<span class="hljs-keyword">WHERE</span> database_id &gt; <span class="hljs-number">4</span> 
+	<span class="hljs-keyword">AND</span> state_desc = N<span class="hljs-string">'ONLINE'</span>
+	<span class="hljs-keyword">AND</span> <span class="hljs-keyword">name</span> <span class="hljs-keyword">NOT</span> <span class="hljs-keyword">IN</span> (<span class="hljs-keyword">SELECT</span> dbname <span class="hljs-keyword">FROM</span> <span class="hljs-comment">##CommandList)</span>
+	<span class="hljs-keyword">AND</span> <span class="hljs-keyword">name</span> &lt;&gt; <span class="hljs-string">'Maintenance'</span>;	<span class="hljs-comment">--  linked server -    ,   ,    "linked server"</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そこで何が起こったのか見てみましょう（SELECT * FROM ## CommandList）：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/2d/z7/k3/2dz7k3yvtbryjpasnxt5z0c7ipw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すごい、すべてのコマンドがそこに収集され、必要なすべてのデータベースをバックアップ/復元します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+メンテナンスデータベースが新しいサーバー上に作成され、その中にCommandListテーブルがあり、データベースの復元に関する情報が含まれています。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">USE</span> [Maintenance]
+<span class="hljs-keyword">GO</span><font></font>
+<font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> CommandList (<font></font>
+	dbName sysname <span class="hljs-keyword">unique</span>				<span class="hljs-comment">-- </span>
+	, restore_command <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)		<span class="hljs-comment">--  </span>
+	, processed <span class="hljs-built_in">bit</span>						<span class="hljs-comment">-- </span>
+	, creation_dt datetime <span class="hljs-keyword">DEFAULT</span> <span class="hljs-keyword">GETDATE</span>()	<span class="hljs-comment">--  </span>
+	, start_dt datetime					<span class="hljs-comment">--  </span>
+	, finish_dt datetime					<span class="hljs-comment">--  </span>
+	, error_msg <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)				<span class="hljs-comment">-- ,  </span>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リンクサーバーが古いサーバー上に構成され、SQL Serverの新しいインスタンスを確認しました。</font><font style="vertical-align: inherit;">この投稿で提供されているスクリプトは、私が自宅で作成したもので、新しいインスタンスに煩わされることはありませんでした。スクリプトを使用して、リンクされたサーバーとして自分に接続しました。</font><font style="vertical-align: inherit;">したがって、ここでは同じパスとunc-pathローカルがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、データベースをバックアップするカーソルを宣言して、データベースを切断し、リンクサーバーに復元するコマンドを記述できます。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">DECLARE</span> @dbname <span class="hljs-keyword">AS</span> sysname<font></font>
+	, @backup_cmd <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)<font></font>
+	, @restore_cmd <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>)<font></font>
+	, @offline_cmd <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>);<font></font>
+<font></font>
+<span class="hljs-keyword">DECLARE</span> MoveDatabase <span class="hljs-keyword">CURSOR</span>
+<span class="hljs-keyword">FOR</span> 
+<span class="hljs-keyword">SELECT</span> dbName, backup_command, offline_command, restore_command
+<span class="hljs-keyword">FROM</span> <span class="hljs-comment">##CommandList</span>
+<span class="hljs-keyword">WHERE</span> processed <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>;<font></font>
+<font></font>
+OPEN MoveDatabase;<font></font>
+<font></font>
+FETCH NEXT FROM MoveDatabase INTO @dbname, @backup_cmd, @offline_cmd, @restore_cmd;<font></font>
+<font></font>
+WHILE @@FETCH_STATUS = 0<font></font>
+	<span class="hljs-keyword">BEGIN</span>
+		<span class="hljs-comment">--    ,  :</span>
+		<span class="hljs-comment">--  </span>
+		<span class="hljs-comment">--   -      </span>
+		<span class="hljs-comment">--    ,      </span>
+		<span class="hljs-comment">--     </span><font></font>
+<font></font>
+		<span class="hljs-comment">--    </span>
+		<span class="hljs-keyword">UPDATE</span> <span class="hljs-comment">##CommandList</span>
+		<span class="hljs-keyword">SET</span> start_dt = <span class="hljs-keyword">GETDATE</span>()
+		<span class="hljs-keyword">WHERE</span> dbName = @dbname;<font></font>
+<font></font>
+		<span class="hljs-keyword">BEGIN</span> TRY<font></font>
+			<font></font>
+			RAISERROR (<span class="hljs-string">'  %s'</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>; <span class="hljs-comment">--   messages   </span><font></font>
+			<font></font>
+			<span class="hljs-comment">--  </span><font></font>
+			EXEC (@backup_cmd);<font></font>
+<font></font>
+			RAISERROR ('    %s', 0, 1, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			<span class="hljs-comment">--    -  linked server</span>
+			<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> [(<span class="hljs-keyword">LOCAL</span>)].[Maintenance].[dbo].[CommandList] (dbName, restore_command)
+			<span class="hljs-keyword">VALUES</span> (@dbname, @restore_cmd);<font></font>
+<font></font>
+			RAISERROR (' %s  OFFLINE', 0, 1, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			<span class="hljs-comment">--    </span><font></font>
+			EXEC (@offline_cmd);<font></font>
+<font></font>
+			<span class="hljs-comment">--  ,    </span>
+			<span class="hljs-keyword">UPDATE</span> <span class="hljs-comment">##CommandList</span>
+			<span class="hljs-keyword">SET</span> processed = <span class="hljs-number">0</span>
+				, finish_dt = <span class="hljs-keyword">GETDATE</span>()
+			<span class="hljs-keyword">WHERE</span> dbName = @dbname;<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span> TRY
+		<span class="hljs-keyword">BEGIN</span> CATCH<font></font>
+			<font></font>
+			RAISERROR (<span class="hljs-string">'    %s.   error_msg  ##CommandList'</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			<span class="hljs-comment">--  -   ,      </span>
+			<span class="hljs-keyword">UPDATE</span> <span class="hljs-comment">##CommandList</span>
+			<span class="hljs-keyword">SET</span> processed = <span class="hljs-number">1</span>
+				, finish_dt = <span class="hljs-keyword">GETDATE</span>()<font></font>
+				, error_msg = ERROR_MESSAGE();<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span> CATCH<font></font>
+<font></font>
+		<span class="hljs-keyword">FETCH</span> <span class="hljs-keyword">NEXT</span> <span class="hljs-keyword">FROM</span> MoveDatabase <span class="hljs-keyword">INTO</span> @dbname, @backup_cmd, @offline_cmd, @restore_cmd;
+	<span class="hljs-keyword">END</span><font></font>
+<font></font>
+<span class="hljs-keyword">CLOSE</span> MoveDatabase;<font></font>
+<font></font>
+<span class="hljs-keyword">DEALLOCATE</span> MoveDatabase;<font></font>
+<font></font>
+<span class="hljs-comment">-- </span>
+<span class="hljs-keyword">SELECT</span> dbName<font></font>
+	, <span class="hljs-keyword">CASE</span> processed <span class="hljs-keyword">WHEN</span> <span class="hljs-number">1</span> <span class="hljs-keyword">THEN</span> <span class="hljs-string">''</span> <span class="hljs-keyword">WHEN</span> <span class="hljs-number">0</span> <span class="hljs-keyword">THEN</span> <span class="hljs-string">''</span> <span class="hljs-keyword">ELSE</span> <span class="hljs-string">' '</span> <span class="hljs-keyword">END</span> <span class="hljs-keyword">as</span> <span class="hljs-keyword">Status</span> <font></font>
+	, start_dt<font></font>
+	, finish_dt<font></font>
+	, error_msg<font></font>
+<span class="hljs-keyword">FROM</span> <span class="hljs-comment">##CommandList</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> start_dt;<font></font>
+<font></font>
+<span class="hljs-keyword">DROP</span> <span class="hljs-keyword">TABLE</span> <span class="hljs-comment">##CommandList;</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+各アクションはSSMSの[メッセージ]タブで「ログに記録」されます。そこで、現在のアクションを確認できます。</font><font style="vertical-align: inherit;">RAISERRORでWITH LOGを使用する場合、原則として、すべてを何らかのジョブに入れてからログを確認できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実行時に、## CommandListにアクセスして、何がどのように行われているかを表形式で確認できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+新しいサーバーで並行して、無限ループが回転していました。</font></font><br>
+<br>
+<pre><code class="sql hljs">
+<span class="hljs-keyword">SET</span> NOCOUNT <span class="hljs-keyword">ON</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">DECLARE</span> @dbname <span class="hljs-keyword">AS</span> sysname<font></font>
+	, @restore_cmd <span class="hljs-keyword">AS</span> <span class="hljs-built_in">varchar</span>(<span class="hljs-keyword">max</span>);<font></font>
+<font></font>
+WHILE 1 = 1	<span class="hljs-comment">--   ,    </span>
+<span class="hljs-keyword">BEGIN</span>
+	<span class="hljs-keyword">SELECT</span> TOP <span class="hljs-number">1</span> @dbname = dbName, @restore_cmd = restore_command 
+	<span class="hljs-keyword">FROM</span> CommandList
+	<span class="hljs-keyword">WHERE</span> processed <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>; <span class="hljs-comment">--    ,  </span><font></font>
+<font></font>
+	IF @dbname IS NOT NULL <font></font>
+	<span class="hljs-keyword">BEGIN</span>
+		<span class="hljs-comment">--    </span>
+		<span class="hljs-keyword">UPDATE</span> CommandList
+		<span class="hljs-keyword">SET</span> start_dt = <span class="hljs-keyword">GETDATE</span>()
+		<span class="hljs-keyword">WHERE</span> dbName = @dbname;<font></font>
+<font></font>
+		RAISERROR('  %s', 0, 1, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+		<font></font>
+		<span class="hljs-keyword">BEGIN</span> TRY<font></font>
+<font></font>
+			<span class="hljs-comment">--  ,  -  ,  CATCH    </span><font></font>
+			EXEC (@restore_cmd);<font></font>
+<font></font>
+			<span class="hljs-comment">--   </span>
+			<span class="hljs-keyword">UPDATE</span> CommandList
+			<span class="hljs-keyword">SET</span> processed = <span class="hljs-number">0</span>
+				, finish_dt = <span class="hljs-keyword">GETDATE</span>()
+			<span class="hljs-keyword">WHERE</span> dbName = @dbname;<font></font>
+<font></font>
+			RAISERROR(' %s  ', 0, 1, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span> TRY
+		<span class="hljs-keyword">BEGIN</span> CATCH<font></font>
+<font></font>
+			RAISERROR(<span class="hljs-string">'    %s'</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>, @dbname) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			<span class="hljs-keyword">UPDATE</span> CommandList 
+			<span class="hljs-keyword">SET</span> processed = <span class="hljs-number">1</span>
+				, finish_dt = <span class="hljs-keyword">GETDATE</span>()<font></font>
+				, error_msg = ERROR_MESSAGE();<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span> CATCH<font></font>
+<font></font>
+	<span class="hljs-keyword">END</span>
+	<span class="hljs-keyword">ELSE</span>	<span class="hljs-comment">--   ,    </span>
+		<span class="hljs-keyword">BEGIN</span><font></font>
+<font></font>
+			RAISERROR(<span class="hljs-string">'waiting'</span>, <span class="hljs-number">0</span>, <span class="hljs-number">1</span>) <span class="hljs-keyword">WITH</span> <span class="hljs-keyword">NOWAIT</span>;<font></font>
+<font></font>
+			WAITFOR DELAY '00:00:30';<font></font>
+<font></font>
+		<span class="hljs-keyword">END</span><font></font>
+		<font></font>
+	<span class="hljs-keyword">SET</span> @dbname = <span class="hljs-literal">NULL</span>;
+	<span class="hljs-keyword">SET</span> @restore_cmd = <span class="hljs-literal">NULL</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">END</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+彼が行うすべてのこと-CommandListテーブルを調べ、そこに少なくとも1つの未加工レコードがある場合-データベース名と復元するコマンドを取り、EXEC（@sql_text）;を使用してそれを実行しようとします。</font><font style="vertical-align: inherit;">エントリがない場合は、30秒待ってから再試行してください。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+カーソルとループの両方が各レコードを1回だけ処理します。</font><font style="vertical-align: inherit;">うまくいきませんでしたか？</font><font style="vertical-align: inherit;">エラーメッセージをテーブルに書き込み、ここには戻りません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+停止の条件について-私は実際には怠惰でした。</font><font style="vertical-align: inherit;">入力中に、少なくとも3つの解決策を思い付きました-オプションとして、「リカバリの準備ができて\リカバリの準備ができていません\完了」フラグを追加し、古いサーバーの## CommandListに入力してカーソル内のフラグを更新するときに、データベースとコマンドのリストにすぐに入力します。</font><font style="vertical-align: inherit;">「リカバリの準備ができたレコード」が残っていない場合は、作業の全量がすぐにわかるため、停止します。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">調査結果</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、結論はありません。メタデータを使用して動的SQLを作成および実行する方法を見ると、誰かにとって便利で興味深いかもしれません。投稿で提供されているスクリプトはそのままでは製品版での使用には適していませんが、ログシッピング/データベースミラーリング/可用性グループの大規模なカスタマイズなどのために、それらをわずかに完成させて使用することができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ボールのバックアップを実行する場合、SQL Serverを実行しているアカウントには、そこに書き込む権限が必要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リンクサーバーの作成は投稿（GUIのマウスは数分で直感的に設定されます）と新しいサーバーへのログインの転送では公開されていません。</font><font style="vertical-align: inherit;">ユーザーの移行を経験したことのある人は、SQLログインを再作成するだけではあまり役に立たないことを知っています。これは、データベースユーザーが接続するSIDを持っているためです。</font><font style="vertical-align: inherit;">現在のパスワードと正しいsidでSQLログインを生成するためのスクリプトは</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">msdnにあり</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja488468/index.html">FastAPIの紹介</a></li>
+<li><a href="../ja488470/index.html">キム・ドットコム：キャッチ、オンラインで最も欲しい人。パート4</a></li>
+<li><a href="../ja488472/index.html">週末の読書：ソビエトのカーラジオからノイズキャンセリングプラグまで、オーディオガジェットに関する10の資料</a></li>
+<li><a href="../ja488474/index.html">色、音、そして「群衆探検」について別の美しいものとして</a></li>
+<li><a href="../ja488476/index.html">テスラチューブコイル</a></li>
+<li><a href="../ja488480/index.html">「怠惰な」手で「豊かな」人のためのスマートなランプ、それは「シンプル」で便利です</a></li>
+<li><a href="../ja488482/index.html">人々のためのアピウムはいくらですか</a></li>
+<li><a href="../ja488484/index.html">SQL Launch-Microsoft SQL Server 2019イベント</a></li>
+<li><a href="../ja488488/index.html">OpenBSDの場合。少しの喜び</a></li>
+<li><a href="../ja488490/index.html">呼吸器のLikbez。人工呼吸器はウイルス感染に役立ちますか？11マスクの概要</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,382 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📷 👦🏼 🛣️ フェールオーバークラスターPostgreSQL + Patroni。実装経験 🙍🏼 👍🏻 👳</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="この記事では、PostgreSQLのフォールトトレランスの問題への取り組み方、これがなぜ私たちにとって重要になったのか、そして最後に何が起こったのかを説明します。
+ 
+ 私たちは非常に負荷の高いサービスを提供しています：全世界で250万人のユーザー、毎日5万人以上のアクティブユーザー。サーバーはアイ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>フェールオーバークラスターPostgreSQL + Patroni。実装経験</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/miro/blog/457326/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この記事では、PostgreSQLのフォールトトレランスの問題への取り組み方、これがなぜ私たちにとって重要になったのか、そして最後に何が起こったのかを説明します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちは非常に負荷の高いサービスを提供しています：全世界で250万人のユーザー、毎日5万人以上のアクティブユーザー。</font><font style="vertical-align: inherit;">サーバーはアイルランドの1つの地域のAmazoneにあります。常時稼働しているサーバーは常に100以上あり、そのうち約50台がデータベースを備えています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バックエンド全体は、クライアントへの一定のWebSocket接続を維持する、大規模でモノリシックなステートフルJavaアプリケーションです。</font><font style="vertical-align: inherit;">1つのボード上で複数のユーザーが同時に作業すると、データベースにそれぞれの変更が記録されるため、すべてのユーザーがリアルタイムで変更を確認できます。</font><font style="vertical-align: inherit;">データベースに対して毎秒約10Kのクエリがあります。</font><font style="vertical-align: inherit;">Redisのピーク負荷時に、1秒あたり80〜100Kクエリで書き込みます。</font></font><br>
+<img src="https://habrastorage.org/webt/ef/pn/er/efpner_0rhtuim1zt0gwrhff3b8.png"><br>
+<a name="habracut"></a><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RedisからPostgreSQLに切り替えた理由</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちのサービスは当初、すべてのデータをサーバーのRAMに格納するキーバリューリポジトリであるRedisと連携していました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redisの長所：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">高い応答率、</font><font style="vertical-align: inherit;">すべてがメモリに保存されます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バックアップとレプリケーションの利便性。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+短所Redisの場合：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">実際の取引はありません。</font><font style="vertical-align: inherit;">アプリケーションのレベルでそれらをシミュレートしようとしました。</font><font style="vertical-align: inherit;">残念ながら、これは常にうまくいくとは限らず、非常に複雑なコードを書く必要がありました。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データの量は、メモリの量によって制限されます。</font><font style="vertical-align: inherit;">データ量が増えるとメモリが増え、最終的に選択したインスタンスの特性に遭遇します。AWSでは、インスタンスのタイプを変更するためにサービスを停止する必要があります。</font></font></li>
+<li>     latency, ..      .      — 17-20 ms.   30-40 ms           .  ,       2018 ,      Redis -  latency  2   .             maintenance     Redis.</li>
+<li>                     .</li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちは不利な点を考慮に入れ、通常のトランザクションと待ち時間への依存が少ない、より便利なものに移行する必要があることに気付きました。</font><font style="vertical-align: inherit;">調査を実施し、多くのオプションを分析してPostgreSQLを選択しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1.5年前から新しいデータベースに移行しており、データのごく一部しか転送していないため、RedisとPostgreSQLを同時に使用しています。</font><font style="vertical-align: inherit;">データベース間でデータを移動および切り替える段階の詳細については</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、私の同僚の記事に記載されてい</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+移行を始めたばかりの頃、アプリケーションはデータベースと直接連携し、RedisおよびPostgreSQLウィザードに切り替えました。</font><font style="vertical-align: inherit;">PostgreSQLクラスターは、マスターと非同期レプリカのレプリカで構成されていました。</font><font style="vertical-align: inherit;">これは、データベース操作スキームがどのように見えるかです。</font></font><br>
+<img src="https://habrastorage.org/webt/wc/wg/ef/wcwgefzqham9mw7hm-5xc37pfp0.png"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PgBouncerの導入</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちが移動している間に、製品も開発されました：PostgreSQLで動作するユーザー数とサーバー数が増加し、接続が失われ始めました。 PostgreSQLは接続ごとに個別のプロセスを作成し、リソースを消費します。接続の数を特定のポイントまで増やすことができます。そうしないと、データベース操作が最適化されない可能性があります。この状況での理想的なオプションは、基地の前に立つ接続マネージャーの選択です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接続マネージャには、PgpoolとPgBouncerの2つのオプションがありました。ただし、1つ目はデータベースを操作するトランザクションモードをサポートしていないため、PgBouncerを選択しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次の作業スキームを設定しました。アプリケーションは1つのPgBouncerにアクセスし、次にマスターPostgreSQLにアクセスし、各マスターの背後に非同期レプリケーションを備えた1つのレプリカにアクセスします。</font></font><br>
+<img src="https://habrastorage.org/webt/ql/uq/vh/qluqvh64yeyzwvow79wc3tt0nm0.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同時に、すべてのデータをPostgreSQLに保存することはできなかったため、データベースの操作速度が重要であったため、PostgreSQLをアプリケーションレベルでシャーディングし始めました。</font><font style="vertical-align: inherit;">上記のスキームはこれに比較的便利です。新しいPostgreSQLシャードを追加する場合、PgBouncer構成を更新するだけで十分であり、アプリケーションは新しいシャードですぐに機能します。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PgBouncerフォールトトレランス</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このスキームは、唯一のPgBouncerインスタンスが死ぬまで機能しました。私たちはAWSにあり、すべてのインスタンスは定期的に停止するハードウェアで実行されています。このような場合、インスタンスは新しいハードウェアに移動し、再び機能します。これはPgBouncerで発生しましたが、使用できなくなりました。この秋の結果、25分間サービスにアクセスできなくなりました。 AWSでは、そのような状況ではユーザー側で冗長性を使用することをお勧めします。これは、現時点では実装されていません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その後、PgBouncerとPostgreSQLクラスターのフォールトトレランスについて真剣に考えました。AWSアカウントのどのインスタンスでも同様の状況が発生する可能性があるためです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PgBouncerフォールトトレランススキームを次のように構築しました。すべてのアプリケーションサーバーがネットワークロードバランサーにアクセスし、その背後に2つのPgBouncerがあります。</font><font style="vertical-align: inherit;">各PgBouncerは、各シャードの同じマスターPostgreSQLを調べます。</font><font style="vertical-align: inherit;">AWSインスタンスが再びクラッシュすると、すべてのトラフィックが別のPgBouncerを介してリダイレクトされます。</font><font style="vertical-align: inherit;">Network Load BalancerはAWSに耐障害性を提供​​します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このスキームにより、新しいPgBouncerサーバーを簡単に追加できます。</font></font><br>
+<img src="https://habrastorage.org/webt/05/uc/da/05ucdayudomunfsxjc_gggs5abe.png"><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQLフェイルオーバークラスターの作成</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この問題を解決するにあたり、私たちはさまざまなオプションを検討しました：自己記述型フェイルオーバー、repmgr、AWS RDS、Patroni。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">自己記述スクリプト</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+マスターの作業を監視し、障害が発生した場合はレプリカをマスターに昇格させ、PgBouncerの構成を更新できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このアプローチの利点は、スクリプトを自分で作成し、そのしくみを正確に理解できるため、最大限の単純さです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+マイナス：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ウィザードは停止しない場合があり、代わりにネットワーク障害が発生する場合があります。</font><font style="vertical-align: inherit;">これを認識していないフェイルオーバーは、レプリカをマスターに進め、古いマスターは引き続き機能します。</font><font style="vertical-align: inherit;">その結果、マスターの役割で2つのサーバーが取得され、どのサーバーに最新の関連データがあるかがわかりません。</font><font style="vertical-align: inherit;">この状況はスプリットブレインとも呼ばれます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私たちはレプリカなしで残されました。</font><font style="vertical-align: inherit;">この構成では、マスターと1つのレプリカを切り替えた後、レプリカがマスターに進み、レプリカがなくなったため、新しいレプリカを手動で追加する必要があります。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">12個のPostgreSQLシャードがあるため、フェイルオーバーの追加の監視が必要です。つまり、12個のクラスターを監視する必要があります。</font><font style="vertical-align: inherit;">シャードの数を増やしても、フェイルオーバーを更新することを忘れないでください。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+自己作成のフェイルオーバーは非常に複雑に見え、重要なサポートが必要です。</font><font style="vertical-align: inherit;">単一のPostgreSQLクラスターでは、これが最も簡単なオプションですが、スケーリングされないため、私たちには適していません。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Repmgr</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PostgreSQLクラスターのレプリケーションマネージャー。PostgreSQLクラスターの操作を管理できます。</font><font style="vertical-align: inherit;">同時に、「すぐに使える」自動フェイルオーバーがないため、作業のために、完成したソリューションの上に独自の「ラッパー」を作成する必要があります。</font><font style="vertical-align: inherit;">したがって、すべてが自己記述型のスクリプトよりもさらに複雑になる可能性があるため、Repmgrを使用することすらしませんでした。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AWS RDS</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それは私たちに必要なすべてをサポートし、バックアップする方法を知っており、接続プールをサポートしています。</font><font style="vertical-align: inherit;">これには自動切り替えがあります。マスターが停止すると、レプリカが新しいマスターになり、AWSはdnsレコードを新しいマスターに変更しますが、レプリカは異なるAZに置くことができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+欠点は、微妙な設定がないことです。</font><font style="vertical-align: inherit;">微調整の例として：私たちのインスタンスではtcp接続に制限がありますが、残念ながらRDSでは実行できません。</font></font><br>
+<br>
+<pre><code class="python hljs">net.ipv4.tcp_keepalive_time=<span class="hljs-number">10</span>
+net.ipv4.tcp_keepalive_intvl=<span class="hljs-number">1</span>
+net.ipv4.tcp_keepalive_probes=<span class="hljs-number">5</span>
+net.ipv4.tcp_retries2=<span class="hljs-number">3</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さらに、AWS RDSの価格は通常のインスタンスの価格のほぼ2倍であり、これがこの決定を拒否した主な理由でした。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パトロニ</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは、優れたドキュメント、自動フェイルオーバー、およびgithubソースコードを備えたPostgreSQLを管理するためのpythonテンプレートです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+パトロニの長所：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それぞれの構成パラメータはペイントされており、どのように機能するかは明らかです。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">自動フェイルオーバーはそのまま使用できます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それはpythonで書かれており、私たちは自分自身でpythonで多くを書くので、問題に対処し、おそらくプロジェクトの開発を助けることさえも簡単になります。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQLを完全に制御し、クラスターのすべてのノードの構成を一度に変更できます。新しい構成を適用するためにクラスターの再起動が必要な場合は、Patroniを使用して再度実行できます。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+マイナス：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ドキュメントからは、PgBouncerの操作方法は明確ではありません。</font><font style="vertical-align: inherit;">マイナスと呼ぶのは難しいですが、Patroniの仕事はPostgreSQLを管理することであり、Patroniへの接続がどのようになるかが問題です。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大量にPatroniを実装する例はほとんどありませんが、ゼロから実装する例はたくさんあります。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その結果、フェールオーバークラスターを作成するためにPatroniを選択しました。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パトロニ実装プロセス</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Patroni以前は、12個のPostgreSQLシャードが構成されていました。1つはマスターで、もう1つは非同期レプリケーションを備えたレプリカです。</font><font style="vertical-align: inherit;">アプリケーションサーバーは、ネットワークロードバランサーを介してデータベースにアクセスしました。ネットワークロードバランサーの背後には、PgBouncerを備えた2つのインスタンスがあり、すべてのPostgreSQLサーバーがその背後にありました。</font></font><br>
+<img src="https://habrastorage.org/webt/05/uc/da/05ucdayudomunfsxjc_gggs5abe.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Patroniを実装するには、分散クラスター構成リポジトリーを選択する必要がありました。</font><font style="vertical-align: inherit;">Patroniは、etcd、Zookeeper、onsulなどの分散構成ストレージシステムで動作します。</font><font style="vertical-align: inherit;">製品版には、Vaultと連携して動作する本格的なConsulクラスタがあり、もう使用していません。</font><font style="vertical-align: inherit;">意図した目的でConsulを使い始める大きな理由。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Patroniが領事と連携する方法</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+3つのノードで構成されるConsulクラスターと、リーダーとレプリカで構成されるPatroniクラスターがあります（Patroniでは、マスターはクラスターリーダーと呼ばれ、スレーブはレプリカと呼ばれます）。</font><font style="vertical-align: inherit;">Patroniクラスターの各インスタンスは常にクラスターステータス情報をConsulに送信します。</font><font style="vertical-align: inherit;">したがって、Consulからは常に、Patroniクラスターの現在の構成と、現時点でのリーダーを見つけることができます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/jx/j5/is/jxj5ispkzoegn8x80dw-qtynw3q.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PatroniをConsulに接続するには、公式ドキュメントを検討するだけで十分です。これは、ホストをhttpまたはhttps形式で指定する必要があることを示しています。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">host: the host:port for the Consul endpoint, in format: http(s)://host:port<font></font>
+scheme: (optional) http or https, defaults to http</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+シンプルに見えますが、ここで落とし穴が始まります。</font><font style="vertical-align: inherit;">Consulでは、httpsを介した安全な接続に取り組んでおり、接続構成は次のようになります。</font></font><br>
+<br>
+<pre><code class="python hljs">consul:<font></font>
+  host: https://server.production.consul:<span class="hljs-number">8080</span> <font></font>
+  verify: true<font></font>
+  cacert: {{ consul_cacert }}<font></font>
+  cert: {{ consul_cert }}<font></font>
+  key: {{ consul_key }}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、それはうまくいきません。</font><font style="vertical-align: inherit;">とにかく、パトロニはhttpを追跡しようとするため、領事に接続できません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Patroniのソースコードは問題の処理に役立ちました。</font><font style="vertical-align: inherit;">Pythonで書かれているのは良いことです。</font><font style="vertical-align: inherit;">ホストパラメータがまったく解析されないことがわかり、プロトコルをスキームで指定する必要があります。</font><font style="vertical-align: inherit;">以下は、Consulを使用して作業するための構成ブロックです。</font></font><br>
+<br>
+<pre><code class="python hljs">consul:<font></font>
+  host: server.production.consul:<span class="hljs-number">8080</span><font></font>
+  scheme: https<font></font>
+  verify: true<font></font>
+  cacert: {{ consul_cacert }}<font></font>
+  cert: {{ consul_cert }}<font></font>
+  key: {{ consul_key }}</code></pre><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">領事テンプレート</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、構成用のストレージを選択しました。ここで、Patroniクラスターのリーダーを変更するときにPgBouncerがその構成を切り替える方法を理解する必要があります。ドキュメントはこの質問に答えません、なぜならそこでは、原則として、PgBouncerでの作業は説明されていません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+解決策を探したところ、ConsulテンプレートがPgBouncerとPatroniを接続するのに大いに役立つと書かれた記事（残念ながら、名前を覚えていません）を見つけました。これにより、領事テンプレートの研究を検討するようになりました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Consul-templateは、Consul内のPostgreSQLクラスターの構成を常に監視していることがわかりました。リーダーが変更されると、PgBouncer構成を更新し、それを再起動するコマンドを送信します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/iv/_f/j-/iv_fj-sjbnqtfabqlnmu986sa0o.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テンプレートの大きなプラスは、それがコードとして保存されることです。そのため、新しいシャードを追加するときは、新しいコミットを作成してテンプレートを自動モードで更新するだけで十分であり、インフラストラクチャの原則をコードとしてサポートします。 </font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Patroniによる新しいアーキテクチャ</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その結果、この作業スキームが得られました：</font></font><br>
+<img src="https://habrastorage.org/webt/7b/-m/-v/7b-m-vyorrbbuognzt2qx2-fymm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてのアプリケーションサーバーがバランサーに切り替えます→2つのインスタンスPgBouncerがその背後にあります→各インスタンスに、各Patroniクラスターのステータスを監視し、PgBouncer構成の関連性を監視するonsul-templateがあり、それぞれの現在のリーダーにリクエストを送信しますクラスター。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">手動テスト</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プログラムを起動する前に、小規模なテスト環境でこのスキームを起動し、自動切り替えの動作を確認しました。</font><font style="vertical-align: inherit;">彼らはボードを開き、ステッカーを動かし、その時点でクラスターのリーダーを「殺した」。</font><font style="vertical-align: inherit;">AWSでは、コンソールからインスタンスをオフにするだけです。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ly/yf/aj/lyyfaj6bxodfoaqrsds5j00ycnw.gif"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ステッカーは10〜20秒以内に戻り、再び正常に動き始めました。</font><font style="vertical-align: inherit;">これは、Patroniクラスターが正しく機能したことを意味します。リーダーを変更し、情報をConsulに送信し、Consul-templateはすぐにこの情報を取得し、PgBouncer構成を置き換えて、リロードするコマンドを送信しました。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">高負荷の下で生き残り、最小限のダウンタイムを維持する方法は？</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてが完璧に動作します！しかし、新しい質問が発生します。高負荷ではどのように機能しますか？すべてを迅速かつ安全に本番環境に導入するにはどうすればよいですか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+負荷テストを実施するテスト環境は、最初の質問への回答に役立ちます。これは、アーキテクチャの生産と完全に同一であり、生産量と生産量がほぼ等しいテストデータを生成しました。テスト中にPostgreSQLウィザードの1つを「強制終了」して、何が起こるかを確認します。ただし、その前に、自動ローリングを確認することが重要です。この環境には、いくつかのPostgreSQLシャードがあるため、販売する前に構成スクリプトの優れたテストを取得します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+どちらのタスクも意欲的に見えますが、PostgreSQL 9.6を使用しています。多分私達はすぐに11.2にアップグレードしますか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これを2段階で行うことにします。最初に11.2にアップグレードしてから、Patroniを起動します。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQLの更新</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PostgreSQLのバージョンをすばやく更新するには、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-k</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オプションを使用する必要があります</font><font style="vertical-align: inherit;">。これにより、ディスクにハードリンクが作成され、データをコピーする必要がなくなります。</font><font style="vertical-align: inherit;">ベースが300〜400 GBの場合、更新には1秒かかります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+シャードがたくさんあるので、更新は自動的に行われる必要があります。</font><font style="vertical-align: inherit;">これを行うために、更新プロセス全体を実行するAnsibleプレイブックを作成しました。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">/usr/lib/postgresql/11/bin/pg_upgrade \<font></font>
+&lt;b&gt;--link \&lt;/b&gt;<font></font>
+--old-datadir='' --new-datadir='' \<font></font>
+ --old-bindir=''  --new-bindir='' \<font></font>
+ --old-options=' -c config_file=' \<font></font>
+ --new-options=' -c config_file='</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アップグレードを開始する前に、アップグレード</font><font style="vertical-align: inherit;">の可能性を確認</font><font style="vertical-align: inherit;">するために</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">--check</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オプション</font><font style="vertical-align: inherit;">を指定し</font><font style="vertical-align: inherit;">て実行する必要があることに注意してください</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">このスクリプトでは、アップグレードの代わりに構成を使用します。</font><font style="vertical-align: inherit;">30秒で完了したスクリプト。これは素晴らしい結果です。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パトロニを起動する</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2番目の問題を解決するには、Patroniの構成を見てください。公式リポジトリには、Patroniの初回起動時に新しいデータベースを初期化するinitdbの設定例があります。しかし、既製のデータベースがあるので、このセクションを構成から削除しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+既製のPostgreSQLクラスターにPatroniをインストールして実行すると、新しい問題に直面しました。両方のサーバーがリーダーとして開始されました。 Patroniはクラスターの初期状態について何も知らず、両方のサーバーを同じ名前の2つの別個のクラスターとして起動しようとします。この問題を解決するには、スレーブのデータディレクトリを削除する必要があります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rm -rf /var/lib/postgresql/</code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これはスレーブでのみ実行する必要があります！</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クリーンなレプリカを接続すると、Patroniはbasebackupリーダーを作成してレプリカに復元し、wal-logsによって現在の状態に追いつきます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もう1つの問題は、すべてのPostgreSQLクラスターがデフォルトでメインと呼ばれていることです。</font><font style="vertical-align: inherit;">各クラスターが他のクラスターについて何も認識していない場合、これは正常です。</font><font style="vertical-align: inherit;">ただし、Patroniを使用する場合は、すべてのクラスターに一意の名前を付ける必要があります。</font><font style="vertical-align: inherit;">解決策は、PostgreSQL構成でクラスター名を変更することです。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">負荷テスト</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ボード上のユーザーの作業をシミュレートするテストを開始しました。</font><font style="vertical-align: inherit;">負荷が1日の平均値に達したとき、まったく同じテストを繰り返し、PostgreSQLリーダーを使用して1つのインスタンスをオフにしました。</font><font style="vertical-align: inherit;">自動フェイルオーバーは期待どおりに機能しました。Patroniがリーダーを変更し、Consul-templateがPgBouncerの構成を更新して、コマンドを再読み込みに送信しました。</font><font style="vertical-align: inherit;">Grafanaのグラフによると、20〜30秒の遅延と、データベースへの接続に関連するサーバーからの少量のエラーがあることが明らかになりました。</font><font style="vertical-align: inherit;">これは通常の状況であり、そのような値はフェイルオーバーに有効であり、サービスのダウンタイムよりも確実に優れています。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パトロニの生産へのアウトプット</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その結果、私たちは次の計画を得ました。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Consul-templateをPgBouncerサーバーにデプロイして起動します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQLがバージョン11.2に更新されました。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クラスター名の変更。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Patroniクラスターの開始。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同時に、私たちのスキームでは、ほとんどいつでも最初のアイテムを作成できます。各PgBouncerを作業から削除し、デプロイを実行して、その上でconsul-templateを開始できます。だから私たちはしました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すばやくローリングするために、Ansibleを使用しました。テスト環境ですべてのプレイブックを既に確認しており、スクリプト全体の実行時間は各シャードで1.5〜2分でした。サービスを停止せずに、シャードごとにすべてを交互にロールアウトすることができましたが、すべてのPostgreSQLを数分間オフにする必要がありました。この場合、データがこのシャードにあるユーザーは、現時点では完全に機能しておらず、これは受け入れられません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この状況からの脱却は、3か月ごとに行われる計画的なメンテナンスでした。これは、サービスを完全にオフにしてデータベースインスタンスを更新するときのスケジュールされた作業のウィンドウです。次のウィンドウまで1週間残っていたので、待つだけで準備をすることにしました。待機中に、さらにセキュリティを確保しました：シャードごとに、PostgreSQLは最新のデータの保存に失敗した場合に備えてスペアレプリカを生成し、データを削除するコマンドを実行しないように、Patroniクラスターの新しいレプリカになるはずのシャードごとに新しいインスタンスを追加しました。これにより、エラーのリスクを最小限に抑えることができました。</font></font><br>
+<img src="https://habrastorage.org/webt/ps/ge/yh/psgeyhvrazg-zd1nrochwhl1hag.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サービスを再開したところ、すべてが正常に機能し、ユーザーは引き続き作業しましたが、グラフ上で、Consulサーバーの負荷が異常に高いことがわかりました。</font></font><br>
+<img src="https://habrastorage.org/webt/uk/b9/gu/ukb9guaj4wfabq60v262qe098am.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テスト環境で見られなかったのはなぜですか？</font><font style="vertical-align: inherit;">この問題は、テスト環境から本番環境まで、インフラストラクチャの原則をコードとして遵守し、インフラストラクチャ全体を改善する必要があることをよく示しています。</font><font style="vertical-align: inherit;">そうでなければ、私たちが得た種類の問題を取得することは非常に簡単です。</font><font style="vertical-align: inherit;">どうした </font><font style="vertical-align: inherit;">Consulは最初に本番環境に登場し、その後テスト環境に登場したため、テスト環境ではConsulのバージョンが本番環境よりも高くなりました。</font><font style="vertical-align: inherit;">リリースの1つだけで、consul-templateを使用する際のCPUリークが解決されました。</font><font style="vertical-align: inherit;">そのため、私たちはConsulを更新し、問題を解決しました。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Patroniクラスターを再起動します</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、気づいていない新しい問題が発生しました。</font><font style="vertical-align: inherit;">Consulを更新するときは、consul leaveコマンドを使用してConsulノードをクラスターから削除するだけです→Patroniが別のConsulサーバーに接続します→すべてが機能します。</font><font style="vertical-align: inherit;">しかし、Consulクラスターの最後のインスタンスに到達し、それにconsul leaveコマンドを送信すると、すべてのPatroniクラスターが単純に再起動し、ログに次のエラーが表示されました。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">ERROR: get_cluster<font></font>
+Traceback (most recent call last):<font></font>
+...<font></font>
+RetryFailedError: 'Exceeded retry deadline'<font></font>
+ERROR: Error communicating with DCS<font></font>
+&lt;b&gt;LOG: database system is shut down&lt;/b&gt;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Patroniクラスターはそのクラスターに関する情報を取得できず、再起動しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+解決策を見つけるために、githubの問題を通じてPatroniの作者に連絡しました。</font><font style="vertical-align: inherit;">彼らは私たちの設定ファイルの改善を提案しました：</font></font><br>
+<br>
+<pre><code class="python hljs">consul:<font></font>
+ consul.checks: []<font></font>
+bootstrap:<font></font>
+ dcs:<font></font>
+   retry_timeout: <span class="hljs-number">8</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テスト環境で問題を再現し、そこでこれらのパラメーターをテストすることができましたが、残念ながら、それらは機能しませんでした。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+問題はまだ解決されていません。</font><font style="vertical-align: inherit;">次の解決策を試す予定です。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Patroniクラスターの各インスタンスでConsul-agentを使用します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コードの問題を修正します。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+エラーが発生した場所を理解しています。問題は、デフォルトのタイムアウトを使用している可能性があり、これは構成ファイルによってオーバーライドされません。</font><font style="vertical-align: inherit;">最後のConsulサーバーがクラスターから削除されると、このPatroniがクラスターの状態を取得できず、クラスター全体を完全に再起動するため、Consulクラスター全体が1秒以上フリーズします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+幸い、これ以上エラーは発生しませんでした。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Patroniを使用した結果</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Patroniの起動に成功した後、各クラスターにレプリカを追加しました。</font><font style="vertical-align: inherit;">これで、各クラスターには、1つのリーダーと2つのレプリカ-切り替え時にスプリットブレインのケースを防ぐために、クォーラムの類似があります。</font></font><br>
+<img src="https://habrastorage.org/webt/ef/pn/er/efpner_0rhtuim1zt0gwrhff3b8.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Patroniは3か月以上製造に従事しています。</font><font style="vertical-align: inherit;">この間、彼はすでに私たちを助けてくれました。</font><font style="vertical-align: inherit;">最近、いずれかのクラスターのリーダーがAWSで死亡し、自動フェイルオーバーが機能し、ユーザーは引き続き作業しました。</font><font style="vertical-align: inherit;">パトロニは彼の主な仕事を完了しました。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Patroniの使用の簡単な要約：</font></font></b><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">設定変更の利便性。</font><font style="vertical-align: inherit;">1つのインスタンスの構成を変更するだけで十分であり、クラスター全体にプルされます。</font><font style="vertical-align: inherit;">新しい構成を適用するために再起動が必要な場合、Patroniはこれを報告します。</font><font style="vertical-align: inherit;">Patroniは単一のコマンドでクラスター全体を再起動できるため、これも非常に便利です。</font></font></li>
+<li> failover      .</li>
+<li> PostgreSQL   .       ,      Patroni    .       failover.</li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja457308/index.html">セルゲイパブロビッチコロレフの途中。現代ロシア有人プロジェクト。パート2.ロケット</a></li>
+<li><a href="../ja457310/index.html">情報依存の生物学</a></li>
+<li><a href="../ja457312/index.html">集合論入門</a></li>
+<li><a href="../ja457316/index.html">国の約半分を旅行するアルメニアのゲストのために、現実世界のロールプレイングゲームをどのようにアレンジするか</a></li>
+<li><a href="../ja457324/index.html">6月24日から30日までのモスクワでのデジタルイベント</a></li>
+<li><a href="../ja457328/index.html">ディレクトリの代わりのカテゴリ、またはLinuxのセマンティックファイルシステム</a></li>
+<li><a href="../ja457332/index.html">CおよびC ++コードのPVS-Studioアナライザーによって生成された興味深い警告をすばやく確認するにはどうすればよいですか？</a></li>
+<li><a href="../ja457334/index.html">TacacsGUI、構成マネージャー</a></li>
+<li><a href="../ja457336/index.html">親知らずの早すぎる除去の結果</a></li>
+<li><a href="../ja457338/index.html">Ilya Krasinskyとの電撃戦：悪い仮説を立てる方法、製品を却下する理由、最小限のアクションで成長する方法</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

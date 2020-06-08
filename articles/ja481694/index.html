@@ -1,0 +1,239 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👋🏾 🅿️ 👹 PostgreSQLのパーティション化パス 🧝🏾 👏 👨🏿‍⚕️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="テーブルのサイズの制御をやめると、データを維持して利用できるようにするのは簡単な作業ではなくなります。本番環境ですでにこのような問題に遭遇しました。毎日より多くのデータがあり、テーブルがメモリに収まらず、サーバーが長時間応答しますが、解決策が見つかりました。
+ 
+ こんにちは、ハブル！私の名前はアル...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQLのパーティション化パス</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/barsgroup/blog/481694/"><img src="https://habrastorage.org/webt/eq/ez/mc/eqezmc8xs8hlpvqjkqf4lapysig.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テーブルのサイズの制御をやめると、データを維持して利用できるようにするのは簡単な作業ではなくなります。</font><font style="vertical-align: inherit;">本番環境ですでにこのような問題に遭遇しました。毎日より多くのデータがあり、テーブルがメモリに収まらず、サーバーが長時間応答しますが、解決策が見つかりました。</font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+こんにちは、ハブル！</font><font style="vertical-align: inherit;">私の名前はアルマズです。次に、パーティション分割の実装に役立つ方法を共有したいと思います。</font></font><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSqlでのパーティション分割</font></font></h3><br>
+<b><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パーティション分割</font></font></a></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（または、</font><b><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">パーティション</font></a></b><font style="vertical-align: inherit;">と呼ばれます）は、1つの大きな論理テーブルをいくつかの小さな物理セクションに分割するプロセスです。これが、データの管理に役立つものです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例：「sales」テーブルがあり、1か月の間隔で分割されています。これらのセクションは、地域ごとにさらに小さなサブセクションに分割できます。</font></font><br>
+ <br>
+<img src="https://habrastorage.org/webt/-e/ea/u0/-eeau0dg8afydkft1jq2tmc2lly.jpeg"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パーティション分割テーブルの「販売」のスキーム</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+このアプローチの短所：</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -データベースの構造は複雑です。データベース定義の各セクションはテーブルですが、1つの論理エンティティの一部です。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -既存のテーブルをパーティションテーブルに変換したり、その逆を行うことはできません。</font><font style="vertical-align: inherit;">
+-Postgres</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ 11では完全なサポートはありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プラス：</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
++パフォーマンス。</font><font style="vertical-align: inherit;">場合によっては、テーブル全体を調べなくても、限られたセクションのセットで作業できます。大きなテーブルのインデックス検索でも遅くなります。</font><font style="vertical-align: inherit;">データの可用性が向上しています。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
++ ATTACH / DETACHコマンドでデータを一括アップロードおよび削除します。</font><font style="vertical-align: inherit;">これにより、VACUUMの形でオーバーヘッドから解放されます。</font><font style="vertical-align: inherit;">これにより、データベースをより効率的に保守できます。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
++セクションにTABLESPACEを指定する機能。</font><font style="vertical-align: inherit;">これにより、データを他のセクションに転送する機会が得られますが、同じインスタンス内で作業し、メインディレクトリのメタデータにはセクションに関する情報が含まれます（シャーディングと混同しないでください）。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSqlでパーティショニングを実装する2つの方法： </font></font></h3><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.テーブルの継承（INHERITS）テーブルを</font></font></b><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+作成するとき、「別の（親）テーブルから継承する」と言います。</font><font style="vertical-align: inherit;">同時に、表にデータ管理の制限を追加します。</font><font style="vertical-align: inherit;">これにより、データ分割のロジックがサポートされますが、これらは論理的に異なるテーブルです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここで、テーブルの継承を介してパーティションを実装するPostgres Professional pg_pathmanによって開発された拡張に注意する必要があります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs"> CREATE TABLE orders_y2010 (<font></font>
+      CHECK (log_date &gt;= DATE '2010-01-01)<font></font>
+    ) INHERITS (orders);<font></font>
+</code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2.宣言的アプローチ（PARTITION）</font></font></b><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+テーブルは</font><b><font style="vertical-align: inherit;">宣言的に</font></b><font style="vertical-align: inherit;">分割されたものとして定義されます。</font><font style="vertical-align: inherit;">このソリューションはPostgreSqlのバージョン10で登場しました。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">CREATE TABLE orders (log_date date not null, …) <font></font>
+PARTITION BY RANGE(log_date); </code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私は宣言的アプローチを選択しました。</font><font style="vertical-align: inherit;">これは大きな利点をもたらします-ネイティブ、より多くの機能がカーネルによってサポートされます。</font><font style="vertical-align: inherit;">この方向でのPostgreSQLの開発を検討してください：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sw/gj/j4/swgjj4u2yjuzhbuoebbdcqi7uj4.jpeg"><br>
+<i><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ソース</font></font></a></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+しかしPostgreSqlは進化し続けており、バージョン12ではパーティション分割テーブルへのリンクがサポートされています。</font><font style="vertical-align: inherit;">これは大きな進歩です。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私のやり方</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ 上記の場合、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スクリプト</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は</font><font style="vertical-align: inherit;">PL / pgSQLで作成され、既存のテーブルに基づいてパーティションテーブルを作成し、新しいテーブルへのすべてのリンクを「スロー」します。したがって、既存のテーブルに基づいてパーティション化されたテーブルを取得し、通常のテーブルと同様に引き続き使用します。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+スクリプトは追加の依存関係を必要とせず、それ自体が作成する別の回路で実行されます。また、やり直しと元に戻す操作を記録します。このスクリプトは2つの主な問題を解決します。パーティション化されたテーブルを作成し、トリガートリガーを介してそれに外部リンクを実装します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+スクリプト要件：PostgreSql v.:11以降。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それでは、スクリプトを詳しく見ていきましょう。</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インターフェースは非常にシンプルです</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。すべての作業を行う2つの手順があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1.主な課題-この段階ではメインテーブルを変更しませんが、セクション作成に必要なものはすべて別のスキームで作成されます。 </font></font><br>
+<br>
+<pre><code class="plaintext hljs"> call partition_run(); </code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2.メインの作業中に計画された据え置きタスクを呼び出します。 </font></font><br>
+<br>
+<pre><code class="plaintext hljs"> call partition_run_jobs(); </code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+作業は複数のスレッドで起動できます。</font><font style="vertical-align: inherit;">スレッドの最適な数は、パーティション化されたテーブルの数に近いです。</font></font><br>
+ <br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スクリプトの入力パラメーター</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（_ptレコード）</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/8k/pk/pa/8kpkpahwbko3gxpvym9tqnacaxi.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+内部からのスクリプト、主なアクション：</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -パーティションテーブルを作成します。</font></font><br>
+<pre><code class="plaintext hljs"> perform _partition_create_parent_table(_pt); </code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -セクションを作成する </font></font><br>
+<pre><code class="plaintext hljs"> perform _partition_create_child_tables(_pt); </code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -セクションのデータをコピーします</font></font><br>
+<pre><code class="plaintext hljs"> perform _partition_copy_data(_pt); </code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -制限を追加する（ジョブ） </font></font><br>
+<pre><code class="plaintext hljs"> perform _partition_add_constraints(_pt); </code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -外部テーブルへのリンクを復元する </font></font><br>
+<pre><code class="plaintext hljs"> perform _partition_restore_referrences(_pt); </code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -トリガーの復元</font></font><br>
+<pre><code class="plaintext hljs"> perform _partition_restore_triggers(_pt); </code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -イベントトリガーを作成する </font></font><br>
+<pre><code class="plaintext hljs"> perform _partition_def_tr_on_delete(_pt); </code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -インデックスの作成（ジョブ） </font></font><br>
+<pre><code class="plaintext hljs"> perform _partition_create_index(_pt); </code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ -ビュー、セクションリンク（ジョブ）を置き換える </font></font><br>
+<pre><code class="plaintext hljs"> perform _partition_replace_view(_pt); </code></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+スクリプトの実行時間は多くの要因に依存しますが、主なものは、ターゲットテーブルのサイズ、リレーションシップの数、インデックス、サーバーの特性です。</font><font style="vertical-align: inherit;">私の場合、300Gbのテーブルは1時間未満で分割されました。</font></font><br>
+ <br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">結果</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+何を手に入れましたか？</font><font style="vertical-align: inherit;">クエリプランを見てみましょう。</font></font><br>
+<br>
+<pre><code class="plaintext hljs"> EXPLAIN ANALYZE <font></font>
+select * from “sales” where dt BETWEEN '01.01.2019'::date and '14.01.2019'::date </code></pre><br>
+<br>
+<img src="https://habrastorage.org/webt/gp/__/ga/gp__gatnm2fks5bte3osf7__jow.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常のテーブルへのクエリと比較して、パーティションテーブルから結果をより速く取得し、サーバーのリソースをより少なく使用しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この例では、通常のテーブルとパーティションテーブルが同じベースにあり、約200Mのレコードがあります。</font><font style="vertical-align: inherit;">これは、アプリケーションコードを書き直さずにアクセラレーションを得たので、良い結果です。</font><font style="vertical-align: inherit;">他のインデックスのクエリも適切に機能しますが、注意してください。セクションを特定できるときはいつでも、結果が数倍速くなります。</font><font style="vertical-align: inherit;">PostgreSqlはリクエストの計画段階で余分なセクションを破棄できます（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">enable_partition_pruningをonに設定</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">合計</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+多くの関係があるテーブルにパーティションを実装し、データベースの整合性を確保することができました。</font><font style="vertical-align: inherit;">スクリプトは特定のデータ構造に依存せず、再利用できます。</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQLは、世界で最も先進的なオープンソースのリレーショナルデータベースです。</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ありがとうございます！</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ソースへのリンク</font></font></a><br>
+<br></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja481678/index.html">ホリデー前のレビュー：N6IIT01プレーヤーとYB04補強ヘッドフォン-中国南部のHi-Fi</a></li>
+<li><a href="../ja481680/index.html">TodoMVCはdapで書いています。パート2</a></li>
+<li><a href="../ja481684/index.html">Powerbankのラップトップ？</a></li>
+<li><a href="../ja481688/index.html">なぜJavaを学び、それを効率的に行う方法。Yandexレポート</a></li>
+<li><a href="../ja481692/index.html">インテルプロセッサートレースを使用したシステム管理モードコードのトレース</a></li>
+<li><a href="../ja481696/index.html">ruleguard：Goの動的チェック</a></li>
+<li><a href="../ja481698/index.html">バーチャルリアリティ内およびその周辺でのWebRTCストリーミング</a></li>
+<li><a href="../ja481700/index.html">叔母1人について</a></li>
+<li><a href="../ja481702/index.html">トースターからドローンまで。物事のインターネットはどのようにして生まれ、30年後にはなぜインターネットが起動したのか</a></li>
+<li><a href="../ja481704/index.html">これは標準です-2：法線マップがベイクされる方法</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

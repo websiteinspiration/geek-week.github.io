@@ -1,0 +1,299 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏽‍🚀 🙌🏻 🧚🏾 GoのELFトリック 🚬 🌵 🎵</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="この記事では、Go関数のマシンコードを実行時に直接取得する方法、逆アセンブラを使用して出力する方法を学び、その過程で、関数を呼び出さずに関数のアドレスを取得するなどのいくつかのトリックを見つけます。
+ 
+
+警告：このミニ記事では、役立つことは何もありません。
+ Goの関数値
+ 
+
+まず、Go関数とは...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>GoのELFトリック</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/482392/"><p><img src="https://habrastorage.org/webt/hd/mj/7h/hdmj7hkb2kyjkyyybccynazhd7s.png"></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この記事では、Go関数のマシンコードを実行時に直接取得する方法、逆アセンブラを使用して出力する方法を学び、その過程で、関数を呼び出さずに関数のアドレスを取得するなどのいくつかのトリックを見つけます。</font></font></p><br>
+<p><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">警告</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：このミニ記事では、役立つことは何もありません。</font></font></p><a name="habracut"></a><br>
+<h1 id="function-value-v-go"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Goの関数値</font></font></h1><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">まず、Go関数とは何か、そしてなぜ</font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">関数値の</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">概念が必要なのかを判断しましょう</font><font style="vertical-align: inherit;">。</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これは、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Go 1.1関数呼び出し</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ドキュメントで最もよく説明されています</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">この文書は新しいものではありませんが、その中のほとんどの情報は依然として関連しています。</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最下位レベルでは、これは常に実行可能コードへのポインターですが、無名関数/クロージャーを使用するか、関数をとして渡すと</font></font><code>interface{}</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、このポインターは何らかの構造の内部に隠されます。</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">関数名自体は式ではないため、このようなコードは機能しません。</font></font></p><br>
+<pre><code class="go hljs"><span class="hljs-comment">// https://play.golang.org/p/wXeVLU7nLPs</span>
+<span class="hljs-keyword">package</span> main
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">add1</span><span class="hljs-params">(x <span class="hljs-keyword">int</span>)</span> <span class="hljs-title">int</span></span> { <span class="hljs-keyword">return</span> <span class="hljs-number">1</span> }
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">main</span><span class="hljs-params">()</span></span> {<font></font>
+    addr := &amp;add1<font></font>
+    <span class="hljs-built_in">println</span>(addr)<font></font>
+}</code></pre><br>
+<blockquote><code>compile: cannot take the address of add1</code></blockquote><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">しかし、同時に</font></font><code>function value</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、同じ関数名を</font><font style="vertical-align: inherit;">取得できます</font><font style="vertical-align: inherit;">。</font></font></p><br>
+<pre><code class="go hljs"><span class="hljs-comment">// https://play.golang.org/p/oWqv_FQq4hy</span>
+<span class="hljs-keyword">package</span> main
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">add1</span><span class="hljs-params">(x <span class="hljs-keyword">int</span>)</span> <span class="hljs-title">int</span></span> { <span class="hljs-keyword">return</span> <span class="hljs-number">1</span> }
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">main</span><span class="hljs-params">()</span></span> {<font></font>
+    f := add1 <span class="hljs-comment">// &lt;--------</span><font></font>
+    addr := &amp;f<font></font>
+    <span class="hljs-built_in">println</span>(addr)<font></font>
+}</code></pre><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">このコードは起動されますが、スタック上のローカル変数のアドレスを出力しますが、これはまさに私たちが望んでいたものではありません。</font><font style="vertical-align: inherit;">ただし、前述のように、関数アドレスはまだ残っています。アクセスする方法を知っていれば十分です。</font></font></p><br>
+<p> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>reflect</code></a>     ,    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>reflect.Value.Call()</code></a>. <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow">  (reflect/makefunc.go)</a>        :</p><br>
+<pre><code class="go hljs">dummy := makeFuncStub<font></font>
+code := **(**<span class="hljs-keyword">uintptr</span>)(unsafe.Pointer(&amp;dummy))</code></pre><br>
+<p>    ,     :</p><br>
+<pre><code class="go hljs"><span class="hljs-comment">// funcAddr returns function value fn executable code address.</span>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">funcAddr</span><span class="hljs-params">(fn <span class="hljs-keyword">interface</span>{})</span> <span class="hljs-title">uintptr</span></span> {
+    <span class="hljs-comment">// emptyInterface is the header for an interface{} value.</span>
+    <span class="hljs-keyword">type</span> emptyInterface <span class="hljs-keyword">struct</span> {<font></font>
+        typ   <span class="hljs-keyword">uintptr</span>
+        value *<span class="hljs-keyword">uintptr</span><font></font>
+    }<font></font>
+    e := (*emptyInterface)(unsafe.Pointer(&amp;fn))<font></font>
+    <span class="hljs-keyword">return</span> *e.value<font></font>
+}</code></pre><br>
+<p>   <code>add1</code>     <code>funcAddr(add1)</code>.</p><br>
+<h1 id="poluchenie-bloka-mashinnogo-koda-funkcii">    </h1><br>
+<p>,         ,       .    ,      .</p><br>
+<p>   x86    ,            ,  :</p><br>
+<ul>
+<li> ,        <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>INT3</code></a> .      ,    .</li>
+<li>        ,  ,     .  ,         ,      .     .</li>
+</ul><br>
+<p>     ,        <code>INT3</code>   .           , <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow">   x86, </a>.</p><br>
+<p>     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>runtime</code></a>   <code>PC</code>,      -  ,      .  <code>funcAddr</code>      <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>runtime.FuncForPC()</code></a>,   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>runtime.Func</code></a>    .          <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>runtime._func</code></a>,  ,    :        .</p><br>
+<p>,   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow">ELF</a>   .</p><br>
+<blockquote> ,      ,     ,       <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>debug/elf</code></a>,     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>debug</code></a>.</blockquote><br>
+<h1 id="elf-kotoryy-pryachetsya-v-vashey-programme">ELF,     </h1><br>
+<p>,   ,     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow">ELF</a> .</p><br>
+<p> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>os.Args[0]</code></a>        ,       .</p><br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">readELF</span><span class="hljs-params">()</span> <span class="hljs-params">(*elf.File, error)</span></span> {<font></font>
+    f, err := os.Open(os.Args[<span class="hljs-number">0</span>])
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>, fmt.Errorf(<span class="hljs-string">"open argv[0]: %w"</span>, err)<font></font>
+    }<font></font>
+    <span class="hljs-keyword">return</span> elf.NewFile(f)<font></font>
+}</code></pre><br>
+<h1 id="poisk-simvola-vnutri-elffilehttpsgolangorgpkgdebugelffile">   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>elf.File</code></a></h1><br>
+<p>       <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>File.Symbols()</code></a>.    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>[]elf.Symbol</code></a>,    <code>Symbol.Size</code> —      " ".  <code>Symbol.Value</code>    ,  <code>funcAddr</code>.</p><br>
+<p>       (<code>Symbol.Value</code>),    (<code>Symbol.Name</code>).       ,     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><code>sort.Search()</code></a>,    :</p><br>
+<blockquote>The symbols will be listed in the order they appear in file.</blockquote><p>      ,     , ,  <code>map[string]*elf.Symbol</code>  <code>map[uintptr]*elf.Symbol</code>.</p><br>
+<p>         ,     :</p><br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">elfLookup</span><span class="hljs-params">(f *elf.File, value <span class="hljs-keyword">uint64</span>)</span> *<span class="hljs-title">elf</span>.<span class="hljs-title">Symbol</span></span> {<font></font>
+    symbols, err := f.Symbols()<font></font>
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span><font></font>
+    }<font></font>
+    <span class="hljs-keyword">for</span> _, sym := <span class="hljs-keyword">range</span> symbols {
+        <span class="hljs-keyword">if</span> sym.Value == value {
+            <span class="hljs-keyword">return</span> &amp;sym<font></font>
+        }<font></font>
+    }<font></font>
+    <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+}</code></pre><br>
+<blockquote><strong></strong>:    ,    .     '<code>-ldflags "-s"</code>',  <code>elfLookup()</code>    <code>nil</code>.       <code>go run</code>       .       '<code>go build</code>'  '<code>go install</code>'    .</blockquote><br>
+<h1 id="poluchenie-mashinnogo-koda-funkcii">   </h1><br>
+<p>  ,     ,       <code>[]byte</code>   .</p><br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">funcCode</span><span class="hljs-params">(addr <span class="hljs-keyword">uintptr</span>)</span> <span class="hljs-params">([]<span class="hljs-keyword">byte</span>, error)</span></span> {<font></font>
+    elffile, err := readELF()<font></font>
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>, fmt.Errorf(<span class="hljs-string">"read elf: %w"</span>, err)<font></font>
+    }<font></font>
+    sym := elfLookup(elffile, <span class="hljs-keyword">uint64</span>(addr))
+    <span class="hljs-keyword">if</span> sym == <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>, fmt.Errorf(<span class="hljs-string">"can't lookup symbol for %x"</span>, addr)<font></font>
+    }<font></font>
+    code := *(*[]<span class="hljs-keyword">byte</span>)(unsafe.Pointer(&amp;reflect.SliceHeader{<font></font>
+        Data: addr,<font></font>
+        Len:  <span class="hljs-keyword">int</span>(sym.Size),<font></font>
+        Cap:  <span class="hljs-keyword">int</span>(sym.Size),<font></font>
+    }))<font></font>
+    <span class="hljs-keyword">return</span> code, <span class="hljs-literal">nil</span>
+}</code></pre><br>
+<p>     .      <code>ELF</code>       .</p><br>
+<p>   <code>funcCode()</code>       .        <code>funcAddr()</code>.</p><br>
+<pre><code class="go hljs">code, err := funcCode(funcAddr(add1))
+<span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {<font></font>
+    log.Panicf(<span class="hljs-string">"can't get function code: %v"</span>, err)<font></font>
+}<font></font>
+fmt.Printf(<span class="hljs-string">"% x\n"</span>, code)
+<span class="hljs-comment">// =&gt; 48 8b 44 24 08 48 ff c0 48 89 44 24 10 c3</span></code></pre><br>
+<h1 id="dizassemblirovanie-mashinnogo-koda">  </h1><br>
+<p> ,     ,   .</p><br>
+<p>      <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow">zydis</a>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow">Intel XED</a>,         .</p><br>
+<p> Go    <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow">go-zydis</a>,          .</p><br>
+<p>  "  ",        :</p><br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">walkDisasm</span><span class="hljs-params">(code []<span class="hljs-keyword">byte</span>, visit <span class="hljs-keyword">func</span>(*zydis.DecodedInstruction)</span> <span class="hljs-title">error</span>) <span class="hljs-title">error</span></span> {<font></font>
+    dec := zydis.NewDecoder(zydis.MachineMode64, zydis.AddressWidth64)<font></font>
+<font></font>
+    buf := code<font></font>
+    <span class="hljs-keyword">for</span> <span class="hljs-built_in">len</span>(buf) &gt; <span class="hljs-number">0</span> {<font></font>
+        instr, err := dec.Decode(buf)<font></font>
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err<font></font>
+        }<font></font>
+        <span class="hljs-keyword">if</span> err := visit(instr); err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err<font></font>
+        }<font></font>
+        buf = buf[<span class="hljs-keyword">int</span>(instr.Length):]<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span>
+}</code></pre><br>
+<p>          callback-    .</p><br>
+<p>        <code>printDisasm</code>:</p><br>
+<pre><code class="go hljs"><span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-title">printDisasm</span><span class="hljs-params">(code []<span class="hljs-keyword">byte</span>)</span> <span class="hljs-title">error</span></span> {
+    <span class="hljs-keyword">const</span> ZYDIS_RUNTIME_ADDRESS_NONE = math.MaxUint64<font></font>
+    formatter, err := zydis.NewFormatter(zydis.FormatterStyleIntel)<font></font>
+    <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+        <span class="hljs-keyword">return</span> err<font></font>
+    }<font></font>
+    <span class="hljs-keyword">return</span> walkDisasm(code, <span class="hljs-function"><span class="hljs-keyword">func</span><span class="hljs-params">(instr *zydis.DecodedInstruction)</span> <span class="hljs-title">error</span></span> {<font></font>
+        s, err := formatter.FormatInstruction(instr, ZYDIS_RUNTIME_ADDRESS_NONE)<font></font>
+        <span class="hljs-keyword">if</span> err != <span class="hljs-literal">nil</span> {
+            <span class="hljs-keyword">return</span> err<font></font>
+        }<font></font>
+        fmt.Println(s)<font></font>
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">nil</span><font></font>
+    })<font></font>
+}</code></pre><br>
+<p>   <code>printDisasm</code>    <code>add1</code>,    :</p><br>
+<pre><code class="plaintext hljs">mov rax, [rsp+0x08]<font></font>
+inc rax<font></font>
+mov [rsp+0x10], rax<font></font>
+ret</code></pre><br>
+<h2 id="validaciya-rezultata"> </h2><br>
+<p>     ,   ,    ,  .</p><br>
+<p>      ,     Go <code>objdump</code>:</p><br>
+<pre><code class="bash hljs">$ go tool objdump -s <span class="hljs-string">'add1'</span> exe<font></font>
+TEXT main.add1(SB) example.go<font></font>
+  example.go:15    0x4bb760    488b442408    MOVQ 0x8(SP), AX<font></font>
+  example.go:15    0x4bb765    48ffc0        INCQ AX<font></font>
+  example.go:15    0x4bb768    4889442410    MOVQ AX, 0x10(SP)<font></font>
+  example.go:15    0x4bb76d    c3            RET</code></pre><br>
+<p> ,    ,  .</p><br>
+<h1 id="method-expressions">Method expressions</h1><br>
+<p>      ,        <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow">method expression</a>.</p><br>
+<p>,  <code>add1</code> —      ,    <code>adder</code>:</p><br>
+<pre><code class="go hljs"><span class="hljs-keyword">type</span> adder <span class="hljs-keyword">struct</span>{}<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">func</span> <span class="hljs-params">(adder)</span> <span class="hljs-title">add1</span><span class="hljs-params">(x <span class="hljs-keyword">int</span>)</span> <span class="hljs-title">int</span></span> { <span class="hljs-keyword">return</span> x + <span class="hljs-number">2</span> }</code></pre><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">次に、関数のアドレスを取得する呼び出しは次のようになります</font></font><code>funcAddr(adder.add1)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></p><br>
+<h1 id="zaklyuchenie"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">結論</font></font></h1><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私は偶然ではなくこれらのことに気付きました。おそらく、以下の記事の1つで、これらのメカニズムをすべて使用することがどのように計画されていたかを説明します。</font><font style="vertical-align: inherit;">それまでの間、このメモを、</font><font style="vertical-align: inherit;">関数の値を通じてGo関数を</font><font style="vertical-align: inherit;">どのよう</font></font><code>runtime</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に</font></font><code>reflect</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">見ている</font><font style="vertical-align: inherit;">かの表面的な説明として扱うことを提案し</font><font style="vertical-align: inherit;">ます。</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用されているリソースのリスト：</font></font></p><br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Go 1.1関数呼び出し</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Golang実行可能ファイルの分析</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「内部ABI」デザインに移行</font></font></a></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja482374/index.html">Entity Component Systemテンプレートを使用して、LibGDXでゲームを開発します</a></li>
+<li><a href="../ja482378/index.html">ワコムの簡単な歴史：グラフィックタブレットテクノロジーが電子リーダーにどのように登場したか</a></li>
+<li><a href="../ja482382/index.html">翻訳の4つの原則、またはどのようにして男性は機械翻訳者に屈服しないでしょうか？</a></li>
+<li><a href="../ja482384/index.html">私の未実現プロジェクト。200 MikroTikルーターのネットワーク</a></li>
+<li><a href="../ja482390/index.html">Ember.jsチュートリアルのチュートリアル。スーパーレンタルアプリ。パート1.2</a></li>
+<li><a href="../ja482396/index.html">IT専門職を教える商業コースの選び方</a></li>
+<li><a href="../ja482398/index.html">PostgreSQLからErlangへの論理レプリケーション</a></li>
+<li><a href="../ja482400/index.html">面白い統計的事実の選択＃2</a></li>
+<li><a href="../ja482402/index.html">工場パターン。Unityでの適用例</a></li>
+<li><a href="../ja482404/index.html">ニーモニック：脳の記憶を増やす​​方法の探求</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

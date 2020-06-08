@@ -1,0 +1,286 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤴 ☝🏾 🕴🏾 PostgreSQLで大量にお金を節約する 🚍 🧓 💹</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="前回のパーティショニングに関する記事で取り上げた大きなデータストリームを記録するというトピックを続けて、PostgreSQLに格納されるデータの「物理」サイズを削減する方法と、それらがサーバーのパフォーマンスに与える影響について検討します。
+ 
+ それはについてですTOAST設定とデータ・アラインメ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQLで大量にお金を節約する</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/498292/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前回の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パーティショニングに関する記事で</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">取り上げた大きなデータストリームを記録するというトピックを続けて</font><font style="vertical-align: inherit;">、PostgreSQLに</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">格納さ</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">れる</font><b><font style="vertical-align: inherit;">データの「物理」サイズを削減する</font></b><font style="vertical-align: inherit;">方法</font><font style="vertical-align: inherit;">と、それらがサーバーのパフォーマンスに与える影響</font><font style="vertical-align: inherit;">について検討します</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それはについてです</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TOAST設定とデータ・アラインメント</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">「平均して」、これらのメソッドはリソースをあまり節約しませんが、アプリケーションコードに変更を加えることはありません。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/cj/c-/lx/cjc-lxht8brbyy9xif_sicdwk70.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、ほとんどすべての監視のリポジトリは本来、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ほとんどの場合</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、記録されたデータに関して</font><b><font style="vertical-align: inherit;">追加専用</font></b><font style="vertical-align: inherit;">である</font><font style="vertical-align: inherit;">ため、この点で私たちの経験は非常に生産的であること</font><b><font style="vertical-align: inherit;">がわかりました</font></b><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">そして、もしあなたがデータベースに</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">200MB /秒の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">半分の</font><font style="vertical-align: inherit;">代わりにディスクに書き込むように教えることができる方法に興味があるなら</font><font style="vertical-align: inherit;">-私はカットをお願いします。</font></font><br>
+<a name="habracut"></a><br>
+<font color="#4060a0"><h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ビッグデータの小さな秘密</font></font></h2></font><br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私たちのサービス</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+のプロファイルによると</font><font style="vertical-align: inherit;">、彼は定期的にログから</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テキストパケット</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を受信し</font><b><font style="vertical-align: inherit;">ます</font></b><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、</font><font style="vertical-align: inherit;">データベースを監視し</font><font style="vertical-align: inherit;">て</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">いるVLSIコンプレックス</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、複雑なデータ構造を持つマルチコンポーネント製品である</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ため、最大のパフォーマンスを達成するため</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">のクエリ</font><b><font style="vertical-align: inherit;">は</font></b></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、複雑なアルゴリズムロジックを備えた「マルチボリューム」</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">によって取得され</font><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">したがって、リクエストの個々のインスタンスのボリューム、または結果として得られるログ内の実行プランは、「平均的」であることがわかります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「生の」データを書き込むテーブルの1つの構造を見てみましょう。つまり、ここにログエントリの元のテキストがあります。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> rawdata_orig(<font></font>
+  pack <span class="hljs-comment">-- PK</span>
+    <span class="hljs-keyword">uuid</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>
+, recno <span class="hljs-comment">-- PK</span>
+    <span class="hljs-built_in">smallint</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>
+, dt <span class="hljs-comment">--  </span>
+    <span class="hljs-built_in">date</span>
+, <span class="hljs-keyword">data</span> <span class="hljs-comment">--  </span>
+    <span class="hljs-built_in">text</span>
+, PRIMARY <span class="hljs-keyword">KEY</span>(pack, recno)<font></font>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このような典型的なプレート（すでに分割されているため、もちろんセクションテンプレートです）。最も重要なのはテキストです。時々かなりボリュームがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PGの1つのレコードの「物理」サイズは、1ページを超えるデータを占有することはできませんが、「論理」サイズは完全に異なる問題です。ボリューム値（varchar / text / bytea）をフィールドに書き込むには、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TOASTテクノロジーを</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用し</font><font style="vertical-align: inherit;">ます。</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQLは固定ページサイズ（通常8 KB）を使用し、タプルが複数のページにまたがることを許可していません。</font><font style="vertical-align: inherit;">したがって、非常に大きなフィールド値を直接格納することは不可能です。</font><font style="vertical-align: inherit;">この制限を克服するために、大きなフィールド値は圧縮されたり、複数の物理的な行に分割されたりします。</font><font style="vertical-align: inherit;">これはユーザーに気付かれずに発生し、ほとんどのサーバーコードにわずかに影響します。</font><font style="vertical-align: inherit;">この方法はTOASTとして知られています...</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際、「大きな可能性のある」フィールドを持つ各テーブルについて</font><font style="vertical-align: inherit;">、2KBセグメントの各「大きな」レコード</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を「スライス」するペアテーブルが</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">自動的に</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">作成されます</font></a><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="sql hljs">TOAST(<font></font>
+  chunk_id<font></font>
+    integer<font></font>
+, chunk_seq<font></font>
+    integer<font></font>
+, chunk_data<font></font>
+    bytea<font></font>
+, PRIMARY KEY(chunk_id, chunk_seq)<font></font>
+);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+つまり、「大きな」値</font></font><code>data</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で</font><font style="vertical-align: inherit;">行を書き込む必要がある場合</font><font style="vertical-align: inherit;">、実際のレコードは</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メインテーブルとそのPKだけでなく、TOASTとそのPKでも発生し</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TOAST効果を減らす</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、私たちが持っているほとんどのレコードはまだそれほど大きくありません</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。8KBに収まるはず</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。これをどのように保存しますか？.. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここ</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><code>STORAGE</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で、テーブル列の</font><font style="vertical-align: inherit;">属性が役立ち</font><font style="vertical-align: inherit;">ます。</font></font><br>
+<blockquote><ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">EXTENDED</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、圧縮と個別のストレージの両方を許可します。</font><font style="vertical-align: inherit;">これは、</font><font style="vertical-align: inherit;">ほとんどのTOAST互換データ型</font><font style="vertical-align: inherit;">の</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">標準オプション</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font><font style="vertical-align: inherit;">最初に、圧縮を実行する試みが行われ、それでも行が大きすぎる場合はテーブルの外に保存されます。</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MAIN</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は圧縮を許可しますが、個別のストレージは許可しません。</font><font style="vertical-align: inherit;">（実際には、そのような列に対して個別のストレージが実行されますが</font><font style="vertical-align: inherit;">、ページに収まるように行を削減する他の方法がない場合の</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最後の手段として</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">のみ</font><font style="vertical-align: inherit;">です。）</font></font></li>
+</ul></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">実際、これはまさにテキストに必要なものです。</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">可能な限り絞り込んで、まったく合わない場合でも、TOASTに入れてください</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">これは、次の1つのコマンドで「オンザフライ」で直接実行できます。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> rawdata_orig <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">COLUMN</span> <span class="hljs-keyword">data</span> <span class="hljs-keyword">SET</span> <span class="hljs-keyword">STORAGE</span> <span class="hljs-keyword">MAIN</span>;</code></pre><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">効果の評価方法</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データフローは毎日変化するため、絶対数を比較することはできませんが、相対的に言えば、</font><font style="vertical-align: inherit;">TOASTに記録し</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">た比率</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">が</font><b><font style="vertical-align: inherit;">小さいほど</font></b><font style="vertical-align: inherit;">優れています。</font><font style="vertical-align: inherit;">しかし、危険があります。より多くのデータページをカバーする必要があるため、個々のレコードの「物理」ボリュームが増えるほど、インデックスは「より広く」なります。</font><b><font style="vertical-align: inherit;">変更前の</font></b></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+セクション</font><font style="vertical-align: inherit;">：</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><br>
+<pre><code class="plaintext hljs">heap  = 37GB (39%)<font></font>
+TOAST = 54GB (57%)<font></font>
+PK    =  4GB ( 4%)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">変更後の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+セクション</font><font style="vertical-align: inherit;">：</font></font><br>
+<pre><code class="plaintext hljs">heap  = 37GB (67%)<font></font>
+TOAST = 16GB (29%)<font></font>
+PK    =  2GB ( 4%)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TOASTでの書き込み頻度が2分の1になり</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、ディスクだけでなくCPUもアンロードされました。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/jc/te/dr/jctedr4gcninasuw54qer9qu_8u.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/bp/lj/wr/bpljwrysoy42rtnu3ds0btue7ka.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「書き込み」だけでなく、ディスクの「読み取り」も開始しました。レコードをテーブルに挿入するときは、各インデックスのツリーの一部を「差し引いて」、インデックスの将来の位置を決定する必要があるためです。</font></font><br>
+<br>
+<font color="#4060a0"><h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQL 11の誰が元気ですか</font></font></h2></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PG11にアップグレードした後、TOASTの「調整」を続行することを決定し、このバージョン以降、パラメーターが構成に使用できるようになったことに気付きました</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><code>toast_tuple_target</code></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TOAST処理コードは、テーブルに格納される行の値がTOAST_TUPLE_THRESHOLDバイト（通常は2 KB）より大きい場合にのみトリガーされます。</font><font style="vertical-align: inherit;">TOASTコードは、行の値がTOAST_TUPLE_TARGETバイト（可変、通常2 KBも）未満になるか、サイズを縮小できなくなるまで、フィールド値をテーブルから圧縮または移動します。</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通常使用するデータは「非常に短い」か、すぐに「非常に長い」と判断したため、可能な限り低い値に制限することにしました。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> rawplan_orig <span class="hljs-keyword">SET</span> (toast_tuple_target = <span class="hljs-number">128</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+新しい設定が移行後のディスクの読み込みにどのように影響したかを見てみましょう。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/pp/cz/k7/ppczk7f8qj9cu_hixtltdk_wvo4.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+悪くない！</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ディスク</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の平均</font><b><font style="vertical-align: inherit;">キューは</font></b><font style="vertical-align: inherit;">約1.5倍、ディスクの「占有率」は20％</font><b><font style="vertical-align: inherit;">削減されました</font></b><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">しかし、おそらくこれが何らかの形でCPUに影響を与えたのでしょうか？</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/xa/vj/sq/xavjsqger1hmawiiidzngvzcff0.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+少なくとも、間違いなく悪化していません。</font><font style="vertical-align: inherit;">ただし、そのようなボリュームでも平均CPU負荷を</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5％を</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">超えて上げることができないかどうかを判断することは困難</font><font style="vertical-align: inherit;">です。</font></font><br>
+<br>
+<font color="#4060a0"><h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">立場の変化から、和・・・が変わる！</font></font></h2></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ご存知のように、1ペニーはルーブルを節約し、私たちのストレージボリュームは約</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">10 TB /月なので</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、小さな最適化</font><b><font style="vertical-align: inherit;">で</font></b><font style="vertical-align: inherit;">も大きな利益を得ることができます。したがって、私たちはデータの物理的な構造、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">つまり「フィールド」が</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">各テーブルの</font><b><font style="vertical-align: inherit;">レコード内に</font></b><font style="vertical-align: inherit;">どの程度正確</font><b><font style="vertical-align: inherit;">に配置されている</font></b><font style="vertical-align: inherit;">かに注目しました</font><font style="vertical-align: inherit;">。</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">データの配置の</font></a></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ため</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これ</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は結果のボリュームに</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">直接</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">影響し</font></a><font style="vertical-align: inherit;">ます。</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">多くのアーキテクチャは、マシンワードの境界を越えてデータを整列させます。</font><font style="vertical-align: inherit;">たとえば、x86 32ビットシステムでは、整数（整数型、4バイトを占有）は、4バイトワードの境界と、倍精度浮動小数点数（倍精度型、8バイト）で整列されます。</font><font style="vertical-align: inherit;">また、64ビットシステムでは、2つの値が8バイトの単語の境界に配置されます。</font><font style="vertical-align: inherit;">これは、非互換性のもう1つの理由です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+整列のため、テーブル行のサイズはフィールドの順序に依存します。</font><font style="vertical-align: inherit;">通常、この影響はあまり目立ちませんが、場合によってはサイズが大幅に増加する可能性があります。</font><font style="vertical-align: inherit;">たとえば、タイプchar（1）と整数の混合のフィールドをそれらの間に配置すると、原則として、3バイトが無駄に消費されます。</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+合成モデルから始めましょう：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span> pg_column_size(<span class="hljs-keyword">ROW</span>(
+  <span class="hljs-string">'0000-0000-0000-0000-0000-0000-0000-0000'</span>::<span class="hljs-keyword">uuid</span>
+, <span class="hljs-number">0</span>::<span class="hljs-built_in">smallint</span>
+, <span class="hljs-string">'2019-01-01'</span>::<span class="hljs-built_in">date</span><font></font>
+));<font></font>
+<span class="hljs-comment">-- 48 </span><font></font>
+<font></font>
+<span class="hljs-keyword">SELECT</span> pg_column_size(<span class="hljs-keyword">ROW</span>(
+  <span class="hljs-string">'2019-01-01'</span>::<span class="hljs-built_in">date</span>
+, <span class="hljs-string">'0000-0000-0000-0000-0000-0000-0000-0000'</span>::<span class="hljs-keyword">uuid</span>
+, <span class="hljs-number">0</span>::<span class="hljs-built_in">smallint</span><font></font>
+));<font></font>
+<span class="hljs-comment">-- 46 </span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初のケースでは、余分なバイトのペアはどこから来たのですか？</font><font style="vertical-align: inherit;">すべてが単純</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。2バイトのsmallintは</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、次のフィールドの前に</font><b><font style="vertical-align: inherit;">4バイトの境界</font></b><font style="vertical-align: inherit;">に</font><b><font style="vertical-align: inherit;">配置され、</font></b><font style="vertical-align: inherit;">それが最後のフィールドの場合は、何も配置する必要はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+理論的には、すべてが問題なく、好きなようにフィールドを再配置できます。</font><font style="vertical-align: inherit;">1つのテーブルの例で実際のデータを確認してみましょう。1日のセクションには10〜15GB必要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ソース構造：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> public.plan_20190220<font></font>
+(<font></font>
+<span class="hljs-comment">--  from table plan:  pack uuid NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  recno smallint NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  host uuid,</span>
+<span class="hljs-comment">--  from table plan:  ts timestamp with time zone,</span>
+<span class="hljs-comment">--  from table plan:  exectime numeric(32,3),</span>
+<span class="hljs-comment">--  from table plan:  duration numeric(32,3),</span>
+<span class="hljs-comment">--  from table plan:  bufint bigint,</span>
+<span class="hljs-comment">--  from table plan:  bufmem bigint,</span>
+<span class="hljs-comment">--  from table plan:  bufdsk bigint,</span>
+<span class="hljs-comment">--  from table plan:  apn uuid,</span>
+<span class="hljs-comment">--  from table plan:  ptr uuid,</span>
+<span class="hljs-comment">--  from table plan:  dt date,</span>
+  <span class="hljs-keyword">CONSTRAINT</span> plan_20190220_pkey PRIMARY <span class="hljs-keyword">KEY</span> (pack, recno),
+  <span class="hljs-keyword">CONSTRAINT</span> chck_ptr <span class="hljs-keyword">CHECK</span> (ptr <span class="hljs-keyword">IS</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>),
+  <span class="hljs-keyword">CONSTRAINT</span> plan_20190220_dt_check <span class="hljs-keyword">CHECK</span> (dt = <span class="hljs-string">'2019-02-20'</span>::<span class="hljs-built_in">date</span>)<font></font>
+)<font></font>
+INHERITS (public.plan)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+列の順序を変更した後のセクションはまったく</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同じフィールドですが、順序だけが異なり</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> public.plan_20190221<font></font>
+(<font></font>
+<span class="hljs-comment">--  from table plan:  dt date NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  ts timestamp with time zone,</span>
+<span class="hljs-comment">--  from table plan:  pack uuid NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  recno smallint NOT NULL,</span>
+<span class="hljs-comment">--  from table plan:  host uuid,</span>
+<span class="hljs-comment">--  from table plan:  apn uuid,</span>
+<span class="hljs-comment">--  from table plan:  ptr uuid,</span>
+<span class="hljs-comment">--  from table plan:  bufint bigint,</span>
+<span class="hljs-comment">--  from table plan:  bufmem bigint,</span>
+<span class="hljs-comment">--  from table plan:  bufdsk bigint,</span>
+<span class="hljs-comment">--  from table plan:  exectime numeric(32,3),</span>
+<span class="hljs-comment">--  from table plan:  duration numeric(32,3),</span>
+  <span class="hljs-keyword">CONSTRAINT</span> plan_20190221_pkey PRIMARY <span class="hljs-keyword">KEY</span> (pack, recno),
+  <span class="hljs-keyword">CONSTRAINT</span> chck_ptr <span class="hljs-keyword">CHECK</span> (ptr <span class="hljs-keyword">IS</span> <span class="hljs-keyword">NOT</span> <span class="hljs-literal">NULL</span>),
+  <span class="hljs-keyword">CONSTRAINT</span> plan_20190221_dt_check <span class="hljs-keyword">CHECK</span> (dt = <span class="hljs-string">'2019-02-21'</span>::<span class="hljs-built_in">date</span>)<font></font>
+)<font></font>
+INHERITS (public.plan)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+セクションの総量は「ファクト」の数によって決まり、外部プロセスにのみ依存するため、ヒープ（</font></font><code>pg_relation_size</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）の</font><font style="vertical-align: inherit;">サイズを</font><font style="vertical-align: inherit;">その中のレコード数で</font><font style="vertical-align: inherit;">割ります。</font><font style="vertical-align: inherit;">つまり</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、実際に保存されたレコードの平均サイズ</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を取得します</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/jx/6e/im/jx6eimznnvdqtrzp6aohdvxluzs.png"></div><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ボリュームのマイナス6％</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、素晴らしい！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、もちろん、すべてがそれほどバラ色ではありません- </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インデックスではフィールドの順序を変更できない</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ため、「一般に」（</font></font><code>pg_total_relation_size</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）...</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/az/3m/6z/az3m6zsyv47wtawrbk_tdmwdpfg.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+...結局のところ、</font><font style="vertical-align: inherit;">コードを1行も変更せずに、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ここ</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で</font><b><font style="vertical-align: inherit;">1.5％節約</font></b><font style="vertical-align: inherit;">できました。</font><font style="vertical-align: inherit;">はいはい！</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/gb/dr/ps/gbdrpsonli0eclk4ozdjjtofnda.png"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上記のフィールドの配置は、最も最適なものではないことに注意してください。</font><font style="vertical-align: inherit;">一部のフィールドブロックは、美的な理由で既に「壊れている」ことを望まないためです。たとえば、</font></font><code>(pack, recno)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">このテーブルのPK </font><font style="vertical-align: inherit;">であるペア</font><font style="vertical-align: inherit;">などです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般に、「最小」フィールド配置の定義は、かなり単純な「網羅的」タスクです。</font><font style="vertical-align: inherit;">したがって、データよりも優れた結果を得ることができます-ぜひお試しください！</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja498280/index.html">フェニックス属のドードー鳥の物語。ドードー大崩壊IS</a></li>
+<li><a href="../ja498282/index.html">[手順] Googleサイトプラットフォームでアカウントとサイトを作成する</a></li>
+<li><a href="../ja498284/index.html">英語学習を最適化する方法</a></li>
+<li><a href="../ja498288/index.html">あなたの街には地下鉄バスが必要です</a></li>
+<li><a href="../ja498290/index.html">手続き型水文学：川と湖の動的シミュレーション</a></li>
+<li><a href="../ja498294/index.html">オブジェクト検出 認識し、支配する。パート1</a></li>
+<li><a href="../ja498296/index.html">システムレベルでの設計。パート1.アイデアからシステムへ</a></li>
+<li><a href="../ja498298/index.html">企業はバグ報奨金を使用してハッカーの沈黙を購入</a></li>
+<li><a href="../ja498300/index.html">Blitz.Engine：アセットシステム</a></li>
+<li><a href="../ja498302/index.html">ILO Advancedライセンス。なぜ今必要なのですか？</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,622 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>⏭️ 🧑🏼 🚣🏾 ClickHouseでLZ4のアンロードを高速化する方法 👩🏻‍🤝‍👨🏾 🍄 ❣️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="ClickHouseでクエリを実行すると、プロファイラーで最初の場所の1つにLZ_decompress_fast関数が表示されることがよくあります。なぜそれが起こるのですか？この質問は、最良の解凍アルゴリズムを選択することに関する研究全体の理由になりました。ここで私は研究全体を公開し、短いバージョン...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>ClickHouseでLZ4のアンロードを高速化する方法</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/452778/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ClickHouseでクエリを実行すると、プロファイラーで最初の場所の1つにLZ_decompress_fast関数が表示されることがよくあります。なぜそれが起こるのですか？この質問は、最良の解凍アルゴリズムを選択することに関する研究全体の理由になりました。ここで私は研究全体を公開し、短いバージョンは</font><font style="vertical-align: inherit;">HighLoad ++ Siberiaに関する</font><font style="vertical-align: inherit;">私の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レポート</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で</font><font style="vertical-align: inherit;">見つけることができます</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ClickHouseデータは圧縮形式で保存されます。クエリを実行している間、ClickHouseはほとんど何もしません-最小限のCPUリソースを使用します。しばらく時間がかかる可能性のあるすべての計算はすでに適切に最適化されており、リクエストはユーザーによって適切に記述されています。その後、リリースを実行するために残ります。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/057/302/aba/057302aba5041790af404c2c781c4dd3.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+問題は、なぜLZ4のアンロードがボトルネックになるのでしょうか。 LZ4は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">非常に軽量なアルゴリズムのようです。</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：データに応じて、解凍速度は通常、プロセッサコアあたり1〜3 GB /秒です。これは、ディスクサブシステムの速度を大幅に上回ります。さらに、利用可能なすべてのカーネルを使用し、拡張はすべての物理カーネルにわたって線形にスケーリングします。</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、注意すべき点が2つあります。まず、圧縮されたデータがディスクから読み取られ、圧縮率は非圧縮データの量で与えられます。圧縮率が十分に大きければ、ディスクからほとんど何も読み取る必要はありません。しかし同時に、大量の圧縮データが生成され、もちろんこれはCPUの消費に影響します。LZ4の場合のデータ圧縮作業の量は、圧縮データ自体の量にほぼ比例します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、データがキャッシュにある場合、ディスクからのデータの読み取りはまったく必要ない場合があります。これを行うには、ページキャッシュを利用するか、独自のキャッシュを使用します。列データベースでは、すべての列がキャッシュに分類されるわけではなく、頻繁に使用される列のみに分類されるため、キャッシュを使用する方が効率的です。そのため、CPU負荷の点でLZ4がボトルネックになることがよくあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、さらに2つの質問があります。データ圧縮が「遅くなる」場合、多分それらはまったく圧縮されるべきではありませんか？しかし実際には、この仮定は意味がありません。最近ClickHouseでは、LZ4と</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Zstandardの</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2つのデータ圧縮オプションのみを構成することが可能</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">でした</font></a><font style="vertical-align: inherit;">。デフォルトはLZ4です。 Zstandardに切り替えることで、圧縮をより強く、より遅くすることができます。しかし、最近まで圧縮を完全に無効にすることは不可能でした-LZ4は、常に使用できる妥当な最小値と見なされています。それが私がLZ4を本当に愛している理由です。 :) </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、最近、英語の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サポートチャットで</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ClickHouseは、非常に高速なディスクサブシステム（NVMe SSD）を使用しており、すべてが圧縮に依存しているという不思議な見知らぬ人のように見えました。これをオフにできると便利です。そのような可能性はないと返信しましたが、追加は簡単です。数日後</font><font style="vertical-align: inherit;">、圧縮方法を実装</font><font style="vertical-align: inherit;">する</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プール要求</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を受け取りました</font></font><code>none</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。私は結果を求めました-これがどれだけ役に立ったか、どのくらい迅速にリクエストをしたか。その人は、この新しい機能は実際には役に立たないことがわかったと言いました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+発生する2番目の質問は、キャッシュがある場合は、既に圧縮されていないデータをキャッシュに保存してみませんか。これは許可されています-多くの場合、解凍の必要性を取り除くことが可能です。そしてClickHouseにはそのようなキャッシュがあります-</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ブロックされていないキャッシュ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">しかし、効率が低いため、大量のRAMを使用するのは残念です。</font><font style="vertical-align: inherit;">ほぼ同じデータを使用する小さな連続したリクエストでのみ正当化されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般的な考慮事項：データは、できれば常に圧縮する必要があります。</font><font style="vertical-align: inherit;">常に圧縮ディスクに書き込みます。</font><font style="vertical-align: inherit;">圧縮も使用してネットワーク経由で送信します。</font><font style="vertical-align: inherit;">私の意見では、データセンター内でオーバーサブスクライブせずに10ギガビットネットワークに転送する場合でも、デフォルトの圧縮は正当であると考える必要があり、データセンター間で圧縮せずにデータを転送することは一般に受け入れられません。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LZ4を選ぶ理由</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+LZ4を使用する理由もっと簡単なものを選ぶことは可能ですか？原則としてそれは可能であり、それは正しく有用です。しかし、最初にLZ4が属するアルゴリズムのクラスを見てみましょう。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まず、データ型に依存しません。たとえば、整数の配列があることが事前にわかっている場合は、VarIntアルゴリズムの多くのバリアントの1つを使用できます。これは、CPUでより効率的になります。第二に、LZ4はデータモデルに必要な前提条件にあまり依存していません。順序付けられた時系列のセンサー測定値-float型の番号を持つ配列があるとします。次に、デルタを計算してさらに圧縮することができ、圧縮率がより効率的になります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+つまり、LZ4は、バイト配列-ファイルに問題なく使用できます。もちろん、彼には独自の専門分野があります（以下でさらに詳しく説明します）。場合によっては、それを使用しても意味がありません。しかし、これを汎用アルゴリズムと呼ぶと、これは小さな間違いになります。また、内部デバイスのおかげで、LZ4は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RLE</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">アルゴリズムを特別なケースとして自動的に実装し</font><font style="vertical-align: inherit;">ます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の質問：LZ4は、速度と圧縮力の組み合わせに対してこのクラスの最も最適なアルゴリズムですか？このようなアルゴリズムはパレートフロンティアと呼ばれます。つまり、1つのインジケーターで厳密に優れ、他のインジケーターで劣るアルゴリズムは他にありません（さまざまなデータセットでさえも）。アルゴリズムは高速ですが、圧縮率は低く、圧縮率は高くなりますが、圧縮または解凍の速度は遅くなります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際、LZ4はパレートフロンティアではありません。少し良いオプションがあります。例えば、これは</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LZTURBO</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ある種から</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">powturbo</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">encode.ruのコミュニティ（データ圧縮のための最大かつほぼ唯一のフォーラム）のおかげで、結果の信頼性に疑いはありません。</font><font style="vertical-align: inherit;">しかし、開発者はソースコードやバイナリを配布しませんが、テストまたは多額のお金（これまで誰も支払っていないように）のために限られた人々にのみ提供します。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トカゲ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（旧LZ5）と</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">密度</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">にも注意を払う価値が</font><font style="vertical-align: inherit;">あり</font><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">ある程度の圧縮レベルを選択すると、LZ4よりも少し良く機能します。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LZSSEに</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">も注目して</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ください</font></a><font style="vertical-align: inherit;"> -非常に興味深いことです。</font><font style="vertical-align: inherit;">ただし、この記事を読んだ後、それを確認することをお勧めします。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LZ4はどのように機能しますか？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+LZ4が一般的にどのように機能するかを見てみましょう。</font><font style="vertical-align: inherit;">これはLZ77アルゴリズムの実装の1つです。LとZは著者（LempelとZiv）の名前を示し、77-アルゴリズムが公開された1977年のことです。</font><font style="vertical-align: inherit;">他の多くの実装があります：QuickLZ、FastLZ、BriefLZ、LZF、LZO、低圧縮レベルを使用する場合のgzipおよびzip。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+LZ4を使用して圧縮されたデータブロックには、次の2つのタイプのレコード（コマンド、命令）のシーケンスが含まれています。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リテラル：「次のNバイトをそのまま使用して、結果にコピーします。」</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一致（一致）：「現在の位置からのオフセットオフセットによって既に解凍されたNバイトを取得します。」</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例。圧縮前：圧縮</font></font><br>
+<code>Hello world Hello</code><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+後：</font></font><br>
+<code>literals 12 "Hello world " match 5 12</code><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+圧縮されたブロックをカーソルで移動し、これらのコマンドを実行すると、結果として元の圧縮されていないデータが取得されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データがどのように解凍されるかを大まかに調べました。要点も明らかです。圧縮を実行するために、アルゴリズムは一致を使用して繰り返しバイトシーケンスをエンコードします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+明確でいくつかのプロパティ。このバイト指向のアルゴリズム-個々のバイトを分析するのではなく、全体をコピーするだけです。ここに、たとえばエントロピーコーディングとの違いがあります。たとえば、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">zstd</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">はLZ77とエントロピーコーディングの</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">組み合わせ</font></a><font style="vertical-align: inherit;">です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アンロード中に大量のRAMを消費しないように、圧縮ブロックのサイズは大きすぎないことに注意してください。圧縮ファイル（多くの圧縮ブロックで構成される）でのランダムアクセスが遅くならないようにするため。そして時々ブロックがいくつかのCPUキャッシュに収まるようにします。たとえば、64 KBを選択できます-圧縮および非圧縮データのバッファーはL2キャッシュに収まり、残りは残ります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+大きなファイルを圧縮する必要がある場合は、圧縮されたブロックを連結するだけです。同時に、各圧縮ブロックの隣に、サイズ、チェックサムなどの追加データを配置すると便利です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一致の最大オフセットは、LZ4で制限されます-64キロバイト。この値は、スライディングウィンドウと呼ばれます。実際、これは、カーソルが前方に移動するときに、カーソルと一緒に移動するカーソルとのサイズが64キロバイトのウィンドウに一致する可能性があることを意味します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、データを圧縮する方法、つまり、ファイル内で一致するシーケンスを見つける方法を見てみましょう。もちろん、サフィックストライを使用することもできます（聞いたことがある場合は素晴らしい）。最長の一致シーケンスが圧縮プロセスの前のバイトの間にあることが保証されるオプションがあります。これは最適な解析と呼ばれ、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ほぼ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">固定圧縮ブロック形式に最適な圧縮率。しかし、より効果的なオプションがあります。データに十分に一致するものがあるが、必ずしも最長ではない場合です。それを見つける最も効率的な方法は、ハッシュテーブルを使用することです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これを行うには、カーソルを使用してソースデータブロックを通過し、カーソルの後に数バイトを取ります。たとえば、4バイトです。それらをハッシュし、これらの4バイトが出会ったブロックの先頭からのオフセットをハッシュテーブルに入れます。値4はmin-matchと呼ばれます-このようなハッシュテーブルを使用して、少なくとも4バイトの一致を見つけることができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ハッシュテーブルを見て、そこに既にレコードがあり、オフセットがスライディングウィンドウを超えていない場合は、これらの4バイトの後にさらに何バイトが一致するかを確認します。たぶん、それだけではありません。ハッシュテーブルで衝突が発生し、何にも一致しない可能性もあります。これは正常です。ハッシュテーブルの値を新しい値に置き換えるだけです。ハッシュテーブルの衝突は、一致が少ないため、単に圧縮率が低くなります。ちなみに、このタイプの（固定サイズで、衝突解決のない）ハッシュテーブルは、キャッシュテーブル、キャッシュテーブルと呼ばれます。これも論理的です。衝突が発生した場合、キャッシュテーブルは古いレコードを忘れます。</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意深い読者のためのタスク。</font><font style="vertical-align: inherit;">データをリトルエンディアン形式のUInt32のような数値の配列にします。これは自然数のシーケンスの一部です：0、1、2 ... LZ4を使用するときにこのデータが圧縮されない理由を説明します（圧縮データの量は非圧縮データの量以上です）。</font></font></blockquote> <h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">物事をスピードアップする方法</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そこで、LZ4のアンロードを高速化したいと思います。</font><font style="vertical-align: inherit;">アンロードサイクルがどのようなものか見てみましょう。</font><font style="vertical-align: inherit;">擬似コードのループは次のとおりです。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ながら（...）</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+{</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    読み取り（input_pos、literal_length、match_length）;</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    コピー（output_pos、input_pos、literal_length）;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    output_pos + = literal_length;</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    読み取り（input_pos、match_offset）;</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    コピー（output_pos、output_pos-match_offset、</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        match_length）;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    output_pos + = match_length;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+}</font></font></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+LZ4形式は、リテラルと一致が圧縮ファイルで交互になるように設計されています。そして明らかに、リテラルは常に最初に来ます（最初から試合にはどこからも行くことができないため）。したがって、それらの長さは一緒にエンコードされます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際、すべてがもう少し複雑です。ファイルから1バイトが読み取られ、2バイトがそこから取得され、0から15までの数値がエンコードされます。対応する数値が15と等しくない場合、それぞれリテラルと一致の長さと見なされます。そして、それが15に等しい場合、長さは長くなり、次のバイトにエンコードされます。次に、次のバイトが読み取られ、その値が長さに追加されます。さらに、それが255に等しい場合は、続行します-同じ方法で次のバイトを読み取ります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+LZ4形式の最大圧縮率は255に到達しないことに注意してください。2番目の（役に立たない）観察：データが非常に冗長な場合、LZ4を使用すると圧縮率が2倍になります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リテラルの長さ（および一致の長さと一致のオフセット）を読み取るとき、解放するためには、2つのメモリをコピーするだけで十分です。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メモリの一部をコピーする方法</font></font></h3><br><font style="vertical-align: inherit;"></font><code>memcpy</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メモリの一部をコピーするように設計され</font><font style="vertical-align: inherit;">
+た関数</font><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">使用できるように思え</font><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">しかし、これは最適ではなく、まだ正しくありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+memcpy関数の使用が最適ではないのはなぜですか？</font><font style="vertical-align: inherit;">彼女は：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通常はlibcライブラリにあります（libcライブラリは通常動的にリンクし、memcpy呼び出しはPLTを介して間接的に行われます）。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コンパイル時に不明なサイズ引数とインラインではなく、</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">マシンワードまたはレジスタのサイズの倍数ではないメモリフラグメントの「テール」を正しく処理するために多くの努力をします。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最後のポイントが最も重要です。</font><font style="vertical-align: inherit;">ちょうど5バイトをコピーするようにmemcpy関数に要求したとします。</font><font style="vertical-align: inherit;">これには2つのmovq命令を使用して、一度に8バイトをコピーすると非常に便利です。</font><font style="vertical-align: inherit;">
+ただし、追加の3バイトをコピーします。つまり、転送されたバッファを海外に書き込みます。</font><font style="vertical-align: inherit;">関数</font><font style="vertical-align: inherit;">にはこれを実行する権限がありません。実際、プログラム内の一部のデータを上書きするため、メモリからの「トリップ」が発生します。</font><font style="vertical-align: inherit;">また、アラインされていないアドレスで書き込んだ場合、これらの余分なバイトは、割り当てられていない仮想メモリページまたは書き込みアクセスのないページに配置できます。</font><font style="vertical-align: inherit;">次に、segfaultを取得します（それで問題ありません）。</font></font><br>
+<br>
+<code>Hello world <font color="#0fc000">Hello </font><font color="#ff0000">wo</font>...<br>
+^^^^^<font color="#ff0000">^^^</font> - src<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;^^^^^<font color="#ff0000">^^^</font> - dst</code><br>
+<br><font style="vertical-align: inherit;"></font><code>memcpy</code><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、私たちのケースでは、ほとんど常に追加のバイトを書き込むことができます。</font><font style="vertical-align: inherit;">余分なバイトが完全に配置されている限り、入力バッファーの余分なバイトを読み取ることができます。</font><font style="vertical-align: inherit;">同じ条件下で、出力バッファーに追加のバイトを書き込むことができます。次の反復でとにかくそれらを上書きするためです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この最適化は、元のLZ4実装にすでに含まれています。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インラインvoid copy8（UInt8 * dst、const UInt8 * src）</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+{</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    memcpy（dst、src、8）; </font><font style="vertical-align: inherit;">///実際には、memcpyはここでは呼び出されません。</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+}</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+inline void wildCopy8（UInt8 * dst、const UInt8 * src、UInt8 * dst_end）</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+{</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    行う</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    {</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        copy8（dst、src）;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        dst + = 8;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        src + = 8;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    } while（dst &lt;dst_end）;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+}</font></font></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この最適化を利用するには、バッファの境界から十分に離れていることを確認するだけで済みます。バッファが範囲外であることをすでに確認しているので、これは自由であるべきです。そして、最後の数バイト（データの「テール」）の処理は、メインループの後で実行できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、まだ微妙な点があります。サイクルには2つのコピー-リテラルと一致があります。ただし、LZ4_decompress_fast関数を（LZ4_decompress_safeの代わりに）使用すると、チェックが1回実行されます-リテラルをコピーする必要があるときに。一致をコピーする場合、チェックは実行されませんが、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LZ4形式の仕様</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">自体</font><font style="vertical-align: inherit;">には、それを回避できる条件があります。</font></font><br>
+<br>
+<blockquote>The last 5 bytes are always literals<br>
+The last match must start at least 12 bytes before end of block.<br>
+Consequently, a block with less than 13 bytes cannot be compressed.</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+特別に選択された入力データは、メモリドライブを引き起こす可能性があります。</font><font style="vertical-align: inherit;">LZ4_decompress_fast関数を使用する場合、不良データに対する保護が必要です。</font><font style="vertical-align: inherit;">圧縮されたデータは少なくともチェックサムでなければなりません。</font><font style="vertical-align: inherit;">また、攻撃者に対する保護が必要な場合は、LZ4_decompress_safe関数を使用します。</font><font style="vertical-align: inherit;">その他のオプション：暗号化ハッシュ関数をチェックサムとして使用しますが、ほぼ確実にすべてのパフォーマンスが失われます。</font><font style="vertical-align: inherit;">バッファにより多くのメモリを割り当てるか、</font><font style="vertical-align: inherit;">個別にmmapを呼び出してバッファにメモリを割り当て、ガードページを作成します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+8バイトのデータをコピーするコードを見つけたら、すぐに尋ねます-なぜ正確に8バイトなのですか？</font><font style="vertical-align: inherit;">SSEレジスタを使用して16バイトをコピーできます。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インラインvoid copy16（UInt8 * dst、const UInt8 * src）</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+{</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+#if __SSE2__</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    _mm_storeu_si128（reinterpret_cast &lt;__ m128i *&gt;（dst）、</font></font><font></font>
+        _mm_loadu_si128(reinterpret_cast&lt;const __m128i *&gt;(src)));<font></font>
+#else<font></font>
+    memcpy(dst, src, 16);<font></font>
+#endif<font></font>
+}<font></font>
+<font></font>
+inline void wildCopy16(UInt8 * dst, const UInt8 * src, UInt8 * dst_end)<font></font>
+{<font></font>
+    do<font></font>
+    {<font></font>
+        copy16(dst, src);<font></font>
+        dst += 16;<font></font>
+        src += 16;<font></font>
+    } while (dst &lt; dst_end);<font></font>
+}</pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+AVXの32バイトとAVX-512の64バイトのコピーも同様に機能します。</font><font style="vertical-align: inherit;">さらに、サイクルを数回拡張することができます。</font><font style="vertical-align: inherit;">これがどのように実装されるかを見たことがあるなら</font></font><code>memcpy</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、それはまさにこのアプローチです。</font><font style="vertical-align: inherit;">（ちなみに、この場合のコンパイラーは、ループを拡張したりベクトル化したりしません。これには、面倒なチェックを挿入する必要があります。）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+なぜこれが元のLZ4実装で行われていないのですか？</font><font style="vertical-align: inherit;">まず、これが良いか悪いかは明らかではありません。</font><font style="vertical-align: inherit;">結果は、コピーする必要があるフラグメントのサイズによって異なります。</font><font style="vertical-align: inherit;">突然、それらはすべて短くなり、余分な作業は無駄になりますか？</font><font style="vertical-align: inherit;">そして、2つ目は、LZ4形式の条件を破壊し、内側のループで不要なブランチを回避できるようにします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それでも、今のところはこのオプションを覚えておきます。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トリッキーなコピー</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+質問に戻ります-この方法でデータをコピーすることは常に可能ですか？一致をコピーする必要があると仮定します。つまり、カーソルの後ろのオフセットにある出力バッファから、このカーソルの位置にメモリの一部をコピーします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+単純なケースを想像してみてください-オフセット12で5バイトをコピーする必要があります：</font><font style="vertical-align: inherit;">
+しかし、もっと複雑なケースがあります-オフセットより長いメモリの一部をコピーする必要がある場合です。つまり、出力バッファにまだ書き込まれていないデータを部分的に示します。</font><font style="vertical-align: inherit;">
+オフセット3に10バイトをコピーします。</font><font style="vertical-align: inherit;">
+圧縮プロセスでは、すべてのデータがあり、そのような一致が見つかる可能性があります。この関数は</font><font style="vertical-align: inherit;">コピーに適していません。メモリフラグメントの範囲が交差する場合をサポートしていません。ちなみに、機能</font></font><br>
+<br>
+<code><font color="#0fc000">Hello</font> world ...........<br>
+^^^^^ - src<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;^^^^^ - dst<br>
+<br>
+Hello world <font color="#0fc000">Hello</font> <font color="#a8a8a8">wo</font>...<br>
+^^^^^ - src<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;^^^^^ - dst</code><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br>
+<code><font color="#0fc000">abc</font>.............<br>
+^^^^^^^^^^ - src<br>
+&nbsp;&nbsp;&nbsp;^^^^^^^^^^ - dst<br>
+<br>
+abc<font color="#0fc000">abcabcabca</font>...<br>
+^^^^^^^^^^ - src<br>
+&nbsp;&nbsp;&nbsp;^^^^^^^^^^ - dst</code><br>
+<br><font style="vertical-align: inherit;"></font><code>memcpy</code><font style="vertical-align: inherit;"></font><code>memmove</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">また、データを取得する場所からのメモリフラグメントがまだ完全に初期化されていないため、適合しません。</font><font style="vertical-align: inherit;">バイト単位でコピーしているかのようにコピーする必要があります。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">op [0] = [0]に一致;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+op [1] = [1]に一致;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+op [2] = [2]に一致;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+op [3] = [3]に一致;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+...</font></font></pre><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+仕組みは次のとおりです。</font><font style="vertical-align: inherit;">
+つまり、繰り返しシーケンスを作成する必要があります。</font><font style="vertical-align: inherit;">元のLZ4実装では、驚くほどわかりにくいコードがこのために作成されました。</font></font><br>
+<br>
+<code><font color="#0fc000">a</font>bc<font color="#0fc000">a</font>............<br>
+^ - src<br>
+&nbsp;&nbsp;&nbsp;^ - dst<br>
+<br>
+a<font color="#0fc000">b</font>ca<font color="#0fc000">b</font>...........<br>
+&nbsp;^ - src<br>
+&nbsp;&nbsp;&nbsp;&nbsp;^ - dst<br>
+<br>
+ab<font color="#0fc000">c</font>ab<font color="#0fc000">c</font>..........<br>
+&nbsp;&nbsp;^ - src<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;^ - dst<br>
+<br>
+abc<font color="#0fc000">a</font>bc<font color="#0fc000">a</font>.........<br>
+&nbsp;&nbsp;&nbsp;^ - src<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;^ - dst<br>
+<br>
+abca<font color="#0fc000">b</font>ca<font color="#0fc000">b</font>........<br>
+&nbsp;&nbsp;&nbsp;&nbsp;^ - src<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;^ - dst</code><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">const unsigned dec32table [] = {0、1、2、1、4、4、4、4};</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+const int dec64table [] = {0、0、0、-1、0、1、2、3};</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+const int dec64 = dec64table [オフセット];</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+op [0] = [0]に一致;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+op [1] = [1]に一致;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+op [2] = [2]に一致;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+op [3] = [3]に一致;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一致+ = dec32table [オフセット];</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+memcpy（操作+ 4、一致、4）;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一致-= dec64;</font></font></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初の4バイトをバイトごとにコピーし、マジック番号ごとにシフトし、次の4バイト全体をコピーし、ポインタをシフトして別のマジック番号と一致させます。</font><font style="vertical-align: inherit;">コードの作成者（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Jan Collet</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）は、とんでもない理由で、これが何を意味するのかコメントを残すのを忘れていました。</font><font style="vertical-align: inherit;">さらに、変数名は紛らわしいです。</font><font style="vertical-align: inherit;">どちらもdec ...テーブルと呼ばれますが、一方を追加し、もう一方を減算します。</font><font style="vertical-align: inherit;">また、もう1つは符号なしで、もう1つはintです。</font><font style="vertical-align: inherit;">しかし、それは敬意を表する価値があります。つい最近、著者はコードのこの場所を改善しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際の動作は次のとおりです。</font><font style="vertical-align: inherit;">最初の4バイトバイトをコピーします。</font><font style="vertical-align: inherit;">
+これで、一度に4バイトをコピーできます。一度に</font><font style="vertical-align: inherit;">
+8バイトをコピーすることで、通常どおり続行できます。</font></font><br>
+<br>
+<code>abc<font color="#0fc000">abca</font>.........<br>
+^^^^ - src<br>
+&nbsp;&nbsp;&nbsp;^^^^ - dst</code><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br>
+<code>abcabca<font color="#0fc000">bcab</font>.....<br>
+&nbsp;^^^^ - src<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;^^^^ - dst</code><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br>
+<code>abcabcabcab<font color="#0fc000">cabcabca</font>.....<br>
+&nbsp;&nbsp;^^^^^^^^ - src<br>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;^^^^^^^^ - dst</code><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+経験から知っているように、コードを理解する最良の方法は、コードを書き直すことです。</font><font style="vertical-align: inherit;">これが起こったことです：</font></font><br>
+<br>
+<pre>inline void copyOverlap8(UInt8 * op, const UInt8 *&amp; match, const size_t offset)<font></font>
+{<font></font>
+    /// 4 % n.<font></font>
+    /// Or if 4 % n is zero, we use n.<font></font>
+    /// It gives equivalent result, but is better CPU friendly for unknown reason.<font></font>
+    static constexpr int shift1[] = { 0, 1, 2, 1, 4, 4, 4, 4 };<font></font>
+<font></font>
+    /// 8 % n - 4 % n<font></font>
+    static constexpr int shift2[] = { 0, 0, 0, 1, 0, -1, -2, -3 };<font></font>
+<font></font>
+    op[0] = match[0];<font></font>
+    op[1] = match[1];<font></font>
+    op[2] = match[2];<font></font>
+    op[3] = match[3];<font></font>
+<font></font>
+    match += shift1[offset];<font></font>
+    memcpy(op + 4, match, 4);<font></font>
+    match += shift2[offset];<font></font>
+}</pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もちろん、パフォーマンスはまったく変わっていません。</font><font style="vertical-align: inherit;">ただし、正規のコピーが一度に16バイトになる最適化を実際に試したかったのです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、これは「特殊なケース」を複雑にし、より頻繁に呼び出される（条件が</font></font><code>offset &lt; 16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">満たさ</font><font style="vertical-align: inherit;">れる）ことにつながり</font></font><code>offset &lt; 8</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">16バイトコピーの場合の交差範囲のコピー（開始）は次のようになります。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インラインvoid copyOverlap16（UInt8 * op、const UInt8 *＆一致、const size_tオフセット）</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+{</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    /// 4％n。</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    静的constexpr int shift1 []</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        = {0、1、2、1、4、4、4、4、4、4、4、4、4、4、4、4、4};</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    /// 8％n-4％n</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    静的constexpr int shift2 []</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        = {0、0、0、1、0、-1、-2、-3、-4、4、4、4、4、4、4、4};</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    /// 16％n-8％n</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    静的constexpr int shift3 []</font></font><font></font>
+        = { 0,  0,  0, -1,  0, -2,  2,  1,  8, -1, -2, -3, -4, -5, -6, -7 };<font></font>
+<font></font>
+    op[0] = match[0];<font></font>
+    op[1] = match[1];<font></font>
+    op[2] = match[2];<font></font>
+    op[3] = match[3];<font></font>
+<font></font>
+    match += shift1[offset];<font></font>
+    memcpy(op + 4, match, 4);<font></font>
+    match += shift2[offset];<font></font>
+    memcpy(op + 8, match, 8);<font></font>
+    match += shift3[offset];<font></font>
+}</pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この特定の機能をより最適に実装することは可能ですか？</font><font style="vertical-align: inherit;">このような複雑なコードが魔法のSIMD命令を見つけられるようにしたいのは、完全に数バイトの入力データ（1から15）で構成される16バイトを書き込むだけだからです。</font><font style="vertical-align: inherit;">次に、正しい順序で繰り返す必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そのような命令があります- </font></font><code>pshufb</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（packed shuffle bytesという単語から）呼び出され、SSSE3（Sの3文字）に含まれています。</font><font style="vertical-align: inherit;">2つの16バイトレジスタを受け入れます。</font><font style="vertical-align: inherit;">1つのレジスタにはソースデータが含まれています。</font><font style="vertical-align: inherit;">別の方法としては、「セレクター」があります。ソースレジスタのどのバイトから結果を取得するかに応じて、各バイトに0〜15の数値が書き込まれます。</font><font style="vertical-align: inherit;">または、セレクタバイトの値が127より大きい場合は、結果の対応するバイトをゼロで埋めます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に例を示します。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">xmm0：abc .............</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+xmm1：0120120120120120</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+pshufb％xmm1、％xmm0</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+xmm0：abcabcabcabcabca</font></font></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+結果の各バイトを、選択したソースデータのバイトで埋めました-これがまさに私たちが必要とするものです！</font><font style="vertical-align: inherit;">結果として、コードは次のようになります。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インラインvoid copyOverlap16Shuffle（UInt8 * op、const UInt8 *＆一致、const size_tオフセット）</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+{</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+#ifdef __SSSE3__</font></font><font></font>
+<font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    静的constexpr UInt8 __属性__（（__整列__（16）））マスク[] =</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    {</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        0、1、2、1、4、1、4、2、8、7、6、5、4、3、2、1 / *オフセット= 0、マスクとしては使用されず、シフト量に対して* /</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        0、0、0、0、0、0、0、0、0、0、0、0、0、0、0、0、0、/ *オフセット= 1 * /</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        0、1、0、1、0、1、0、1、0、1、0、1、0、1、0、1</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        0、1、2、0、1、2、0、1、2、0、1、2、0、1、2、0、</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        0、1、2、3、0、1、2、3、0、1、2、3、0、1、2、3</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+        0、1、2、3、4、0、1、2、3、4、0、1、2、3、4、0、</font></font><font></font>
+        0,  1,  2,  3,  4,  5,  0,  1,  2,  3,  4,  5,  0,  1,  2,  3,<font></font>
+        0,  1,  2,  3,  4,  5,  6,  0,  1,  2,  3,  4,  5,  6,  0,  1,<font></font>
+        0,  1,  2,  3,  4,  5,  6,  7,  0,  1,  2,  3,  4,  5,  6,  7,<font></font>
+        0,  1,  2,  3,  4,  5,  6,  7,  8,  0,  1,  2,  3,  4,  5,  6,<font></font>
+        0,  1,  2,  3,  4,  5,  6,  7,  8,  9,  0,  1,  2,  3,  4,  5,<font></font>
+        0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10,  0,  1,  2,  3,  4,<font></font>
+        0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11,  0,  1,  2,  3,<font></font>
+        0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12,  0,  1,  2,<font></font>
+        0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13,  0,  1,<font></font>
+        0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14,  0,<font></font>
+    };<font></font>
+<font></font>
+    _mm_storeu_si128(reinterpret_cast&lt;__m128i *&gt;(op),<font></font>
+        _mm_shuffle_epi8(<font></font>
+            _mm_loadu_si128(reinterpret_cast&lt;const __m128i *&gt;(match)),<font></font>
+            _mm_load_si128(reinterpret_cast&lt;const __m128i *&gt;(masks) + offset)));<font></font>
+<font></font>
+    match += masks[offset];<font></font>
+<font></font>
+#else<font></font>
+    copyOverlap16(op, match, offset);<font></font>
+#endif<font></font>
+}</pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これ</font></font><code>_mm_shuffle_epi8</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、</font><font style="vertical-align: inherit;">命令に</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">展開</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">する</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">組み込み関数</font></a></font><code>pshufb</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+新しい命令を使用して、一度により多くのバイトに対してそのような操作を行うことは可能ですか？実際、SSSE3は2006年以降存在していた非常に古い命令セットです。 AVX2には、これを32バイトに対して即座に実行する命令がありますが、個別の16バイトフラグメントに対してのみ独立しています。それはもはやパックされたシャッフルバイトと呼ばれていませんが、ベクトル置換バイト-単語は異なりますが、意味は同じです。 AVX-512 VBMIには、64バイトですぐに機能する別の命令がありますが、そのサポートを備えたプロセッサが最近登場しました。 ARM NEONにも同様の命令が存在します。それらはvtbl（ベクトルテーブルルックアップ）と呼ばれますが、8バイトしか書き込むことができません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さらに、命令のバリアントがあります。</font></font><code>pshufb</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">64ビットのMMXレジスタを使用して8バイトを形成します。</font><font style="vertical-align: inherit;">ソースコードを置き換えるのにちょうどいいです。</font><font style="vertical-align: inherit;">しかし、それの代わりに、とにかく（深刻な理由により）16バイトで動作するオプションを使用することにしました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Highload ++ Siberiaカンファレンスで、私の講演の後、リスナーが私に近づき、8バイトの場合は、特別に選択された定数による乗算を使用できると言いました（シフトも必要になります）。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">過剰な場合の除去方法</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それぞれ16バイトをコピーするバリアントを使用したいとします。バッファオーバーフローの追加検証の必要性を回避する方法は？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私はこのチェックをまったく行わないことにしました。関数の解説では、開発者が指定されたバイト数のメモリを必要以上に割り当てて、そこで不要なガベージを読み書きできるようにする必要があると書かれています。関数インターフェイスは不便になりますが、これらは他の問題です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、マイナスの結果が生じる可能性があります。</font><font style="vertical-align: inherit;">解凍する必要のあるデータが65,536バイトのブロックで構成されているとします。</font><font style="vertical-align: inherit;">次に、ユーザーは解凍されたデータ用に65 536バイトのサイズのメモリを提供します。</font><font style="vertical-align: inherit;">ただし、新しい関数インターフェイスを使用すると、ユーザーは、たとえば65,551バイトからメモリを割り当てる必要があります。</font><font style="vertical-align: inherit;">次に、アロケータは、実装に応じて、実際には96キロバイトまたは128キロバイトの割り当てを余儀なくされる可能性があります。</font><font style="vertical-align: inherit;">アロケータが非常に悪い場合、ヒープ内のメモリの一部のキャッシュを突然停止し、毎回mmapを使用してメモリを割り当てます（またはmadviceを使用してメモリを解放します）。</font><font style="vertical-align: inherit;">そのようなプロセスは、ページ不在のためにひどく遅くなります。</font><font style="vertical-align: inherit;">その結果、小さな最適化の試みは、すべてが遅くなり始めるという事実につながる可能性があります。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">加速はありますか？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そこで、3つの最適化が適用されるコードバリアントを作成しました。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">8の代わりに16バイトをコピーします。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ケースはシャッフル説明書を使用してい</font></font><code>offset &lt; 16</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ifを1つ削除しました。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さまざまなデータセットでこのコードをテストし始めたところ、予期しない結果が得られました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例1：</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Xeon E2650v2、Yandex.Browserデータ、AppVersion列。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+参照：1.67 GB /秒。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+16バイト、シャッフル：2.94 GB /秒（76％高速）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例2：</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Xeon E2650v2、Yandex.Directデータ、ShowsSumPosition列。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+参照：2.30 GB /秒。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+16バイト、シャッフル：1.91 GB /秒（20％遅い）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初は、すべてが数十パーセント加速し、なんとか喜ぶことがわかりました。</font><font style="vertical-align: inherit;">その後、他のファイルでは何も加速されないことがわかりました。</font><font style="vertical-align: inherit;">減速はしているものの、それほどではありません。</font><font style="vertical-align: inherit;">結果は圧縮率に依存すると結論付けました。</font><font style="vertical-align: inherit;">ファイルが圧縮されるほど、16バイトに切り替える利点が大きくなります。</font><font style="vertical-align: inherit;">これは自然なことです。圧縮率が高いほど、コピーされるフラグメントの平均の長さが長くなります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+よりよく理解するために、C ++テンプレートを使用して、4つのケースのコードバリアントを作成しました。8バイトまたは16バイトのピースで操作します。</font><font style="vertical-align: inherit;">シャッフル命令を使用するかどうか。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テンプレート&lt;size_t copy_amount、bool use_shuffle&gt;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+void NO_INLINE decompressImpl（</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+     const char * const source、</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+     char * const dest、</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+     size_t dest_size）</font></font></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+異なるファイルでは、コードの完全に異なるバージョンが勝ちましたが、動作しているコンピューターでテストするときは、シャッフルのオプションが常に勝ちました。</font><font style="vertical-align: inherit;">稼働中のコンピューターでは、テストは不便です。これを行う必要があります。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sudo echo 'パフォーマンス' | </font><font style="vertical-align: inherit;">tee / sys / devices / system / cpu / cpu * / cpufreq / scaling_governor</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+kill -STOP $（pidof firefox）$（pidof chromium）</font></font></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、私は古い「開発」サーバー（Xeon E5645プロセッサーを搭載）の1つに行き、さらに多くのデータセットを取得し、ほぼ正反対の結果を得て、完全に混乱しました。</font><font style="vertical-align: inherit;">最適なアルゴリズムの選択は、圧縮率だけでなく、プロセッサモデルによっても決まることがわかりました。</font><font style="vertical-align: inherit;">シャッフル命令としきい値を使用する方が適切な場合は、16バイトのコピーを使用する方がよいしきい値に依存します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ちなみに、サーバーでテストする場合は、次のようにすると意味があります。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">sudo kill -STOP $（pidof python）$（pidof perl）$（pgrep -u skynet）$（pidof cqudp-client）</font></font></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そうしないと、結果が不安定になります。</font><font style="vertical-align: inherit;">また、サーマルスロットリングとパワーキャッピングにも注意してください。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最適なアルゴリズムを選択する方法</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、アルゴリズムには4つのバリアントがあり、条件に応じて最適なものを選択する必要があります。データとハードウェアの代表的なセットを作成し、適切な負荷テストを実施して、平均的に優れた方法を選択することが可能です。ただし、代表的なデータセットはありません。テストのために、Metrica、Direct、Browserおよび米国へのフライトからデータのサンプルを取得しました。しかし、これだけでは十分ではありません。ClickHouseは世界中の何百もの企業で使用されており、1つのデータセットで再最適化すると、他のデータとのパフォーマンスの低下に気付かない場合があります。結果がプロセッサモデルに依存する場合は、条件をコードに明示的に入力し、各モデルでテストする必要があります（または、命令のタイミングに関する参照データを見て、どう思いますか？）。いずれにしても、時間がかかりすぎます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、別の方法を使用することにしました。これは、ShADで無駄な勉強をしなかった同僚には明らかです。これらは</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「多武装強盗」</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。結論として、アルゴリズムのバリアントはランダムに選択され、統計に基づいて、よく表示されるオプションをより頻繁に選択し始めます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+解凍する必要のあるデータのブロックがたくさんあります。つまり、データ圧縮関数への独立した呼び出しが必要です。ブロックごとに、4つのアルゴリズムの1つを選択し、その動作時間を測定できます。このような操作は通常、データブロックの処理に比べて費用はかかりません。ClickHouseでは、非圧縮データのブロックは少なくとも64 KBです。 （</font><font style="vertical-align: inherit;">時間の測定</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に関する記事</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">読ん</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">でください</font></a><font style="vertical-align: inherit;">。）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「マルチアームバンディット」アルゴリズムがどのように機能するかを理解するために、なぜそれがそのように呼ばれるのかを見つけます。これは、カジノのスロットマシンに類似しています。これには、ランダムに金額を取得するために引くことができるペンがいくつかあります。プレイヤーは、自分が選択したシーケンスで何度でもハンドルを引くことができます。各ペンには、発行された金額の対応する固定確率分布がありますが、プレーヤーは彼を知らず、ゲームの経験に基づいてのみ評価できます。その後、彼は自分の利益を最大化することができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+賞金を最大化する1つのアプローチは、前のステップのゲームの統計に基づいて、各ステップで各ペンの確率分布を評価することです。次に、得られた分布に基づいて、各ペンのランダムな勝利を「プレイ」することを念頭に置いてください。そして、心の中で結果が出てきたペンを引っ張ります。このアプローチは、トンプソンサンプリングと呼ばれます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、解凍​​アルゴリズムを選択する必要があります。結果は、1バイトあたりのピコ秒単位の実行時間です。稼働時間を確率変数とみなし、その分布を評価します。確率変数の分布を推定するには、数学的統計の方法を使用する必要があります。このようなタスクでは、ベイジアンアプローチがよく使用されますが、C ++コードに複雑な数式を入力するのは非効率的です。パラメトリックアプローチを使用できます。つまり、確率変数はパラメーターに依存する確率変数のファミリーに属しています。次に、これらのパラメーターを評価します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+確率変数のファミリーを選択する方法は？たとえば、コードの実行時間は正規分布であると想定できます。しかし、これは絶対に真実ではありません。最初に、ランタイムは負になることはできず、正規分布は数直線全体の値を取ります。第二に、ランタイムは右側に大きなテールがあると思います。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、Thompson Samplingの目的にのみ正規分布推定を使用することに基づく要素があります（目的の値の分布が明らかに正規ではないという事実にもかかわらず）。その理由は、期待値と分散の必要な推定が非常に単純であり、十分な反復回数の後、正規分布は多かれ少なかれ狭くなり、他の方法で得られたであろう分布とあまり変わらないからです。最初のステップでの収束率にあまり関心がない場合は、そのような詳細は無視できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一方では、これはやや「無知な」アプローチです。</font><font style="vertical-align: inherit;">経験から、リクエストの完了、サイトのロードなどにかかる平均時間は「ゴミ」であり、計算しても意味がないことがわかっています。</font><font style="vertical-align: inherit;">中央値の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ロバストな統計</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を計算する方が良いでしょう</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">しかし、これはやや複雑であり、後で説明するように、実用的な目的のために、説明した方法はそれ自体を正当化します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初に、期待値と分散の計算を実装し、それが良すぎると判断し、コードを単純化して「悪化」させる必要がありました。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">///より良い収束のために、stddevの適切な推定を使用しません。</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+///万が一の場合でも、最終的に2つのアルゴリズムを分離したい</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+///それらの間に統計的有意差がない場合。</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ダブルシグマ（）const</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+{</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+    return（）/ sqrt（adjustedCount（））;</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+}</font></font><font></font>
+<font></font>
+double sample(pcg64 &amp; rng) const<font></font>
+{<font></font>
+    ...<font></font>
+    return std::normal_distribution&lt;&gt;(mean(), sigma())(rng);<font></font>
+}</pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+メモリレイテンシの影響を除外するために、最初の数回の反復が考慮されないようにすべてを書きました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それ自体が入力データに最適なアルゴリズムを選択できるテストプログラムが判明しました。追加の動作モードとして、LZ4のリファレンス実装またはアルゴリズムの固定バージョンを使用しています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、6つの動作オプションがあります</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。-参照（ベースライン）：変更を加えていない元のLZ4。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-バリアント0：8バイトをコピーし、シャッフルを使用しません。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-バリアント1：各8バイトをコピーし、シャッフルを使用します。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-バリアント2：それぞれ16バイトをコピーし、シャッフルを使用しないでください。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-バリアント3：それぞれ16バイトをコピーし、シャッフルを使用します。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-「ギャング」オプション。作業中に、リストされている4つの最適化されたオプションから最適なものを選択します。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">異なるCPUでのテスト</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+結果がCPUモデルに大きく依存している場合、その方法を学ぶのは興味深いでしょう。たぶんいくつかのCPUでは違いが特に大きいですか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ClickHouseのさまざまなテーブルから実際のデータを含むデータセットのセットを準備しました。これは、100 MBの非圧縮データの合計256個の異なるファイルです（256はちょうど一致しました）。そして、ベンチマークを実行できるサーバー上にあるCPUの種類を調べました。次のCPUを搭載したサーバーを見つけました：</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-Intel®Xeon®CPU E5-2650 v2 @ 2.60GHz </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-Intel®Xeon®CPU E5-2660 v4 @ 2.00GHz </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-Intel®Xeon®CPU E5-2660 0 @ 2.20GHz </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+- </font><font style="vertical-align: inherit;">Intel®Xeon </font><font style="vertical-align: inherit;">®CPU E5645 @ 2.40GHz </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-Intel Xeon E312xx（Sandy Bridge）</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-AMD Opteron（TM）プロセッサー6274 </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-AMD Opteron（tm）プロセッサー6380 </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-Intel®Xeon®CPU E5-2683 v4 @ 2.10GHz</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-インテル®Xeon®CPU E5530 @ 2.40GHz </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-インテル®Xeon®CPU E5440 @ 2.83GHz </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-インテル®Xeon®CPU E5-2667 v2の@ 3.30GHz </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+：最も興味深いのR＆D部門が提供するプロセッサで</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+AMD EPYC 7351 16コア-プロセッサは新しいAMDサーバープロセッサです。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-Cavium ThunderX2-これはx86ではなく、AArch64です。彼らのために、私のSIMD最適化は少しやり直しました。サーバーは、224個の論理コアと56個の物理コアを定義します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+合計13台のサーバーがあり、それぞれが6つのバリアント（参照、0、1、2、3、アダプティブ）の256個のファイルでテストを実行し、代替を交互に10回テストを実行します。結果は199,680件で、比較することができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえば、異なるCPUを相互に比較できます。</font><font style="vertical-align: inherit;">ただし、これらの結果から急いで結論を出さないでください。1つのコアでLZ4解凍アルゴリズムのみをテストします（非常に狭いケース-マイクロベンチマークを取得します）。</font><font style="vertical-align: inherit;">たとえば、Caviumのコアは最も弱いです。</font><font style="vertical-align: inherit;">しかし、私はClickHouseをテストしました。ClickHouseがx86に対してのみ行う多くの最適化の欠如にもかかわらず、コアの数が多いため、重いリクエストでXeon E5-2650 v2を「引き裂き」ます。</font></font><br>
+<br>
+<pre><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">┌─cpu─────────────────────ref─┬─adapt─┬──max─┬─best─┬─adapt_boost─┬─max_boost─┬─ adapter_over_max─┐</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+│E5-2667 v2 @ 3.30GHz│2.81│3.19│3.15│3│1.14│1.12│1.01│</font></font><font></font><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+│E5-2650 v2 @ 2.60GHz│2.5│2.84│2.81│3│1.14│1.12│1.01│</font></font><font></font>
+│ E5-2683 v4 @ 2.10GHz  │ 2.26 │  2.63 │ 2.59 │    3 │        1.16 │      1.15 │           1.02 │<font></font>
+│ E5-2660 v4 @ 2.00GHz  │ 2.15 │  2.49 │ 2.46 │    3 │        1.16 │      1.14 │           1.01 │<font></font>
+│ AMD EPYC 7351         │ 2.03 │  2.44 │ 2.35 │    3 │        1.20 │      1.16 │           1.04 │<font></font>
+│ E5-2660 0 @ 2.20GHz   │ 2.13 │  2.39 │ 2.37 │    3 │        1.12 │      1.11 │           1.01 │<font></font>
+│ E312xx (Sandy Bridge) │ 1.97 │  2.2  │ 2.18 │    3 │        1.12 │      1.11 │           1.01 │<font></font>
+│ E5530 @ 2.40GHz       │ 1.65 │  1.93 │ 1.94 │    3 │        1.17 │      1.18 │           0.99 │<font></font>
+│ E5645 @ 2.40GHz       │ 1.65 │  1.92 │ 1.94 │    3 │        1.16 │      1.18 │           0.99 │<font></font>
+│ AMD Opteron 6380      │ 1.47 │  1.58 │ 1.56 │    1 │        1.07 │      1.06 │           1.01 │<font></font>
+│ AMD Opteron 6274      │ 1.15 │  1.35 │ 1.35 │    1 │        1.17 │      1.17 │              1 │<font></font>
+│ E5440 @ 2.83GHz       │ 1.35 │  1.33 │ 1.42 │    1 │        0.99 │      1.05 │           0.94 │<font></font>
+│ Cavium ThunderX2      │ 0.84 │  0.87 │ 0.87 │    0 │        1.04 │      1.04 │              1 │<font></font>
+└───────────────────────┴──────┴───────┴──────┴──────┴─────────────┴───────────┴────────────────┘</pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ref、adapte、maxは、ギガバイト/秒の速度です（すべてのデータセットでのすべての開始の算術平均時間の逆数）。 best-最適化されたオプションの中で最高のアルゴリズムの数、0〜3。adaptive_boost-ベースラインと比較した適応アルゴリズムの相対的な利点。 max_boost-ベースラインと比較した非アダプティブオプションの最高の相対的な利点。 apt_over_max-最適な非適応型と比較した適応型アルゴリズムの相対的な利点。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ご覧のとおり、最新のx86プロセッサでは、アンロードを12〜20％高速化できました。</font><font style="vertical-align: inherit;">ARMでさえ、このアーキテクチャの最適化にあまり注意を払っていなかったにもかかわらず、4％のプラスを得ました。</font><font style="vertical-align: inherit;">また、さまざまなデータセットについて、非常に古いIntelを除くすべてのプロセッサで、平均して「ギャングスター」アルゴリズムが最良の最適なバリアントよりも優れていることも注目に値します。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">調査結果</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際には、行われた作業には疑わしい有用性があります。はい、LZ4圧縮自体は平均で12〜20％高速化され、個々のデータセットではパフォーマンスが2倍以上に向上しています。しかし、一般的に、これはクエリ実行時間に与える影響は大幅に少なくなります。速度の利点が数パーセント以上になる実際のクエリを見つけるのはそれほど簡単ではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「長い」クエリを実行するように設計されたいくつかのMetricaクラスターでは、LZ4ではなくZStandardレベル1を使用することにしました。コールドデータのIOとディスク領域を節約することがより重要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+圧縮の最適化による最大の利点は、文字列値が繰り返される列など、高度に圧縮されたデータで見られます。しかし、特にこのシナリオでは、そのようなリクエストを桁違いに高速化できる個別のソリューションを開発しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の有用な考慮事項：圧縮アルゴリズムの速度の最適化は、多くの場合、圧縮データの形式によって制限されます。 LZ4は非常に優れたフォーマットを使用しますが、Lizard、Density、LZSSEには、より高速に動作する他のフォーマットがあります。おそらく、LZ4を高速化しようとする代わりに、LZSSEをClickHouseに接続するだけの方が良いでしょう。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらの最適化をLZ4ライブラリ自体に導入することはまずありません。それらを使用するには、ライブラリインターフェイスを変更または補足する必要があります。実際、これはアルゴリズムを改善するときに非常に頻繁に発生します。最適化は古い抽象化に適合せず、修正が必要です。同時に、元の実装ではかなり多くの名前が既に修正されています。たとえば、incテーブルとdecテーブルについては、すべてが</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">正しくなりました</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。さらに、数週間前の元の実装では、上記のように、16バイトではなく32バイトをコピーすることにより、解凍を同じ12〜15％高速化しました。私たちは32バイトでこのオプションを試しました-結果はそれほどクールではありませんでしたが、全体的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">には</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">アクセラレーション</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">もあり</font></a><font style="vertical-align: inherit;">ます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+記事の冒頭のプロファイルを見ると、ユーザー空間のページキャッシュから1つの余分なコピーを削除できる（mmapを使用するか、O_DIRECTとユーザー空間のページキャッシュを使用する-両方に問題がある）ことがわかります。チェックサムの計算（CityHash128はCRC32-Cなしで使用されます。または、HighwayHash、FARSH、またはXXH3を使用できます）。</font><font style="vertical-align: inherit;">これらの2つの操作は圧縮データに対して実行されるため、これらの操作を高速化すると、弱く圧縮されたデータに役立ちます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+いずれにせよ、変更はすでにマスターに追加されており、この調査の結果として得られたアイデアは他の問題にも適用されています。</font><font style="vertical-align: inherit;">これは</font><font style="vertical-align: inherit;">HighLoad ++ Siberiaの</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ビデオ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プレゼンテーション</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">はこちらです</font><font style="vertical-align: inherit;">。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja452766/index.html">プログレッシブストリーミングテクノロジー、またはフリーズなしでネットワーク経由で4kビデオを視聴する方法</a></li>
+<li><a href="../ja452768/index.html">海外進出を決意した場合の商品デザイン</a></li>
+<li><a href="../ja452772/index.html">Goの5つの高度なテスト手法</a></li>
+<li><a href="../ja452774/index.html">Dell XPS 13 9380：本格的なビジネス向けの信頼性が高く非常にコンパクトなノートパソコン</a></li>
+<li><a href="../ja452776/index.html">N.M.D. （それは私の仕事ではありません）</a></li>
+<li><a href="../ja452780/index.html">Mobius 2019 Piter：無料のライブストリーミングとその他すべて</a></li>
+<li><a href="../ja452788/index.html">Webアプリケーション、うつ病、ドラゴン、Westerosにおける品質の闘い</a></li>
+<li><a href="../ja452790/index.html">OpenCV 4.0および4.1-新機能</a></li>
+<li><a href="../ja452792/index.html">企業ユーザー向けのソリッドステートSSDレビューKingston DC500R</a></li>
+<li><a href="../ja452794/index.html">製品のローカライズについて。パート1：どこから始めますか？</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,399 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐨 🚯 👩🏿‍✈️ PostgreSQLのWAL：3.チェックポイント 🥡 ✌🏾 🐻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="共有メモリ内の主要なオブジェクトの1つであるバッファキャッシュデバイスについてはすでに知っています。RAMの内容が消えたときに障害から回復するには、事前記録ログを保持する必要があることに気付きました。
+ 
+ 前回停止した未解決の問題は、リカバリ中にログの再生を開始できる時点がわからないことです。最初...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQLのWAL：3.チェックポイント</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/460423/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">共有メモリ内の主要なオブジェクトの1つで</font><font style="vertical-align: inherit;">ある</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファキャッシュ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">デバイスについてはすでに知ってい</font><font style="vertical-align: inherit;">ます。RAMの内容が消えたときに障害から回復するには、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">事前記録ログ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を保持する必要があることに気付きました</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+前回停止した未解決の問題は、リカバリ中にログの再生を開始できる時点がわからないことです。最初から始めるために、</font><em><font style="vertical-align: inherit;">アリス</font></em><font style="vertical-align: inherit;">からの王は助言しました</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、それは機能しません：サーバーの開始からすべてのジャーナルエントリを保存することは不可能です-これは潜在的に莫大な量であり、同じ巨大な回復時間です。</font><font style="vertical-align: inherit;">回復を開始するための、そのような段階的に前進するポイントが必要です（したがって、以前のすべてのジャーナルエントリを安全に削除できます）。</font><font style="vertical-align: inherit;">これは、</font><font style="vertical-align: inherit;">今日説明</font><font style="vertical-align: inherit;">する</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コントロールポイント</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チェックポイント</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コントロールポイントにはどのプロパティが必要ですか？</font><font style="vertical-align: inherit;">チェックポイントから始まるすべてのジャーナルエントリが、ディスクに書き込まれたページに適用されることを確認する必要があります。</font><font style="vertical-align: inherit;">そうでない場合、復元中に、ディスクから非常に古いバージョンのページを読み取り、そのページにジャーナルエントリを適用して、データに永久的な損傷を与える可能性があります。</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ブレークポイントを取得する方法は？最も簡単なオプションは、定期的にシステムを一時停止し、バッファのすべてのダーティページと他のキャッシュをディスクにフラッシュすることです。 （ページは書き込まれるだけで、キャッシュから排出されないことに注意してください。）そのようなポイントは条件を満たしますが、無期限に非常に重要な時間、常にフリーズするシステムで作業する必要はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、実際には、すべてがいくぶん複雑になります。ポイントからのコントロールポイントがセグメントに変わります。まず</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ブレークポイント</font><font style="vertical-align: inherit;">を</font><em><font style="vertical-align: inherit;">開始し</font></em><font style="vertical-align: inherit;">ます。その後、作業を​​中断せずに、可能であればピーク負荷を発生させずに、ダーティバッファーをディスクにゆっくりとダンプします。</font><em><font style="vertical-align: inherit;">最初に</font></em></font><br>
+<br>
+<img src="https://habrastorage.org/webt/n0/ch/6f/n0ch6fdrfxkylmuqjdar7idfxsw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ダーティ</font><em><font style="vertical-align: inherit;">だった</font></em><font style="vertical-align: inherit;">すべてのバッファが</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コントロールポイントが記録され、コントロールポイントは</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">完了し</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">た</font><font style="vertical-align: inherit;">と見なされ</font><font style="vertical-align: inherit;">ます。これで（以前はできません）、</font><font style="vertical-align: inherit;">リカバリを開始できるポイントとして</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">開始</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ポイントを</font><font style="vertical-align: inherit;">使用できます</font><font style="vertical-align: inherit;">。そして、この時点までのジャーナルエントリはもはや必要ありません。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/q4/th/83/q4th83seql63dkrgfmg7esu3zh8.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+チェックポイントは、特別なバックグラウンドチェックポインタープロセスによって処理されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ダーティバッファの期間は、</font><em><font style="vertical-align: inherit;">checkpoint_completion_target</font></em><font style="vertical-align: inherit;">パラメータの値によって決定されます</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。これは、隣接する2つの制御点の間で記録が行われる時間を示します。デフォルト値は0.5（上の図のように）です。つまり、コントロールポイント間の記録には半分の時間がかかります。通常、この値は、均一性を高めるために1.0まで増加します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コントロールポイントが実行されたときに何が起こるかをさらに詳しく考えてみましょう。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+チェックポイントプロセスは、最初にトランザクションステータスバッファー（XACT）をディスクにフラッシュします。数が少ない（全部で128）ので、すぐに収録されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、主な作業が始まります-バッファキャッシュからダーティページを書き込みます。すでに述べたように、バッファキャッシュのサイズは非常に大きくなる可能性があるため、一度にすべてのページをリセットすることは不可能です。したがって、まず、現在ダーティなページはすべて、ヘッダーのバッファキャッシュ内で特別なフラグでマークされます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/_4/ym/eq/_4ymeqozl8o23kwq6su9ntvjujk.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その後、チェックポイントプロセスはすべてのバッファを徐々に通過し、マークされたバッファをディスクにフラッシュします。ページはキャッシュから排出されず、ディスクにのみ書き込まれることを思い出してください。そのため、バッファーへの呼び出し回数やその修正に注意を払う必要はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ラベル付けされたバッファは、誰が最初にバッファにアクセスするかに応じて、サーバープロセスによって書き込むこともできます。いずれの場合も、以前に設定されたフラグは記録中に削除されるため、（チェックポイントの目的で）バッファーは1回だけ書き込まれます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当然、チェックポイントの実行中、ページはバッファキャッシュ内で変化し続けます。ただし、新しいダーティバッファにはフラグが付けられず、チェックポイントプロセスはそれらを書き込まないようにする必要があります。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fg/uo/vm/fguovmm8yzy0jb4jwisgg10nmm8.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+作業の最後に、プロセスはチェックポイントの終わりのジャーナルエントリを作成します。このエントリには、チェックポイントの開始のLSNが含まれています。チェックポイントは、作業の開始時にログに何も書き込まないため、このLSNには任意のログレコードを含めることができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さらに、$ PGDATA / global / pg_controlファイルは、最後に</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">渡され</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">たチェックポイントの</font><font style="vertical-align: inherit;">指示を更新します</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">チェックポイントが完了する前に、pg_controlは前のチェックポイントをポイントします。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/w0/cy/gi/w0cygixp3k4k3qscwfa2nlapqna.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コントロールポイントの動作を確認するには、いくつかのテーブルを作成します。そのページはバッファキャッシュに移動し、ダーティになります。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> chkpt <span class="hljs-keyword">AS</span> <span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> generate_series(<span class="hljs-number">1</span>,<span class="hljs-number">10000</span>) <span class="hljs-keyword">AS</span> g(n);<font></font>
+=&gt; <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">EXTENSION</span> pg_buffercache;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> count(*) <span class="hljs-keyword">FROM</span> pg_buffercache <span class="hljs-keyword">WHERE</span> isdirty;
+</code></pre><pre><code class="plaintext hljs"> count<font></font>
+-------<font></font>
+    78<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログの現在の位置を覚えておいてください：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/3514A048<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、チェックポイントを手動で実行し、ダーティページがキャッシュにないことを確認します（前述のように、新しいダーティページが表示される可能性がありますが、この場合、チェックポイントの実行中に変更は発生しません）。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CHECKPOINT</span>;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> count(*) <span class="hljs-keyword">FROM</span> pg_buffercache <span class="hljs-keyword">WHERE</span> isdirty;
+</code></pre><pre><code class="plaintext hljs"> count<font></font>
+-------<font></font>
+     0<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+チェックポイントがログにどのように反映されたかを見てみましょう。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/3514A0E4<font></font>
+(1 row)<font></font>
+</code></pre><br>
+<pre><code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_waldump -p /var/lib/postgresql/11/main/pg_wal -s 0/3514A048 -e 0/3514A0E4
+</code></pre><pre><code class="plaintext hljs">rmgr: Standby     len (rec/tot):     50/    50, tx:          0, lsn: 0/3514A048, prev 0/35149CEC, desc: RUNNING_XACTS nextXid 101105 latestCompletedXid 101104 oldestRunningXid 101105
+</code></pre><pre><code class="plaintext hljs">rmgr: XLOG        len (rec/tot):    102/   102, tx:          0, lsn: 0/3514A07C, prev 0/3514A048, desc: CHECKPOINT_ONLINE redo 0/3514A048; tli 1; prev tli 1; fpw true; xid 0:101105; oid 74081; multi 1; offset 0; oldest xid 561 in DB 1; oldest multi 1 in DB 1; oldest/newest commit timestamp xid: 0/0; oldest running xid 101105; online
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここに2つのエントリがあります。</font><font style="vertical-align: inherit;">最後の1つはチェックポイントレコード（CHECKPOINT_ONLINE）です。</font><font style="vertical-align: inherit;">制御点の開始のLSNは、語redoの後に示され、この位置は、制御点の開始が最後にあったジャーナルエントリに対応します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+制御ファイルでも同じ情報が見つかります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_controldata -D /var/lib/postgresql/11/main | egrep 'Latest.*location'
+</code></pre><pre><code class="plaintext hljs">Latest checkpoint location:           0/3514A07C<font></font>
+Latest checkpoint's REDO location:    0/3514A048<font></font>
+</code></pre><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">回復</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、前の記事で概説した回復アルゴリズムを明確にする準備ができました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サーバーがクラッシュした場合、次回の起動時に、起動プロセスはpg_controlファイルを調べて「シャットダウン」以外のステータスを確認することでこれを検出します。この場合、自動リカバリが実行されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まず、回復プロセスは同じpg_controlからコントロールポイントの開始位置を読み取ります。 （完全を期すために、backup_labelファイルが存在する場合は、そこから制御点のレコードが読み取られることに注意してください。これはバックアップからのリカバリーに必要ですが、これは別のサイクルのトピックです。）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、見つかった位置から順番にジャーナルを読み取りますジャーナルエントリをページに適用する（必要に応じて、</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">前回</font></a><font style="vertical-align: inherit;">説明したように）</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+結論として、すべての非ジャーナルテーブルは、initファイルのイメージを使用して上書きされます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、起動プロセスが終了し、チェックポイントプロセスがすぐにチェックポイントを実行して、ディスク上の復元された状態を修正します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+即時モードでサーバーを強制的に停止することにより、障害をシミュレートできます。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main stop -m immediate --skip-systemctl-redirect
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+（</font></font><code>--skip-systemctl-redirect</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パッケージからUbuntuにインストールされているPostgreSQLが使用されるため、ここで</font><font style="vertical-align: inherit;">キーが</font><font style="vertical-align: inherit;">必要です。実際にはsystemctlを呼び出すpg_ctlclusterコマンドによって制御され、すでにpg_ctlを呼び出しています。これらすべてのラッパーを使用すると、途中でモード名が失われます。また、キー</font></font><code>--skip-systemctl-redirect</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">により、 systemctlなしで実行し、重要な情報を保存します。）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クラスターのステータスを確認します。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_controldata -D /var/lib/postgresql/11/main | grep state
+</code></pre><pre><code class="plaintext hljs">Database cluster state:               in production
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PostgreSQLは起動時に、障害が発生したことと、リカバリが必要であることを理解しています。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main start
+</code></pre><br>
+<pre><code class="plaintext hljs">postgres$ tail -n 7 /var/log/postgresql/postgresql-11-main.log
+</code></pre><pre><code class="plaintext hljs">2019-07-17 15:27:49.441 MSK [8865] LOG:  database system was interrupted; last known up at 2019-07-17 15:27:48 MSK<font></font>
+2019-07-17 15:27:49.801 MSK [8865] LOG:  database system was not properly shut down; automatic recovery in progress<font></font>
+2019-07-17 15:27:49.804 MSK [8865] LOG:  redo starts at 0/3514A048<font></font>
+2019-07-17 15:27:49.804 MSK [8865] LOG:  invalid record length at 0/3514A0E4: wanted 24, got 0<font></font>
+2019-07-17 15:27:49.804 MSK [8865] LOG:  redo done at 0/3514A07C<font></font>
+2019-07-17 15:27:49.824 MSK [8864] LOG:  database system is ready to accept connections<font></font>
+2019-07-17 15:27:50.409 MSK [8872] [unknown]@[unknown] LOG:  incomplete startup packet<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リカバリの必要性がメッセージログに記録されます。</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データベースシステムが適切にシャットダウンされていません。</font><font style="vertical-align: inherit;">自動リカバリが進行中</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">次に、「redo start at」でマークされた位置からログの再生を開始し、次のログを取得できるまで続行します。</font><font style="vertical-align: inherit;">これで「redo done at」の位置でのリカバリが完了し、DBMSがクライアントとの作業を開始します（</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データベースシステムは接続を受け入れる準備ができています</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、通常のサーバーのシャットダウン中に何が起こりますか？</font><font style="vertical-align: inherit;">ダーティページをディスクにフラッシュするために、PostgreSQLはすべてのクライアントを切断し、最後のチェックポイントを実行します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログの現在の位置を覚えておいてください：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/3514A14C<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、サーバーを静かに停止します。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main stop
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クラスタのステータスを確認します。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_controldata -D /var/lib/postgresql/11/main | grep state
+</code></pre><pre><code class="plaintext hljs">Database cluster state:               shut down
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、ログでは、最終的な制御点（CHECKPOINT_SHUTDOWN）に関する唯一のレコードが見つかります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_waldump -p /var/lib/postgresql/11/main/pg_wal -s 0/3514A14C
+</code></pre><pre><code class="plaintext hljs">rmgr: XLOG        len (rec/tot):    102/   102, tx:          0, lsn: 0/3514A14C, prev 0/3514A0E4, desc: CHECKPOINT_SHUTDOWN redo 0/3514A14C; tli 1; prev tli 1; fpw true; xid 0:101105; oid 74081; multi 1; offset 0; oldest xid 561 in DB 1; oldest multi 1 in DB 1; oldest/newest commit timestamp xid: 0/0; oldest running xid 0; shutdown
+</code></pre><pre><code class="plaintext hljs">pg_waldump: FATAL:  error in WAL record at 0/3514A14C: invalid record length at 0/3514A1B4: wanted 24, got 0
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+（ひどい致命的なメッセージでは、pg_waldumpは雑誌の最後まで読んだとだけ言いたいのです。）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もう一度インスタンスを実行してみましょう。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main start
+</code></pre><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バックグラウンド録音</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+わかったように、チェックポイントはダーティページをバッファキャッシュからディスクに書き込むプロセスの1つです。しかし、それだけではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バックエンドがバッファーからページをプッシュする必要があり、ページがダーティである場合、それ自体でディスクに書き込む必要があります。これは良い状況ではなく、期待につながります。録音がバックグラウンドで非同期に行われると、はるかに良くなります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、チェックポイント</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プロセス</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に加えて、</font><em><font style="vertical-align: inherit;">バックグラウンド記録プロセス</font></em><font style="vertical-align: inherit;">（バックグラウンドライター、bgwriter、またはライターのみ）もあります。このプロセスは、プリエンプションメカニズムと同じバッファ検索アルゴリズムを使用します。基本的に2つの違いがあります。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「次の犠牲者」へのポインタではなく、それ自体を使用します。</font><font style="vertical-align: inherit;">彼は「犠牲者」へのポインターの前に立つことができますが、彼の後に遅れることはありません。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファをトラバースする場合、ヒットカウンタは減少しません。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同時に書き込まれるバッファー：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">変更されたデータが含まれている（ダーティ）、</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">固定されていない（ピン数= 0）、</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ヒット数がゼロです（使用カウント= 0）。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このように、バックグラウンドの記録プロセスは、混雑する前に実行され、すぐに混雑する可能性が高いバッファーを見つけます。</font><font style="vertical-align: inherit;">理想的には、これにより、サービスプロセスは、書き込みを停止することなく、バッファーを使用できることがわかるはずです。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">カスタマイズ</font></font></h1><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2020年5月26日-セクションが明確になりました。</font><font style="vertical-align: inherit;">感謝</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">義理の</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エラーを指摘しました。</font></font><br>
+</blockquote><br>
+<em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チェックポイントプロセスは</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通常、次の理由で構成されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初に</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、2つの連続した制御点の間で</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">保存できるログファイルの量を決定する必要があります</font><font style="vertical-align: inherit;">（そして、どの回復時間が適切か）。多いほど良いですが、明らかな理由により、この値は制限されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、通常の負荷でこのボリュームが生成される時間を計算できます。これを行う方法についてはすでに検討しました（ジャーナルの位置を覚えて、一方を他方から差し引く必要があります）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+今回は、コントロールポイント間の通常の間隔になります。</font><em><font style="vertical-align: inherit;">checkpoint_timeout</font></em><font style="vertical-align: inherit;">パラメータに書き込みます</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。デフォルト値の5分は明らかに小さすぎます。通常、時間は30分に増加します。繰り返しますが、マイルストーンを購入できる頻度が少ないほど、良い結果になります。これにより、オーバーヘッドが削減されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、負荷が通常よりも高くなり、パラメータで指定された時間内に生成されるジャーナルエントリが多すぎる可能性があります。この場合、より頻繁にコントロールポイントを実行したいと思います。これを行うには、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">max_wal_size</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータ</font><font style="vertical-align: inherit;">で、ログファイルの</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">合計</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">許容ボリューム</font><font style="vertical-align: inherit;">を指定し</font><font style="vertical-align: inherit;">ます。実際のボリュームがさらに取得されると、サーバーはスケジュールされていないチェックポイントを開始します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サーバーは、過去に完了したチェックポイントだけでなく、まだ完了していない現在のチェックポイントのログファイルも保存します。したがって、合計ボリュームを取得するに</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+は、コントロールポイント間のボリュームに（1 + </font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">checkpoint_completion_target</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">を掛ける必要があります</font><font style="vertical-align: inherit;">。そして、バージョン11まで-（2 + </font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">checkpoint_completion_target</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）で、PostgreSQLは昨年のチェックポイントのファイルも保存したため。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、ほとんどのコントロールポイントは、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">checkpoint_timeout</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">時間単位</font><font style="vertical-align: inherit;">ごとに1回というスケジュールで発生し</font><font style="vertical-align: inherit;">ます。ただし、負荷が増加すると、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">max_wal_size</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ボリュームに</font><em><font style="vertical-align: inherit;">達した</font></em><font style="vertical-align: inherit;">ときにコントロールポイントが頻繁に呼び出されます</font><font style="vertical-align: inherit;">。</font><em><font style="vertical-align: inherit;">max_wal_size</font></em></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+の値を</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">超える</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">可能性があること</font><font style="vertical-align: inherit;">を理解することが重要</font><font style="vertical-align: inherit;">です。</font></font><br>
+<br>
+<ul>
+<li> <em>max_wal_size</em> —  ,    .    .</li>
+<li>      ,      ,         .    ,   ,       .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+画像を完成させるために、最大ボリュームだけでなく最小ボリュームも設定できます：パラメータ</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min_wal_size</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。この設定の意味は、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ボリューム</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">内の</font><em><font style="vertical-align: inherit;">min_wal_size</font></em><font style="vertical-align: inherit;">に収まる間、サーバーはファイルを削除せず</font><font style="vertical-align: inherit;">、単に名前を変更して再度使用することです。これにより、常にファイルを作成および削除することで、少し節約できます。</font></font><br>
+<br>
+<em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バックグラウンド記録プロセス</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、チェックポイントが構成された後に構成するのが理にかなっています。これらのプロセスは、サービングプロセスで必要になる前に、ダーティバッファーを書き込む時間が必要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バックグラウンド記録プロセスは最大で</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bgwriter_lru_maxpages</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ページの</font><font style="vertical-align: inherit;">サイクルで実行され</font><font style="vertical-align: inherit;">、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bgwriter_delayの</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サイクル間でスリープ状態になり</font><em><font style="vertical-align: inherit;">ます</font></em><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1つの作業サイクルで記録されるページ数は、最後の実行からサービスプロセスによって要求されたバッファーの平均数によって決定されます（これは移動平均を使用して実行間の不均一性を平滑化しますが、長い履歴には依存しません）。計算されたバッファーの数は、係数</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bgwriter_lru_multiplierで</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">乗算され</font><em><font style="vertical-align: inherit;">ます</font></em><font style="vertical-align: inherit;">（ただし、いずれの場合も</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bgwriter_lru_maxpagesを</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">超えません</font><font style="vertical-align: inherit;">）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+デフォルト値：</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bgwriter_delay</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> = 200ms（多すぎる可能性があり、1/5秒で大量の水を</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">漏らします</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）、</font><em><font style="vertical-align: inherit;">bgwriter_lru_maxpages</font></em><font style="vertical-align: inherit;"> = 100、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bgwriter_lru_multiplier</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> = 2.0（スケジュールより早く需要に応えようとします）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセスがダーティバッファをまったく検出しない（つまり、システムで何も起こらない）場合、プロセスは「休止状態」になり、サーバープロセスがバッファにアクセスすると推定されます。</font><font style="vertical-align: inherit;">その後、プロセスが起動し、通常の方法で再び動作します。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">モニタリング</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コントロールポイントとバックグラウンドレコーディングの設定は、モニタリングからフィードバックを受けて調整できます。</font><em><font style="vertical-align: inherit;">checkpoint_warning</font></em></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+パラメータ</font><font style="vertical-align: inherit;">は、ログファイルサイズのオーバーフローが原因のチェックポイントの実行頻度が高すぎる場合に警告を表示します。</font><font style="vertical-align: inherit;">デフォルト値は30秒​​で、</font><em><font style="vertical-align: inherit;">checkpoint_timeout</font></em><font style="vertical-align: inherit;">の値に</font><em><font style="vertical-align: inherit;">合わせる</font></em><font style="vertical-align: inherit;">必要があります</font><font style="vertical-align: inherit;">。</font><em><font style="vertical-align: inherit;">log_checkpoints</font></em><font style="vertical-align: inherit;"> 
+パラメータ</font><font style="vertical-align: inherit;">（デフォルトではオフ）を使用すると、サーバーメッセージログで実行されたチェックポイントに関する情報を受け取ることができます。</font><font style="vertical-align: inherit;">それをオン。</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">SET</span> log_checkpoints = <span class="hljs-keyword">on</span>;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_reload_conf();
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、データを変更してチェックポイントを実行します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">UPDATE</span> chkpt <span class="hljs-keyword">SET</span> n = n + <span class="hljs-number">1</span>;<font></font>
+=&gt; <span class="hljs-keyword">CHECKPOINT</span>;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+メッセージログには、次のようなものが表示されます。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">postgres$ tail -n 2 /var/log/postgresql/postgresql-11-main.log
+</code></pre><pre><code class="plaintext hljs">2019-07-17 15:27:55.248 MSK [8962] LOG:  checkpoint starting: immediate force wait<font></font>
+2019-07-17 15:27:55.274 MSK [8962] LOG:  checkpoint complete: wrote 79 buffers (0.5%); 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.013 s, total=0.025 s; sync files=2, longest=0.011 s, average=0.006 s; distance=1645 kB, estimate=1645 kB<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは、書き込まれたバッファの数、コントロールポイント後にログファイルの構成がどのように変化したか、コントロールポイントにかかった時間、および隣接するコントロールポイント間の距離（バイト単位）を確認できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、おそらく最も役立つ情報は、pg_stat_bgwriterビューのチェックポイントとバックグラウンドの記録プロセスの作業の統計です。</font><font style="vertical-align: inherit;">1つのプロセスで両方のタスクが実行されると、ビューは2対1になります。</font><font style="vertical-align: inherit;">その後、それらの機能は分割され、ビューは残りました。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> pg_stat_bgwriter \gx
+</code></pre><pre><code class="plaintext hljs">-[ RECORD 1 ]---------+------------------------------<font></font>
+checkpoints_timed     | 0<font></font>
+checkpoints_req       | 1<font></font>
+checkpoint_write_time | 1<font></font>
+checkpoint_sync_time  | 13<font></font>
+buffers_checkpoint    | 79<font></font>
+buffers_clean         | 0<font></font>
+maxwritten_clean      | 0<font></font>
+buffers_backend       | 42<font></font>
+buffers_backend_fsync | 0<font></font>
+buffers_alloc         | 363<font></font>
+stats_reset           | 2019-07-17 15:27:49.826414+03<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは、とりわけ、完了したコントロールポイントの数を確認します。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">checkpoints_timed-スケジュールに従って（checkpoint_timeoutに達したとき）、</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">checkpoints_req-オンデマンド（max_wal_sizeに達したときを含む）。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+（checkpoints_timedと比較して）checkpoint_reqの値が大きい場合、コントロールポイントが予想よりも頻繁に発生していることを示しています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+記録されたページ数に関する重要な情報：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">buffers_checkpoint-チェックポイントプロセス</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">buffers_backend-サービスを提供することにより、</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">buffers_clean-バックグラウンド記録プロセス。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+十分に調整されたシステムでは、buffers_backendの値は、buffers_checkpointとbuffers_cleanの合計より大幅に小さくなければなりません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、maxwritten_cleanはバックグラウンド記録の設定にも役立ちます。この数値は、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bgwriter_lru_maxpages</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を超えたためにバックグラウンド記録プロセスが機能を停止した回数を示します</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次の呼び出しを使用して、蓄積された統計をリセットできます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_stat_reset_shared(<span class="hljs-string">'bgwriter'</span>);
+</code></pre><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">続くこと</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja460411/index.html">Telegramのアニメーションステッカー用のクレイジーGIFコンバーター</a></li>
+<li><a href="../ja460413/index.html">英語学習に役立つ7つの便利なサイトとアプリケーション</a></li>
+<li><a href="../ja460415/index.html">Apple Watch 4（44 mm、2019）対Pebble Steel Classic（2014）</a></li>
+<li><a href="../ja460419/index.html">排煙熱回収：環境上の利点</a></li>
+<li><a href="../ja460421/index.html">サービスプロバイダー向けTP-Link T2600G-28SQ光スイッチ：詳細レビュー </a></li>
+<li><a href="../ja460425/index.html">地獄の寒さ、浮揚およびプラズマ：超伝導の過去、現在および未来</a></li>
+<li><a href="../ja460431/index.html">Azure DevOpsで自動テストパイプラインを構築する</a></li>
+<li><a href="../ja460433/index.html">モノのインターネットにおけるリスクと脅威</a></li>
+<li><a href="../ja460435/index.html">ささいな喜び＃8：データベースを操作するためのささいな喜び</a></li>
+<li><a href="../ja460437/index.html">テクニカルサポートバイクの出し方</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,268 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👷🏻 ✋🏾 🐶 KubernetesのCPU制限とアグレッシブスロットリング 👵🏾 🦓 🚣🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="注意ペレフ。：ヨーロッパの旅行アグリゲーターであるオミオのこの警告的な物語は、読者を基本的な理論から、Kubernetes構成の魅惑的な実用的な複雑さへと導きます。このようなケースに精通することは、視野を広げるだけでなく、重要な問題を防ぐのにも役立ちます。
+ 
+ 
+ 
+ アプリケーションが所定の位置...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>KubernetesのCPU制限とアグレッシブスロットリング</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/489668/"><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意ペレフ。</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：ヨーロッパの旅行アグリゲーターであるオミオのこの警告的な物語は、読者を基本的な理論から、Kubernetes構成の魅惑的な実用的な複雑さへと導きます。このようなケースに精通することは、視野を広げるだけでなく、重要な問題を防ぐのにも役立ちます。</font></font></i><br>
+<br>
+<img src="https://habrastorage.org/webt/bw/jr/on/bwjronw-hyhosv46aa1d6pqldie.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+アプリケーションが所定の位置に「スタック」し、ヘルスチェックリクエストへの応答を停止し、この動作の理由を理解できなかったという事実に遭遇したことがありますか？考えられる理由の1つは、CPUリソースの割り当て制限です。この記事では彼について説明します。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> TL、DR：</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+CFS割り当てエラーのあるLinuxカーネルバージョンを使用している場合は、KubernetesのCPU制限を無効にする（またはKubeletでCFS割り当てを無効にする）ことを強くお勧めします。</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">そこ</font></a><font style="vertical-align: inherit;">のコア</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">過度のスロットルと遅延につながる</font><font style="vertical-align: inherit;">深刻で</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">よく知られた</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バグ</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><a name="habracut"></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Omioでは、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インフラストラクチャ全体がKubernetesによって管理されてい</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">ステートフルおよびステートレスのロードはすべて、Kubernetesでのみ機能します（Google Kubernetes Engineを使用しています）。</font><font style="vertical-align: inherit;">過去6か月間に、ランダムなスローダウンが観察され始めました。</font><font style="vertical-align: inherit;">アプリケーションがヘルスチェックにフリーズしたり応答を停止したり、ネットワークへの接続を失ったりした。</font><font style="vertical-align: inherit;">そのような振る舞いは長い間私たちを困惑させ、そして最後に、私たちは問題を綿密に取り組むことにしました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+記事の要約：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> コンテナーとKubernetesについて一言。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> CPUリクエストと制限の実装方法。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> マルチコア環境でのCPU制限の仕組み。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> CPUのスロットルを追跡する方法。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 問題とニュアンスを解決します。</font></font></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コンテナーとKubernetesに関する一言</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際、Kubernetesはインフラストラクチャの世界における最新の標準です。</font><font style="vertical-align: inherit;">その主なタスクは、コンテナーのオーケストレーションです。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コンテナ</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以前は、サーバーでのその後の起動のために、Java JAR / WAR、Python Egg、または実行可能ファイルなどのアーティファクトを作成する必要がありました。</font><font style="vertical-align: inherit;">ただし、それらを機能させるためには、ランタイム（Java / Python）のインストール、必要なファイルの適切な場所への配置、オペレーティングシステムの特定のバージョンとの互換性の確保など、追加の作業を行う必要がありました。</font><font style="vertical-align: inherit;">つまり、構成管理（開発者とシステム管理者の間で競合が発生することが多い）に細心の注意を払う必要がありました。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コンテナはすべてを変えました。</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">これで、コンテナーイメージはアーティファクトとして機能します。</font><font style="vertical-align: inherit;">これは、プログラムだけでなく、本格的なランタイム（Java / Python / ...）だけでなく、プレインストールされて実行の準備ができている必要なファイル/パッケージも含む、一種の拡張実行可能ファイルとして表すことができます。</font><font style="vertical-align: inherit;">コンテナは、追加の手順なしでさまざまなサーバーにデプロイして実行できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さらに、コンテナは独自のサンドボックス環境で動作します。</font><font style="vertical-align: inherit;">それらには、独自の仮想ネットワークアダプター、アクセスが制限された独自のファイルシステム、独自のプロセス階層、CPUおよびメモリに対する独自の制限などがあります。これはすべて、Linuxカーネルの特別なサブシステムである名前空間（名前空間）によって実現されます。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetes</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+前述のとおり、Kubernetesはコンテナオーケストラです。</font><font style="vertical-align: inherit;">次のように機能します。マシンのプールを提供し、「Hey Kubernetes、2つのプロセッサと3 GBのメモリを搭載したコンテナのインスタンスを10個起動し、それらを操作可能な状態に維持します！」</font><font style="vertical-align: inherit;">残りはKubernetesが処理します。</font><font style="vertical-align: inherit;">彼は空き容量を見つけ、コンテナを起動し、必要に応じて再起動し、バージョンの変更時に更新をロールアウトします。</font><font style="vertical-align: inherit;">実際、Kubernetesを使用すると、ハードウェアコンポーネントを抽象化して、さまざまなシステム全体をアプリケーションのデプロイと運用に適したものにすることができます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/hs/ux/tu/hsuxtucqvih716edmdtgac_btxa.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">単純な素人の視点から見たKubernetes</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesのリクエストと制限とは</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さて、コンテナーとKubernetesを見つけました。また、複数のコンテナを同じマシン上に置くこともできます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+あなたは共同アパートとの類似性を描くことができます。広々とした部屋（車/ノード）が取得され、いくつかのテナント（コンテナ）にリースされます。 Kubernetesは不動産業者として機能します。どうやってテナント同士が対立しないようにするのかという疑問が生じます。たとえば、そのうちの1人がバスルームを半日占有すると決めたらどうなるでしょうか。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは、要求と制限が関係する場所です。 CPU </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リクエストは</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、計画のみを目的</font><b><font style="vertical-align: inherit;">と</font></b><font style="vertical-align: inherit;">しています。これはコンテナの「ウィッシュリスト」のようなもので、最も適切なノードを選択するために使用されます。同時に、CPU </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">制限</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">はリースと比較できます。コンテナのノードを取得するとすぐに、</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">設定された制限を超える</font><b><font style="vertical-align: inherit;">ことはできません</font></b><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">そして、ここで問題が発生します...</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesでのリクエストと制限の実装方法</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetesは、カーネルスロットリング（スキップクロック）メカニズムを使用してCPU制限を実装します。</font><font style="vertical-align: inherit;">アプリケーションが制限を超えると、スロットルが有効になります（つまり、CPUサイクルが少なくなります）。</font><font style="vertical-align: inherit;">メモリのリクエストと制限は異なる方法で構成されているため、検出が容易です。</font><font style="vertical-align: inherit;">これを行うには、最後のポッドの再起動ステータス、つまり「OOMKilled」かどうかを確認するだけで十分です。</font><font style="vertical-align: inherit;">CPUのスロットリングを使用すると、K8は使用可能なメトリックのみを作成し、cgroupは使用できないため、すべてがそれほど単純ではありません。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CPUリクエスト</font></font></h4><br>
+<img src="https://habrastorage.org/webt/hh/fk/qn/hhfkqnuy5oe4tq_ubi57aeblvqe.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CPUリクエストの実装方法</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+簡単にするために、4コアCPUを搭載したマシンの例を使用してプロセスを見てみましょう。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+K8sはcgroupsメカニズムを使用して、リソース（メモリとプロセッサ）の割り当てを制御します。彼は階層モデルを使用できます。子孫は親グループの制限を継承します。配布の詳細は、仮想ファイルシステムに保存されます（</font></font><code>/sys/fs/cgroup</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。プロセッサの場合、これ</font></font><code>/sys/fs/cgroup/cpu,cpuacct/*</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+K8sは、ファイル</font></font><code>cpu.share</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">使用して</font><font style="vertical-align: inherit;">プロセッサリソースを割り当てます。私たちの場合、ルートコントロールグループは、4096のCPUリソースシェアを受け取ります-利用可能なプロセッサ能力の100％（1コア= 1024;これは固定値です）。ルートグループは、で規定された子孫のシェアに応じてリソースを比例的に分配します</font></font><code>cpu.share</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、そしてそれらは、その子孫などにも同じことをします。通常、Kubernetesルートノードコントロールグループには</font></font><code>system.slice</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><code>user.slice</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">との</font><font style="vertical-align: inherit;">3つの子</font><font style="vertical-align: inherit;">が</font><font style="vertical-align: inherit;">あり</font></font><code>kubepods</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。最初の2つのサブグループは、重要なシステム負荷とK8の外部のユーザープログラムとの間でリソースを分散するために使用されます。最後の- </font></font><code>kubepods</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、ポッド間でリソースを分散するためにKubernetesによって作成されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上の図は、最初と2番目のサブグループが</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1024の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シェアを</font><font style="vertical-align: inherit;">受け取り</font><font style="vertical-align: inherit;">、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4096の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シェア</font><font style="vertical-align: inherit;">がkuberpodサブグループに割り当てられていることを示してい</font><font style="vertical-align: inherit;">ます。どうしてこれが可能か：結局のところ、ルートグループには</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4096の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シェア</font><font style="vertical-align: inherit;">しかなく</font><font style="vertical-align: inherit;">、その子孫のシェアの合計はこの数（</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">6144</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）？実際のところ、この値は論理的に意味があるため、Linuxスケジューラー（CFS）はこれを使用して、CPUリソースを比例的に割り当てます。私たちの場合、最初の2つのグループは</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">680の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">実際のシェア（4096の16.6％）を受け取り、kubepodは残りの</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2736の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シェア</font><font style="vertical-align: inherit;">を受け取り</font><font style="vertical-align: inherit;">ます。ダウンタイムの場合、最初の2つのグループは割り当てられたリソースを使用しません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+幸い、スケジューラには未使用のCPUリソースの損失を回避するメカニズムがあります。 「アイドル」容量をグローバルプールに転送し、そこから追加のプロセッサ容量が必要なグループ間で分散されます（丸め損失を回避するために転送はバッチで行われます）。同様の方法が子孫のすべての子孫に適用されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このメカニズムにより、プロセッサー能力の公平な配分が保証され、プロセスが他のリソースを「盗む」ことがなくなります。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CPU制限</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+K8の制限と要求の構成は似ているという事実にもかかわらず、それらの実装は根本的に異なります。これは</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最も誤解を招きやすく</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、最も文書化されていない部分です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+K8sは</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CFSクォータメカニズム</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">使用し</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">て</font></a><font style="vertical-align: inherit;">制限を実装します。それらの設定は、ファイル</font></font><code>cfs_period_us</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と</font></font><code>cfs_quota_us</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">cgroupディレクトリで</font><font style="vertical-align: inherit;">指定されます</font><font style="vertical-align: inherit;">（ファイルもそこにあります</font></font><code>cpu.share</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+対照的</font></font><code>cpu.share</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に、クォータは</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一定の期間に</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">基づいて</font><font style="vertical-align: inherit;">おり、利用可能なプロセッサ能力ではありません。</font></font><code>cfs_period_us</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">期間（時代）の持続時間を設定します-常に100,000μs（100 ms）です。 K8sにはこの値を変更する機能がありますが、現在はアルファ版でのみ使用できます。スケジューラーは時代を使用して、使用された割り当て量を再開します。 2番目のファイル</font></font><code>cfs_quota_us</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、各時代の利用可能時間（クォータ）を設定します。マイクロ秒単位でも表示されることに注意してください。割り当ては時代の期間を超える場合があります。つまり、100ミリ秒を超えることがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+16コアマシン（Omioで最も一般的なタイプのコンピューター）の2つのシナリオを見てみましょう：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pt/wr/dm/ptwrdmpxueuy4p1mn7mb8vfdhyg.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ1：2つのスレッドと200ミリ秒の制限。</font></font></i><br>
+<br>
+<img src="https://habrastorage.org/webt/7f/no/i9/7fnoi9e7kz6ib6jksx2mkqmc-zo.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ2を使用し</font></font></i><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;">ない場合</font></i><i><font style="vertical-align: inherit;">：10フローおよび200ミリ秒の制限。スロットリングは20ミリ秒後に開始され、プロセッサリソースへのアクセスはさらに80ミリ秒後に再開され</font></i></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ます。CPU制限を</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コアに</font><font style="vertical-align: inherit;">設定したとします</font><font style="vertical-align: inherit;">。 Kubernetesはこの値を200ミリ秒に変換します。これは、コンテナがスロットルなしで最大200ミリ秒のCPU時間を使用できることを意味します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、ここから楽しみが始まります。</font><font style="vertical-align: inherit;">上記のように、使用可能な割り当ては200ミリ秒です。</font><font style="vertical-align: inherit;">12コアマシンで</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">10個の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スレッド</font><font style="vertical-align: inherit;">が並行</font><font style="vertical-align: inherit;">して</font><font style="vertical-align: inherit;">実行されている場合</font><font style="vertical-align: inherit;">（シナリオ2の図を参照）、他のすべてのポッドがアイドル状態のとき、割り当ては20ミリ秒（10 * 20ミリ秒= 200ミリ秒）で使い果たされ、すべてのスレッドこのポッドの</font><font style="vertical-align: inherit;">80ミリ秒</font><font style="vertical-align: inherit;">は</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スロットル</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font><font style="vertical-align: inherit;">すでに述べた</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スケジューラのバグ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">により</font><font style="vertical-align: inherit;">状況が悪化します</font><font style="vertical-align: inherit;">。これにより、過剰なスロットルが発生し、コンテナが既存の割り当てを処理することさえできません。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ポッドのスロットリングを評価するにはどうすればよいですか？</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ポッドに移動して実行してください</font></font><code>cat /sys/fs/cgroup/cpu/cpu.stat</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<ul>
+<li> <code>nr_periods</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -スケジューラの期間の総数。</font></font></li>
+<li> <code>nr_throttled</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-コンポジションのスロットル期間の数</font></font><code>nr_periods</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+<li> <code>throttled_time</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -ナノ秒単位の累積スロットル時間。</font></font></li>
+</ul><br>
+<img src="https://habrastorage.org/webt/fb/kp/tp/fbkptpvc9e6c1yua63aawbropk8.png"><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">本当に何が起こっているのですか？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その結果、すべてのアプリケーションで高いスロットルが得られます。</font><font style="vertical-align: inherit;">時にはそれは</font><font style="vertical-align: inherit;">計算されたものより</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1.5倍</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">強いです！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これにより、さまざまなエラーが発生します-準備チェックの失敗、コンテナーのハング、ネットワーク接続の切断、サービス呼び出し内のタイムアウト。</font><font style="vertical-align: inherit;">最終的に、これは遅延の増加とエラーの増加につながります。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">決定と結果</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここではすべてが簡単です。</font><font style="vertical-align: inherit;">CPU制限を放棄し、クラスター内のOSカーネルをバグが修正された最新バージョンに更新し始めました。</font><font style="vertical-align: inherit;">当社のサービスのエラー数（HTTP 5xx）はすぐに大幅に減少しました：</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">HTTPエラー5xx</font></font></h3><br>
+<img src="https://habrastorage.org/webt/rg/t4/wt/rgt4wttq-x7-0dz8-5pfybrk_d8.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1つの重要なサービスのHTTP 5xxエラー</font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">P95応答時間</font></font></h3><br>
+<img src="https://habrastorage.org/webt/xc/ds/er/xcdservm7jabpev6yly59uq_u3i.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クリティカルサービスリクエストの遅延、95パーセンタイル</font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">運用費用</font></font></h3><br>
+<img src="https://habrastorage.org/webt/zb/ym/nc/zbymnckdg75bfpktepdi8ex4byg.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">費やした時間数</font></font></i><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キャッチは何ですか？</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+記事の冒頭で述べたように：</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">あなたは共同アパートとの類似を描くことができます... Kubernetesは不動産業者として機能します。</font><font style="vertical-align: inherit;">しかし、どうすればテナント同士が対立しないようにできますか？</font><font style="vertical-align: inherit;">たとえば、そのうちの1人がバスルームを半日占有すると決めたらどうなるでしょうか。</font></font></blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それが問題です。</font><font style="vertical-align: inherit;">1つの過失コンテナが、マシンで利用可能なすべてのプロセッサリソースを吸収する可能性があります。</font><font style="vertical-align: inherit;">インテリジェントなアプリケーションスタック（たとえば、JVM、Go、ノードVMが適切に構成されている）を使用している場合、これは問題ではありません。そのような状況で長時間作業できます。</font><font style="vertical-align: inherit;">しかし、アプリケーションの最適化が不十分であるか、まったく最適化されていない場合（</font></font><code>FROM java:latest</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）、状況は手に負えなくなる可能性があります。</font><font style="vertical-align: inherit;">私たちOmioは、主要言語のスタックに適切なデフォルト設定を備えた自動化された基本的なDockerfileを持っているので、そのような問題はありませんでした。</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">USE</font></a></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+メトリック</font><font style="vertical-align: inherit;">（使用、飽和、およびエラー）、API遅延、およびエラー率</font><font style="vertical-align: inherit;">を監視することをお勧めします</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">結果が期待どおりであることを確認します。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">参考文献</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それが私たちの物語です。</font><font style="vertical-align: inherit;">次の資料は、何が起こっているのかを理解するのに大いに役立ちました。</font></font><br>
+<br>
+<ul>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kernel.org→CFSスケジューラー</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kernel.org→CFS帯域幅制御</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Linuxのコンテナのスケジュールを理解します</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Linuxコンテナについて知っておくべきことすべて：パートI：Linuxコントロールグループとプロセスの分離</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesの失敗事例</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -「cpu throttling」を</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">検索</font></a><font style="vertical-align: inherit;">してください。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kubernetesエラー報告：</font></font><br>
+<br>
+<ul>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃51135：保証されたポッドにCPU制限を設定しないでください</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">＃67577：CFSクォータは不必要なスロットルにつながる可能性があり</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font></li>
+<li> <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">過度に攻撃的なCFS</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実務で同様の問題に遭遇したり、コンテナ化された実稼働環境でのスロットリングの経験はありますか？</font><font style="vertical-align: inherit;">コメントでストーリーを共有してください！</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">翻訳者からのPS</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちのブログも読んでください：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesの自動スケーリングとリソース管理（レビューとビデオレポート）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">KubernetesのCPUマネージャーはどのように動作するか</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kubectl runが開始すると、Kubernetesで何が起こりますか？</font><font style="vertical-align: inherit;">パート2</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> "。</font></font></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja489656/index.html">科学ジャーナルサイトの作成と管理の悪い経験</a></li>
+<li><a href="../ja489660/index.html">NoSQLデータベースが最新のアプリケーションにとって悪いソリューションである理由</a></li>
+<li><a href="../ja489662/index.html">PHPダイジェストNo. 174（2020年2月10〜24日）</a></li>
+<li><a href="../ja489664/index.html">NPS、コンベヤー、自動計算、そして再び...コルーチン</a></li>
+<li><a href="../ja489666/index.html">C ++でのオーバーロード。パートII オペレーターのオーバーロード</a></li>
+<li><a href="../ja489672/index.html">六脚を復活させます。二部</a></li>
+<li><a href="../ja489674/index.html">Angular：NGRXの明確な紹介</a></li>
+<li><a href="../ja489676/index.html">Nuxt.js、GraphQL、Strapi、Stripeを使用して、食品配達サービスのクローンを作成します。パート1/7</a></li>
+<li><a href="../ja489678/index.html">不滅のメモリ、不滅のプロセス</a></li>
+<li><a href="../ja489682/index.html">Chrome拡張機能でのクロスオリジン読み取りブロック（CORB）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,235 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📎 📨 ⛲️ Apache Igniteでのデータ圧縮。ズベルバンクエクスペリエンス 🤵🏾 📑 🧑‍🤝‍🧑</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="大量のデータを処理する場合、ディスク容量不足の問題が深刻になることがあります。この問題を解決する1つの方法は圧縮です。これにより、同じ機器でストレージボリュームを増やすことができます。この記事では、Apache Igniteでデータ圧縮がどのように機能するかを見ていきます。この記事では、製品内に実装...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Apache Igniteでのデータ圧縮。ズベルバンクエクスペリエンス</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/sberbank/blog/502136/"><img src="https://habrastorage.org/webt/cl/nj/sz/clnjsz90dmzkkj3wr4vuusu_-nu.png" align="left"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大量のデータを処理する場合、ディスク容量不足の問題が深刻になることがあります。</font><font style="vertical-align: inherit;">この問題を解決する1つの方法は圧縮です。これにより、同じ機器でストレージボリュームを増やすことができます。</font><font style="vertical-align: inherit;">この記事では、Apache Igniteでデータ圧縮がどのように機能するかを見ていきます。</font><font style="vertical-align: inherit;">この記事では、製品内に実装されているディスク圧縮の方法のみを説明します。</font><font style="vertical-align: inherit;">他のデータ圧縮方法（ネットワーク経由、メモリ内）は、実装されているかどうかにかかわらず、範囲外のままになります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、永続モードがオンの場合、キャッシュ内のデータが変更された結果、Igniteはディスクへの書き込みを開始します。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キャッシュコンテンツ</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">先行ログの書き込み（以下、WALと呼ぶ）</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WAL圧縮と呼ばれるメカニズムは、WALを圧縮するために古くから存在しています。</font><font style="vertical-align: inherit;">最近リリースされたApache Ignite 2.8では、ディスク上のデータを圧縮するための2つのメカニズムが導入されました。キャッシュのコンテンツを圧縮するディスクページ圧縮と、一部のWALレコードを圧縮するWALページスナップショット圧縮です。</font><font style="vertical-align: inherit;">以下のこれら3つのメカニズムすべてについて詳しく説明します。</font></font><a name="habracut"></a><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ディスクページの圧縮</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使い方</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まず、Igniteがデータを格納する方法について簡単に説明します。ストレージには、ページメモリが使用されます。ページサイズはノードの開始時に設定され、後の段階では変更できません。また、ページサイズは、2の累乗であり、ファイルシステムブロックのサイズの倍数でなければなりません。ページは必要に応じてディスクからRAMに読み込まれます。ディスク上のデータのサイズは、割り当てられたRAMの量を超える場合があります。 RAMにディスクからページをロードするのに十分なスペースがない場合、古い未使用のページがRAMから強制的に取り出されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データは次の形式でディスクに保存されます。各キャッシュグループのパーティションごとに個別のファイルが作成され、このファイルにインデックスの昇順で、ページが次々に表示されます。完全なページ識別子には、ファイル内のキャッシュグループ識別子、パーティション番号、ページインデックスが含まれます。したがって、完全なページ識別子によって、ファイルを一意に識別でき、各ページのファイル内のオフセットを確認できます。ページメモリの詳細については、Apache Ignite Wiki：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ignite Persistent</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Store-内部の記事を参照し</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">てください</font></a><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ディスクページ圧縮メカニズムは、その名前が示すように、ページレベルで機能します。</font><font style="vertical-align: inherit;">このメカニズムをオンにすると、RAM内のデータの処理は圧縮せずにそのまま実行されますが、ページをRAMからディスクに保存するときに、ページは圧縮されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、各ページを個別に圧縮することは問題の解決策ではありません。結果のデータファイルのサイズを何らかの方法で削減する必要があります。</font><font style="vertical-align: inherit;">ページサイズが固定されなくなると、次のような問題が発生する可能性があるため、ファイルにページを1つずつ書き込むことができなくなります。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ページインデックスを使用して、ファイル内でのオフセットを計算することはできません。</font></font></li>
+<li> ,    ,          .    ,     .    ,         .</li>
+<li>           ,      ,        ,      .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらの問題を独自のレベルで解決しないために、Apache Igniteのディスクページ圧縮では、スパースファイルと呼ばれるファイルシステムメカニズムが使用されます。スパースファイルは、ゼロで埋められた一部の領域を穴としてマークできるファイルです。この場合、これらのホールを格納するためのファイルシステムのブロックは割り当てられず、その結果、ディスクスペースが節約されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ファイルシステムブロックを解放するには、ホールサイズがファイルシステムブロック以上である必要があります。これにより、Apache Igniteのページサイズに追加の制限が課されます。圧縮で少なくともある程度の効果を得るには、ページサイズをファイルシステムブロックサイズより厳密に大きくする必要があります。 。ページサイズがブロックのサイズと等しい場合、単一のブロックを解放するには、0バイトを占有する圧縮ページが必要であるため、単一のブロックを解放することはできません。ページサイズが2ブロックまたは4ブロックのサイズと等しい場合、ページがそれぞれ少なくとも50％または75％に圧縮されていれば、すでに少なくとも1つのブロックを解放できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、メカニズムの最後の説明：ページをディスクに書き込むとき、ページを圧縮する試みが行われます。圧縮されたページのサイズにより、ファイルシステムの1つ以上のブロックが解放される場合、ページは圧縮された形式で書き込まれ、解放されたブロックの代わりに「穴」が開けられます（</font></font><code>fallocate()</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「穴開け」フラグ付きの</font><font style="vertical-align: inherit;">システムコール</font><font style="vertical-align: inherit;">が作成されます）。圧縮されたページのサイズがブロックの解放を許可しない場合、ページは圧縮されていない形式でそのまま保存されます。すべてのページオフセットは、ページインデックスをページサイズで乗算することにより、圧縮なしと同様に考慮されます。ページの自己再配置は必要ありません。ページオフセットは、圧縮なしの場合と同様に、ファイルシステムブロックの境界に含まれます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-l/0f/3x/-l0f3xzxozvrxefbiauxdivslv0.png"><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+現在の実装では、IgniteはLinux OSでスパースファイルしか処理できないため、このオペレーティングシステムでIgniteが使用されている場合にのみディスクページ圧縮を有効にできます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ディスクページの圧縮に使用できる圧縮アルゴリズム：ZSTD、LZ4、Snappy。</font><font style="vertical-align: inherit;">さらに、動作モード（SKIP_GARBAGE）があり、残りのデータに圧縮を適用せずにページ内の未使用の場所のみが破棄されるため、上記のアルゴリズムと比較してCPUの負荷を軽減できます。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パフォーマンスへの影響 </font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+残念ながら、本番環境ではこのメカニズムを使用する予定はないため、実際のスタンドで実際にパフォーマンスを測定することはしませんでしたが、理論的にはどこで負け、どこで勝つかを推測できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これを行うには、ページにアクセスするときにページを読み書きする方法を覚えておく必要があります。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">読み取り操作が実行されると、最初にRAMで検索されます。検索が失敗した場合、ページはディスクと同じストリームでディスクからRAMに読み込まれます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">書き込み操作を実行すると、RAM内のページはダーティとしてマークされますが、記録を実行しているストリーム内のページへの物理的な保存はすぐには行われません。</font><font style="vertical-align: inherit;">すべてのダーティページは、後でチェックポイントプロセスの個別のストリームでディスクに保存されます。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、読み取り操作への影響：</font></font><br>
+<br>
+<ul>
+<li> (disk IO),        .</li>
+<li> (CPU),           sparse .       IO       sparse  (    sparse  ,  ,  ).</li>
+<li> (CPU),     .</li>
+<li>    .</li>
+<li>    (    ):</li>
+<li> (disk IO),        .</li>
+<li> (CPU,  disk IO),     sparse .</li>
+<li> (CPU),     .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+どのスケールが勝るでしょうか？</font><font style="vertical-align: inherit;">それはすべて環境に大きく依存しますが、ディスクページの圧縮はほとんどのシステムでパフォーマンスを低下させる可能性が高いと信じる傾向があります。</font><font style="vertical-align: inherit;">さらに、スパースファイルで同様のアプローチを使用して他のDBMSをテストすると、圧縮が有効になっているとパフォーマンスが低下します。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有効化および構成する方法</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上記のように、ディスクページ圧縮をサポートするApache Igniteの最小バージョン：2.8で、Linuxオペレーティングシステムのみをサポートします。</font><font style="vertical-align: inherit;">電源投入と設定は以下のように行います。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クラスパスにはignite-compressionモジュールが必要です。</font><font style="vertical-align: inherit;">デフォルトでは、Apache Igniteディストリビューションのlibs /オプションディレクトリにあり、クラスパスには含まれていません。</font><font style="vertical-align: inherit;">ディレクトリをlibsの1レベル上に移動するだけで、ignite.shから起動すると、自動的にオンになります。</font></font></li>
+<li>Persistence    (  <code>DataRegionConfiguration.setPersistenceEnabled(true))</code>.</li>
+<li>         (    <code>DataStorageConfiguration.setPageSize()</code> ).</li>
+<li>  ,            ()   ( <code>CacheConfiguration.setDiskPageCompression() , CacheConfiguration.setDiskPageCompressionLevel()</code>).</li>
+</ul><br>
+<h3>WAL compaction</h3><br>
+<h4>  </h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WALとは何ですか？なぜ必要なのですか？非常に簡単に言うと、これは、ページリポジトリの結果として変更されるすべてのイベントが分類されるジャーナルです。彼は主に転倒の場合の回復の可能性のために必要です。制御をユーザーに転送する前に、すべての操作で最初にイベントをWALに書き込む必要があります。これにより、落下の場合、ログを再生し、ユーザーが正常に応答したすべての操作を復元できます。ページストレージへの実際の書き込みは、「チェックポイント」と呼ばれるプロセスで実行され、個別のスレッドでいくらか遅延することが説明されています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WALのエントリは、論理と物理に分かれています。論理的なものは、それ自体がキーと値です。物理-ページの変更をページストアに反映します。論理レコードが他の場合に役立つ場合、物理レコードは、転倒時の回復にのみ必要であり、レコードは最後に成功したチェックポイントの瞬間からのみ必要です。ここでは詳細に触れず、これがこのように機能する理由を説明しませんが、興味のある方は誰でも、Apache Ignite Wiki：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Ignite Persistent Storeの</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">記事を参照してください</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1つの論理レコードが複数の物理レコードを占めることがよくあります。つまり、たとえば、1つのキャッシュ書き込み操作がページメモリ内の複数のページ（データ自体のあるページ、インデックスのあるページ、空きリストのあるページ）に影響を与えます。一部の模擬テストでは、物理レコードがWALファイルのボリュームの最大90％を占めていることが判明しました。さらに、非常に短い時間が必要です（デフォルトでは、チェックポイント間の間隔は3分です）。関連性を失った後、このデータを削除するのが理にかなっています。これはまさに、WAL圧縮メカニズムが実行するものであり、物理レコードを削除し、残りの論理レコードをzipで圧縮しますが、ファイルサイズは大幅に（場合によっては数十倍）減少します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+物理的に、WALは固定サイズ（デフォルトは64 MB）のいくつかのセグメント（デフォルトは10）で構成され、円で上書きされます。</font><font style="vertical-align: inherit;">現在のセグメントがいっぱいになるとすぐに、次のセグメントが現在のセグメントに割り当てられ、いっぱいになったセグメントが別のストリームでアーカイブにコピーされます。</font><font style="vertical-align: inherit;">WAL圧縮はすでにアーカイブセグメントで機能します。</font><font style="vertical-align: inherit;">また、別のストリームで、チェックポイントの実行を監視し、物理レコードが不要になったアーカイブセグメントによる圧縮を開始します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zk/95/jo/zk95jo7dnthiox2sv0ezywhrj2a.png"><br>
+ <br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パフォーマンスへの影響</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WAL圧縮は別のスレッドとして動作するため、実行される操作に直接的な影響はありません。</font><font style="vertical-align: inherit;">ただし、それでもCPU（圧縮）とディスク（アーカイブから各WALセグメントを読み取り、圧縮セグメントを書き込む）に追加のバックグラウンド負荷がかかるため、システムが限界に達すると、パフォーマンスの低下につながります。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有効化および構成する方法</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロパティ</font></font><code>WalCompactionEnabled</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">c </font></font><code>DataStorageConfiguration (DataStorageConfiguration.setWalCompactionEnabled(true)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">を使用してWAL圧縮を有効にでき</font><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">また、DataStorageConfiguration.setWalCompactionLevel（）メソッドを使用すると、デフォルト値（BEST_SPEED）に満足できない場合に圧縮率を設定できます。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WALページスナップショット圧縮</font></font></h3><br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使い方</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WALではレコードが論理的および物理的に分割されていることを以前にすでに発見しました。ページメモリ内の各ページの変更ごとに、物理WALレコードが生成されます。物理レコードも、ページスナップショットレコードとデルタレコードの2つの亜種に分けられます。ページ上の何かを変更してクリーンな状態からダーティな状態に転送するたびに、このページの完全なコピーがWAL（ページスナップショットレコード）に保存されます。 WALで1バイトだけを変更した場合でも、ページサイズよりわずかに大きいサイズのレコードが保存されます。すでにダーティなページで何かを変更すると、WALにデルタレコードが形成され、ページ全体ではなく、ページの前の状態と比較した変更のみが反映されます。チェックポイントプロセス中に、ページのステータスをダーティからクリーンにリセットするため、チェックポイントの開始直後、ほとんどすべての物理レコードはページのスナップショットのみで構成されます（チェックポイントの開始直後のすべてのページは空白であるため）。次のチェックポイントに近づくと、デルタレコードの比率が増加し始め、次のチェックポイントの開始時に再びリセットされます。いくつかの模擬テストの測定では、物理レコードの合計量におけるページスナップショットのシェアが90％に達していることが示されました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WALページスナップショット圧縮の背後にある考え方は、市販のページ圧縮ツールを使用してページスナップショットを圧縮することです（ディスクページの圧縮を参照）。同時に、WALでは、レコードは追加専用モードで順次保存され、ファイルシステムブロックの境界にレコードをバインドする必要がないため、ここでは、ディスクページ圧縮メカニズムとは異なり、スパースファイルは絶対に必要ないため、このメカニズムはOSだけでなく機能しますLinuxさらに、ページをどれだけ圧縮できたかは気になりません。 1バイトを解放したとしても、これはすでに良い結果であり、複数のファイルシステムブロックが解放された場合にのみ圧縮ページを保存するディスクページ圧縮とは異なり、WALで圧縮データを保存できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ページは十分に圧縮可能なデータであり、WALボリューム全体でのシェアは非常に高いため、WALファイルのフォーマットを変更せずに、サイズを大幅に削減できます。</font><font style="vertical-align: inherit;">とりわけ、論理レコードの圧縮では、ファイルサイズを大幅に削減せずに、論理レコードに関心がある可能性のある外部コンシューマなどに対して、フォーマットの変更と互換性の損失が必要になります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WALページスナップショット圧縮のディスクページ圧縮については、圧縮アルゴリズムZSTD、LZ4、Snappy、およびSKIP_GARBAGEモードを使用できます。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パフォーマンスへの影響</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+WALページスナップショット圧縮を直接含めることは、ページメモリにデータを書き込むストリーム、つまりキャッシュ内のデータを変更するストリームのみに影響することに気づくことは難しくありません。 WAL物理レコードからの読み取りは、落下後のノードの上昇時に一度だけ発生します（チェックポイント中の落下の場合のみ）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これはデータフローに次のように影響します。ディスクに書き込む前に毎回ページを圧縮する必要があるため、マイナスの効果（CPU）と、書き込まれるデータの量を減らすことによるプラスの効果（ディスクIO）が得られます。したがって、ここではすべてが単純です。システムパフォーマンスがCPUにかかっている場合は少し低下し、ディスクI / Oの場合は増加します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+間接的に、WALサイズの削減は、WALセグメントをアーカイブにドロップするストリーム（プラス）とWAL圧縮ストリームにも影響します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+合成データに対する環境での実際のパフォーマンステストでは、わずかな増加が見られました（スループットは10％-15％増加し、待機時間は10％-15％減少しました）。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有効化および構成する方法</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Apache Igniteの最小バージョンは2.8です。</font><font style="vertical-align: inherit;">電源投入と設定は以下のように行います。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クラスパスにはignite-compressionモジュールが必要です。</font><font style="vertical-align: inherit;">デフォルトでは、Apache Igniteディストリビューションのlibs /オプションディレクトリにあり、クラスパスには含まれていません。</font><font style="vertical-align: inherit;">ディレクトリをlibsの1レベル上に移動するだけで、ignite.shから起動すると、自動的にオンになります。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">永続化を有効にする必要があります（を介して有効化</font></font><code>DataRegionConfiguration.setPersistenceEnabled(true)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font></li>
+<li>        <code>DataStorageConfiguration.setWalPageCompression()</code>,     ( DISABLED).</li>
+<li>        <code>DataStorageConfiguration.setWalPageCompression()</code>,         javadoc  .</li>
+</ul><br>
+<h3></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Apache Igniteで説明されているデータ圧縮メカニズムは、互いに独立して使用できますが、それらの任意の組み合わせも有効です。</font><font style="vertical-align: inherit;">彼らの仕事の原則を理解することは、彼らがあなたの環境であなたの仕事にどのように適合するか、そしてそれらを使うときにあなたが犠牲にしなければならないことを決定するでしょう。</font><font style="vertical-align: inherit;">ディスクページ圧縮は、主記憶域を圧縮するように設計されており、中程度の圧縮を提供できます。</font><font style="vertical-align: inherit;">WALページスナップショット圧縮は、すでにWALファイルの平均的な圧縮率を提供しますが、パフォーマンスはさらに向上する可能性があります。</font><font style="vertical-align: inherit;">WAL圧縮はパフォーマンスにプラスの影響を与えることはありませんが、物理レコードを削除することでWALファイルのサイズを最小限に抑えます。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja502122/index.html">Thanos-スケーラブルなプロメテウス</a></li>
+<li><a href="../ja502124/index.html">ウクライナの2019ベンチャー結果</a></li>
+<li><a href="../ja502126/index.html">英語プログラマの履歴書を改善する方法</a></li>
+<li><a href="../ja502132/index.html">頭痛のないOpenVZ 6コンテナーをKVMサーバーに転送する方法</a></li>
+<li><a href="../ja502134/index.html">コードの主観的に美しい決定を恐れるほど-あなたはロボットではありません</a></li>
+<li><a href="../ja502146/index.html">オンライン円卓会議「gamedevにしたい」</a></li>
+<li><a href="../ja502148/index.html">例としてQsanを使用したスト​​レージでのサードパーティコンポーネントの使用</a></li>
+<li><a href="../ja502150/index.html">Nutanixを使用した高負荷ネットワークのスケーリング：パーソナルケースの機能と課題</a></li>
+<li><a href="../ja502154/index.html">自動テストを効果的に作成する-皮下テスト</a></li>
+<li><a href="../ja502156/index.html">ランブラー対NGINXのケース：デジタル化の刑事リスク円卓会議5月16日</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

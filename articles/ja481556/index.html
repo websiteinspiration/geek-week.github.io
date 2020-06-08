@@ -1,0 +1,479 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💚 👨🏿‍🚒 🧞 PostgreSQLタスクキュー 👈 👩🏾‍🤝‍👨🏿 🐴</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="キューは、タスクフローの処理を整理するために使用されます。これらは、パフォーマー間のタスクの蓄積と分配に必要です。キューは、タスク処理の追加要件を提供することもできます：配信保証、1回限りの保証、優先順位付けなど。
+ 
+
+ , (MQ — message queue), ad hoc - (, - ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQLタスクキュー</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/481556/"><p><img src="https://habrastorage.org/webt/rd/7-/dy/rd7-dyen1bqq_ekj5_halnmlndy.jpeg" alt="象のキュー-pixabay.com"></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キューは、タスクフローの処理を整理するために使用されます。</font><font style="vertical-align: inherit;">これらは、パフォーマー間のタスクの蓄積と分配に必要です。</font><font style="vertical-align: inherit;">キューは、タスク処理の追加要件を提供することもできます：配信保証、1回限りの保証、優先順位付けなど。</font></font></p><br>
+<p> ,      (MQ — message queue),     ad hoc   -  (,         -  ).        .</p><br>
+<h2 id="ogranicheniya-primenimosti"> </h2><br>
+<p>       .      pub/sub         .</p><br>
+<p>           (    , - ),        .</p><br>
+<h2 id="sut-metoda-v-pyati-slovah">    </h2><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> ... <span class="hljs-keyword">for</span> <span class="hljs-keyword">update</span> <span class="hljs-keyword">skip</span> <span class="hljs-keyword">locked</span></code></pre><a name="habracut"></a><br>
+<h1 id="bazovaya-ochered"> </h1><br>
+<p>            .  -      .</p><br>
+<p>         :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> task<font></font>
+(<font></font>
+    <span class="hljs-keyword">id</span>          <span class="hljs-built_in">bigint</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> primary <span class="hljs-keyword">key</span>,
+    <span class="hljs-keyword">status</span>      <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span>      <span class="hljs-comment">-- 0 - , 1 -  , 2 - </span><font></font>
+);<font></font>
+<font></font>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">index</span> task__status__idx <span class="hljs-keyword">on</span> task (<span class="hljs-keyword">status</span>);</code></pre><br>
+<p> :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> task (<span class="hljs-keyword">id</span>) <span class="hljs-keyword">values</span> ($<span class="hljs-number">1</span>) <span class="hljs-keyword">on</span> conflict (<span class="hljs-keyword">id</span>) <span class="hljs-keyword">do</span> <span class="hljs-keyword">nothing</span>;</code></pre><br>
+<p>  :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">with</span> next_task <span class="hljs-keyword">as</span> (
+    <span class="hljs-keyword">select</span> <span class="hljs-keyword">id</span> <span class="hljs-keyword">from</span> task
+    <span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">0</span>
+    <span class="hljs-keyword">limit</span> <span class="hljs-number">1</span>
+    <span class="hljs-keyword">for</span> <span class="hljs-keyword">update</span> <span class="hljs-keyword">skip</span> <span class="hljs-keyword">locked</span><font></font>
+)<font></font>
+<span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span>
+<span class="hljs-keyword">from</span> next_task
+<span class="hljs-keyword">where</span> task.id = next_task.id
+<span class="hljs-keyword">returning</span> task.id;</code></pre><br>
+<p> :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">2</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre><br>
+<h1 id="ochered-s-prioritetami">  </h1><br>
+<p>   <code>id</code>    .        —    <code>order by id</code>     .       <code>(status, id)</code>.</p><br>
+<p>     :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> task<font></font>
+(<font></font>
+    <span class="hljs-keyword">id</span>          <span class="hljs-built_in">bigint</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> primary <span class="hljs-keyword">key</span>,
+    <span class="hljs-keyword">priority</span>    <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span>,
+    <span class="hljs-keyword">status</span>      <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span>      <span class="hljs-comment">-- 0 - , 1 -  , 2 - </span><font></font>
+);<font></font>
+<font></font>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">index</span> task__status__priority__idx <span class="hljs-keyword">on</span> task (<span class="hljs-keyword">status</span>, <span class="hljs-keyword">priority</span>);</code></pre><br>
+<div class="spoiler"><b class="spoiler_title"> :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> task (<span class="hljs-keyword">id</span>, <span class="hljs-keyword">priority</span>) <span class="hljs-keyword">values</span> ($<span class="hljs-number">1</span>, $<span class="hljs-number">2</span>) <span class="hljs-keyword">on</span> conflict (<span class="hljs-keyword">id</span>) <span class="hljs-keyword">do</span> <span class="hljs-keyword">nothing</span>;</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title">  :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">with</span> next_task <span class="hljs-keyword">as</span> (
+    <span class="hljs-keyword">select</span> <span class="hljs-keyword">id</span> <span class="hljs-keyword">from</span> task
+    <span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">0</span>
+    <span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> <span class="hljs-keyword">priority</span>
+    <span class="hljs-keyword">limit</span> <span class="hljs-number">1</span>
+    <span class="hljs-keyword">for</span> <span class="hljs-keyword">update</span> <span class="hljs-keyword">skip</span> <span class="hljs-keyword">locked</span><font></font>
+)<font></font>
+<span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span>
+<span class="hljs-keyword">from</span> next_task
+<span class="hljs-keyword">where</span> task.id = next_task.id
+<span class="hljs-keyword">returning</span> task.id;</code></pre></div></div><br>
+<p>      " ".</p><br>
+<h1 id="ochered-s-povtorom-upavshih-zadach">   "" </h1><br>
+<p>         .         .            , ,        .</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> task<font></font>
+(<font></font>
+    <span class="hljs-keyword">id</span>          <span class="hljs-built_in">bigint</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> primary <span class="hljs-keyword">key</span>,
+    <span class="hljs-keyword">status</span>      <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span>,     <span class="hljs-comment">-- 0 - , 1 -  , 2 - , 3 - , 4 -   (  )</span>
+    attempt     <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span>,<font></font>
+    delayed_to  <span class="hljs-built_in">timestamp</span> <span class="hljs-literal">null</span>,<font></font>
+    error_text  <span class="hljs-built_in">text</span> <span class="hljs-literal">null</span><font></font>
+);<font></font>
+<font></font>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">index</span> task__status__delayed_to__idx <span class="hljs-keyword">on</span> task (<span class="hljs-keyword">status</span>, delayed_to);</code></pre><br>
+<p> ,       :</p><br>
+<ul>
+<li><code>attempt</code> —  ;        (  )       (,      <code>10 * attempt</code> );</li>
+<li><code>delayed_to</code> —     ;</li>
+<li><code>error_text</code> —  .</li>
+</ul><br>
+<p>       .</p><br>
+<p>.   ,         "".  :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span> error_text, <span class="hljs-keyword">count</span>(*) <span class="hljs-keyword">from</span> task <span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">3</span> <span class="hljs-keyword">group</span> <span class="hljs-keyword">by</span> <span class="hljs-number">1</span> <span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> <span class="hljs-number">2</span> <span class="hljs-keyword">desc</span>;</code></pre><br>
+<p>     .  ,   (  ).         0     .</p><br>
+<div class="spoiler"><b class="spoiler_title">   :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">with</span> next_task <span class="hljs-keyword">as</span> (
+    <span class="hljs-keyword">select</span> <span class="hljs-keyword">id</span> <span class="hljs-keyword">from</span> task
+    <span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">0</span>
+    <span class="hljs-keyword">limit</span> <span class="hljs-number">1</span>
+    <span class="hljs-keyword">for</span> <span class="hljs-keyword">update</span> <span class="hljs-keyword">skip</span> <span class="hljs-keyword">locked</span><font></font>
+)<font></font>
+<span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span>,<font></font>
+    attempt = attempt + <span class="hljs-number">1</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = <span class="hljs-literal">null</span>
+<span class="hljs-keyword">from</span> next_task
+<span class="hljs-keyword">where</span> task.id = next_task.id
+<span class="hljs-keyword">returning</span> task.id;</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title">   -  :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">with</span> next_task <span class="hljs-keyword">as</span> (
+    <span class="hljs-keyword">select</span> <span class="hljs-keyword">id</span> <span class="hljs-keyword">from</span> task
+    <span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">3</span>
+      <span class="hljs-keyword">and</span> delayed_to &lt; <span class="hljs-keyword">localtimestamp</span>
+    <span class="hljs-keyword">limit</span> <span class="hljs-number">1</span>
+    <span class="hljs-keyword">for</span> <span class="hljs-keyword">update</span> <span class="hljs-keyword">skip</span> <span class="hljs-keyword">locked</span><font></font>
+)<font></font>
+<span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span>,<font></font>
+    attempt = attempt + <span class="hljs-number">1</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = <span class="hljs-literal">null</span>
+<span class="hljs-keyword">from</span> next_task
+<span class="hljs-keyword">where</span> task.id = next_task.id
+<span class="hljs-keyword">returning</span> task.id;</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title">  :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">2</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = <span class="hljs-literal">null</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title">   ,    (5 *  ) :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">3</span>,<font></font>
+    delayed_to = <span class="hljs-keyword">localtimestamp</span> + make_interval(mins =&gt; <span class="hljs-number">5</span> * attempt),<font></font>
+    error_text = $<span class="hljs-number">2</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title">    ,   :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">4</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = $<span class="hljs-number">2</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre></div></div><br>
+<p>      ,           .    <code>or</code>       <code>order by</code>.</p><br>
+<h1 id="sbor-metrik"> </h1><br>
+<p>  :</p><br>
+<ul>
+<li>  ;</li>
+<li>  ;</li>
+<li>     .</li>
+</ul><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> task<font></font>
+(<font></font>
+    <span class="hljs-keyword">id</span>          <span class="hljs-built_in">bigint</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> primary <span class="hljs-keyword">key</span>,
+    <span class="hljs-keyword">status</span>      <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span>,     <span class="hljs-comment">-- 0 - , 1 -  , 2 - , 3 - , 4 -   (  )</span>
+    attempt     <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span>,<font></font>
+    begin_time  <span class="hljs-built_in">timestamp</span> <span class="hljs-literal">null</span>,<font></font>
+    end_time    <span class="hljs-built_in">timestamp</span> <span class="hljs-literal">null</span>,<font></font>
+    delayed_to  <span class="hljs-built_in">timestamp</span> <span class="hljs-literal">null</span>,<font></font>
+    error_text  <span class="hljs-built_in">text</span> <span class="hljs-literal">null</span>,<font></font>
+    created     <span class="hljs-built_in">timestamp</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-keyword">localtimestamp</span>,
+    <span class="hljs-keyword">updated</span>     <span class="hljs-built_in">timestamp</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-keyword">localtimestamp</span><font></font>
+);<font></font>
+<font></font>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">index</span> task__status__delayed_to__idx <span class="hljs-keyword">on</span> task (<span class="hljs-keyword">status</span>, delayed_to);
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">index</span> task__updated__idx <span class="hljs-keyword">on</span> task (<span class="hljs-keyword">updated</span>);</code></pre><br>
+<p>     .</p><br>
+<div class="spoiler"><b class="spoiler_title">   :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">with</span> next_task <span class="hljs-keyword">as</span> (
+    <span class="hljs-keyword">select</span> <span class="hljs-keyword">id</span> <span class="hljs-keyword">from</span> task
+    <span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">0</span>
+    <span class="hljs-keyword">limit</span> <span class="hljs-number">1</span>
+    <span class="hljs-keyword">for</span> <span class="hljs-keyword">update</span> <span class="hljs-keyword">skip</span> <span class="hljs-keyword">locked</span><font></font>
+)<font></font>
+<span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span>,<font></font>
+    attempt = attempt + <span class="hljs-number">1</span>,<font></font>
+    begin_time = <span class="hljs-keyword">localtimestamp</span>,<font></font>
+    end_time = <span class="hljs-literal">null</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = <span class="hljs-literal">null</span>,
+    <span class="hljs-keyword">updated</span> = <span class="hljs-keyword">localtimestamp</span>
+<span class="hljs-keyword">from</span> next_task
+<span class="hljs-keyword">where</span> task.id = next_task.id
+<span class="hljs-keyword">returning</span> task.id;</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title">   -  :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">with</span> next_task <span class="hljs-keyword">as</span> (
+    <span class="hljs-keyword">select</span> <span class="hljs-keyword">id</span> <span class="hljs-keyword">from</span> task
+    <span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">3</span>
+      <span class="hljs-keyword">and</span> delayed_to &lt; <span class="hljs-keyword">localtimestamp</span>
+    <span class="hljs-keyword">limit</span> <span class="hljs-number">1</span>
+    <span class="hljs-keyword">for</span> <span class="hljs-keyword">update</span> <span class="hljs-keyword">skip</span> <span class="hljs-keyword">locked</span><font></font>
+)<font></font>
+<span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span>,<font></font>
+    attempt = attempt + <span class="hljs-number">1</span>,<font></font>
+    begin_time = <span class="hljs-keyword">localtimestamp</span>,<font></font>
+    end_time = <span class="hljs-literal">null</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = <span class="hljs-literal">null</span>,
+    <span class="hljs-keyword">updated</span> = <span class="hljs-keyword">localtimestamp</span>
+<span class="hljs-keyword">from</span> next_task
+<span class="hljs-keyword">where</span> task.id = next_task.id
+<span class="hljs-keyword">returning</span> task.id;</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title">  :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">2</span>,<font></font>
+    end_time = <span class="hljs-keyword">localtimestamp</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = <span class="hljs-literal">null</span>,
+    <span class="hljs-keyword">updated</span> = <span class="hljs-keyword">localtimestamp</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title">   ,    (5 *  ) :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">3</span>,<font></font>
+    end_time = <span class="hljs-keyword">localtimestamp</span>,<font></font>
+    delayed_to = <span class="hljs-keyword">localtimestamp</span> + make_interval(mins =&gt; <span class="hljs-number">5</span> * attempt),<font></font>
+    error_text = $<span class="hljs-number">2</span>,
+    <span class="hljs-keyword">updated</span> = <span class="hljs-keyword">localtimestamp</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre></div></div><br>
+<div class="spoiler"><b class="spoiler_title">    ,   :</b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">4</span>,<font></font>
+    end_time = <span class="hljs-keyword">localtimestamp</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = $<span class="hljs-number">2</span>,
+    <span class="hljs-keyword">updated</span> = <span class="hljs-keyword">localtimestamp</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre></div></div><br>
+<h3 id="primery-dlya-chego-eto-mozhet-byt-nuzhno">,      </h3><br>
+<p>    :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">3</span>,<font></font>
+    end_time = <span class="hljs-keyword">localtimestamp</span>,<font></font>
+    delayed_to = <span class="hljs-keyword">localtimestamp</span>,<font></font>
+    error_text = <span class="hljs-string">'hanged'</span>,
+    <span class="hljs-keyword">updated</span> = <span class="hljs-keyword">localtimestamp</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span>
+  <span class="hljs-keyword">and</span> <span class="hljs-keyword">updated</span> &lt; <span class="hljs-keyword">localtimestamp</span> - <span class="hljs-built_in">interval</span> <span class="hljs-string">'1 hour'</span>;</code></pre><br>
+<p>  :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">delete</span> <span class="hljs-keyword">from</span> task
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">updated</span> &lt; <span class="hljs-keyword">localtimestamp</span> - <span class="hljs-built_in">interval</span> <span class="hljs-string">'30 days'</span>;</code></pre><br>
+<p>   :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">select</span>
+    date_trunc(<span class="hljs-string">'hour'</span>, end_time),
+    <span class="hljs-keyword">count</span>(*),
+    <span class="hljs-keyword">sum</span>(end_time - begin_time),
+    <span class="hljs-keyword">avg</span>(end_time - begin_time)
+<span class="hljs-keyword">from</span> task
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">2</span>
+  <span class="hljs-keyword">and</span> end_time &gt;= <span class="hljs-string">'2019-12-16'</span>
+<span class="hljs-keyword">group</span> <span class="hljs-keyword">by</span> <span class="hljs-number">1</span>
+<span class="hljs-keyword">order</span> <span class="hljs-keyword">by</span> <span class="hljs-number">1</span>;</code></pre><br>
+<h1 id="povtornyy-zapusk-ranee-vypolnennyh-zadach">    </h1><br>
+<p>,  ,      .</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> task<font></font>
+(<font></font>
+    <span class="hljs-keyword">id</span>              <span class="hljs-built_in">bigint</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> primary <span class="hljs-keyword">key</span>,<font></font>
+    task_updated_at <span class="hljs-built_in">timestamp</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> localtimstamp,
+    <span class="hljs-keyword">status</span>          <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span>,     <span class="hljs-comment">-- 0 - , 1 -  , 2 - , 3 - , 4 -   (  )</span>
+    begin_time      <span class="hljs-built_in">timestamp</span> <span class="hljs-literal">null</span>,<font></font>
+    end_time        <span class="hljs-built_in">timestamp</span> <span class="hljs-literal">null</span>,<font></font>
+    delayed_to      <span class="hljs-built_in">timestamp</span> <span class="hljs-literal">null</span>,<font></font>
+    error_text      <span class="hljs-built_in">text</span> <span class="hljs-literal">null</span>,<font></font>
+    created         <span class="hljs-built_in">timestamp</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-keyword">localtimestamp</span>,
+    <span class="hljs-keyword">updated</span>         <span class="hljs-built_in">timestamp</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-keyword">localtimestamp</span>
+);</code></pre><br>
+<p>       <code>task_updated_at</code>,       <code>created</code>.</p><br>
+<p>   () :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> task (<span class="hljs-keyword">id</span>, task_updated_at) <span class="hljs-keyword">values</span> ($<span class="hljs-number">1</span>, $<span class="hljs-number">2</span>)
+<span class="hljs-keyword">on</span> conflict (<span class="hljs-keyword">id</span>) <span class="hljs-keyword">do</span> <span class="hljs-keyword">update</span>
+<span class="hljs-keyword">set</span><font></font>
+    task_updated_at = excluded.task_updated_at,<font></font>
+    <span class="hljs-keyword">status</span> = <span class="hljs-keyword">case</span> <span class="hljs-keyword">when</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span> <span class="hljs-keyword">then</span> <span class="hljs-number">1</span> <span class="hljs-keyword">else</span> <span class="hljs-number">0</span> <span class="hljs-keyword">end</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = <span class="hljs-literal">null</span>,
+    <span class="hljs-keyword">updated</span> = <span class="hljs-keyword">localtimestamp</span>
+<span class="hljs-keyword">where</span> task_updated_at &lt; excluded.task_updated_at;</code></pre><br>
+<p>  .   "",     .</p><br>
+<p>      ,       .</p><br>
+<p>      ,      .</p><br>
+<p>  :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-keyword">case</span> <span class="hljs-keyword">when</span> begin_time &gt;= <span class="hljs-keyword">updated</span> <span class="hljs-keyword">then</span> <span class="hljs-number">2</span> <span class="hljs-keyword">else</span> <span class="hljs-number">0</span> <span class="hljs-keyword">end</span>,<font></font>
+    end_time = <span class="hljs-keyword">localtimestamp</span>,<font></font>
+    delayed_to = <span class="hljs-literal">null</span>,<font></font>
+    error_text = <span class="hljs-literal">null</span>,
+    <span class="hljs-keyword">updated</span> = <span class="hljs-keyword">localtimestamp</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre><br>
+<p>   :    .     ,      "".</p><br>
+<h1 id="pipeline">Pipeline</h1><br>
+<p>   .       .       .</p><br>
+<p>    ,    .           .</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> task<font></font>
+(<font></font>
+    <span class="hljs-keyword">id</span>      <span class="hljs-built_in">bigint</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> primary <span class="hljs-keyword">key</span>,<font></font>
+    stage   <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span>,
+    <span class="hljs-keyword">status</span>  <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span><font></font>
+);<font></font>
+<font></font>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">index</span> task__stage__status__idx <span class="hljs-keyword">on</span> task (stage, <span class="hljs-keyword">status</span>);</code></pre><br>
+<p>     :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">with</span> next_task <span class="hljs-keyword">as</span> (
+    <span class="hljs-keyword">select</span> <span class="hljs-keyword">id</span> <span class="hljs-keyword">from</span> task
+    <span class="hljs-keyword">where</span> stage = $<span class="hljs-number">1</span>
+      <span class="hljs-keyword">and</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">0</span>
+    <span class="hljs-keyword">limit</span> <span class="hljs-number">1</span>
+    <span class="hljs-keyword">for</span> <span class="hljs-keyword">update</span> <span class="hljs-keyword">skip</span> <span class="hljs-keyword">locked</span><font></font>
+)<font></font>
+<span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span>
+<span class="hljs-keyword">from</span> next_task
+<span class="hljs-keyword">where</span> task.id = next_task.id
+<span class="hljs-keyword">returning</span> task.id;</code></pre><br>
+<p>      :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    stage = $<span class="hljs-number">2</span>,
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">2</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre><br>
+<p>      :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    stage = stage + <span class="hljs-number">1</span>,
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">2</span>
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span>;</code></pre><br>
+<h1 id="zadachi-po-raspisaniyu">  </h1><br>
+<p>    .</p><br>
+<p>       (   —  ).</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">create</span> <span class="hljs-keyword">table</span> task<font></font>
+(<font></font>
+    <span class="hljs-keyword">id</span>              <span class="hljs-built_in">bigint</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> primary <span class="hljs-keyword">key</span>,
+    <span class="hljs-keyword">period</span>          <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span>,               <span class="hljs-comment">--    </span>
+    <span class="hljs-keyword">status</span>          <span class="hljs-built_in">integer</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-number">0</span>,     <span class="hljs-comment">-- 0 - , 1 -  </span>
+    next_run_time   <span class="hljs-built_in">timestamp</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">null</span> <span class="hljs-keyword">default</span> <span class="hljs-keyword">localtimestamp</span><font></font>
+);<font></font>
+<font></font>
+<span class="hljs-keyword">create</span> <span class="hljs-keyword">index</span> task__status__next_run_time__idx <span class="hljs-keyword">on</span> task (<span class="hljs-keyword">status</span>, next_run_time);</code></pre><br>
+<p> :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">insert</span> <span class="hljs-keyword">into</span> task (<span class="hljs-keyword">id</span>, <span class="hljs-keyword">period</span>, next_run_time) <span class="hljs-keyword">values</span> ($<span class="hljs-number">1</span>, $<span class="hljs-number">2</span>, $<span class="hljs-number">3</span>);</code></pre><br>
+<p>  :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">with</span> next_task <span class="hljs-keyword">as</span> (
+    <span class="hljs-keyword">select</span> <span class="hljs-keyword">id</span> <span class="hljs-keyword">from</span> task
+    <span class="hljs-keyword">where</span> <span class="hljs-keyword">status</span> = <span class="hljs-number">0</span>
+      <span class="hljs-keyword">and</span> next_run_time &lt;= <span class="hljs-keyword">localtimestamp</span>
+    <span class="hljs-keyword">limit</span> <span class="hljs-number">1</span>
+    <span class="hljs-keyword">for</span> <span class="hljs-keyword">update</span> <span class="hljs-keyword">skip</span> <span class="hljs-keyword">locked</span><font></font>
+)<font></font>
+<span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">1</span>
+<span class="hljs-keyword">from</span> next_task
+<span class="hljs-keyword">where</span> task.id = next_task.id
+<span class="hljs-keyword">returning</span> task.id;</code></pre><br>
+<p>     :</p><br>
+<pre><code class="sql hljs"><span class="hljs-keyword">update</span> task
+<span class="hljs-keyword">set</span>
+    <span class="hljs-keyword">status</span> = <span class="hljs-number">0</span>,<font></font>
+    next_run_time = next_run_time + make_interval(secs =&gt; <span class="hljs-keyword">period</span>)
+<span class="hljs-keyword">where</span> <span class="hljs-keyword">id</span> = $<span class="hljs-number">1</span></code></pre><br>
+<h1 id="vmesto-zaklyucheniya"> </h1><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RDBMSツールを使用して特殊なタスクキューを作成することは複雑ではありません。</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「自作」キューが応答します </font></font><del><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">荒野でも</font></font></del><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 事実上すべてのビジネス/ドメイン要件。</font></font></p><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">まあ、他のデータベースのように、キューはサーバー、クエリ、インデックスの慎重なチューニングを必要とすることを忘れてはなりません。</font></font></p></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja481546/index.html">マイクロプロセッサとパーソナルコンピュータの歴史：1947-1974</a></li>
+<li><a href="../ja481548/index.html">JavaScriptのSymbol.iterator</a></li>
+<li><a href="../ja481550/index.html">インマルサット：自宅で衛星信号を受信して​​デコード</a></li>
+<li><a href="../ja481552/index.html">PGConf.Russia 2020近日公開</a></li>
+<li><a href="../ja481554/index.html">コンピューターサイエンスのオンラインマスターオブサイエンスをどのように通過しますか？</a></li>
+<li><a href="../ja481558/index.html">.NET CoreとFramework。コレクションのパフォーマンス</a></li>
+<li><a href="../ja481560/index.html">先週のフロントエンドの世界からの新鮮な素材のダイジェストNo. 394（2019年12月15〜22日）</a></li>
+<li><a href="../ja481562/index.html">Raspberry Pi 4ヒートテスト</a></li>
+<li><a href="../ja481564/index.html">PHPダイジェストNo. 170（2019年12月9〜23日）</a></li>
+<li><a href="../ja481566/index.html">プログラミングやはんだ付けなしで、新年のカラフルなアドレスLED</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

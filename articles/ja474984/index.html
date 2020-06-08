@@ -1,0 +1,536 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩‍🌾 🛂 😓 RabbitMQとKafkaの比較：フェイルオーバーと高可用性 〰️ 🎋 🍤</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="では前の記事、私たちは、耐障害性と高可用性のためのRabbitMQクラスタリングを調べました。それでは、Apache Kafkaを深く掘り下げましょう。
+ 
+ ここでは、レプリケーションユニットはパーティションです。各トピックには1つ以上のセクションがあります。各セクションには、フォロワーの有無にか...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>RabbitMQとKafkaの比較：フェイルオーバーと高可用性</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/itsumma/blog/474984/"><img src="https://habrastorage.org/webt/rc/zb/n7/rczbn7bwtp8b5day0whi_wace2e.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+では</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前の記事、</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私たちは、耐障害性と高可用性のためのRabbitMQクラスタリングを調べました。</font><font style="vertical-align: inherit;">それでは、Apache Kafkaを深く掘り下げましょう。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは、レプリケーションユニットはパーティションです。</font><font style="vertical-align: inherit;">各トピックには1つ以上のセクションがあります。</font><font style="vertical-align: inherit;">各セクションには、フォロワーの有無にかかわらずリーダーがいます。</font><font style="vertical-align: inherit;">トピックを作成すると、パーティションの数と複製率が示されます。</font><font style="vertical-align: inherit;">通常の値は3です。これは、1つのリーダーと2つのフォロワーという3つの発言を意味します。</font></font><br>
+<a name="habracut"></a><br>
+<br>
+<img src="https://habrastorage.org/webt/ly/hd/ml/lyhdmlstwyv-tf_-ts54gife3cw.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">1. 4つのセクションが3つのブローカーに分散され、</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+すべての読み取りおよび書き込み要求がリーダーに送信されます。</font><font style="vertical-align: inherit;">フォロワーは定期的にリーダーにリクエストを送信して、最新のメッセージを受信します。</font><font style="vertical-align: inherit;">消費者は決してフォロワーに頼らず、フォロワーは冗長性とフォールトトレランスのためだけに存在します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sb/fc/v0/sbfcv0j3mosfzvrb7qktoexl_lg.png"><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">セクションが失敗しました</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ブローカーが落ちるとき、いくつかのセクションのリーダーはしばしば失敗します。それらのそれぞれで、別のノードからのフォロワーがリーダーになります。実際、これは常に当てはまるわけではありません。同期の要因も影響します。同期されたフォロワーが存在するかどうか、そうでない場合は、非同期レプリカへの移行が許可されるためです。しかし、とりあえず、複雑にしないでください。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ブローカー3がネットワークを離れ、セクション2でブローカー2の新しいリーダーが選出されます</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/im/ct/r0/imctr0qotjsjg4_jx3g6p5otk9u.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。 2.ブローカー3が死亡し、ブローカー2の彼のフォロワーがセクション2の新しいリーダーとして選出されます。</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+次に、ブローカー1が去り、セクション1もそのリーダーを失います。そのリーダーの役割はブローカー2になり</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rg/fo/zp/rgfozpk7b_t1odoxso1mvihmccu.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。 3.ブローカーは1つだけ残っています。すべてのリーダーは同じゼロ冗長ブローカーを使用しています。</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ブローカー1がネットワークに戻ると、4つのフォロワーが追加され、各セクションに冗長性が提供されます。しかし、すべての指導者はまだブローカー2にとどまっていました</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mh/lj/2s/mhlj2sn5r6rcjodqnl22450bjn8.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。 4.リーダーはブローカー2に残ります</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ブローカー3が上昇すると、セクションごとに3つのレプリカに戻ります。しかし、すべてのリーダーはまだブローカー2にい</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/3u/tb/op/3utbopk0awdg8rg62natyoxqg9o.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。 5.ブローカー1および3の復元後のリーダーの不均衡な配置</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+Kafkaには、RabbitMQよりも優れたリーダーのリバランスツールがあります。そこでは、移行中の冗長性を減らすことにより、メインノードを移行するためのポリシーを変更するサードパーティのプラグインまたはスクリプトを使用する必要がありました。さらに、大規模なキューの場合、同期中にアクセス不能になることを我慢する必要がありました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kafkaには、リーダーシップの役割に「推奨される手がかり」という概念があります。</font><font style="vertical-align: inherit;">トピックセクションが作成されると、Kafkaはリーダーをノード全体に均等に分散させ、これらの最初のリーダーを優先としてマークします。</font><font style="vertical-align: inherit;">時間の経過とともに、サーバーの再起動、障害、および接続障害により、上記の極端な場合のように、リーダーが他のノードに配置される可能性があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これを修正するために、Kafkaには2つのオプションがあります。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">auto.leader.rebalance.enable = true</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オプションを</font><font style="vertical-align: inherit;">使用すると、コントローラーノードはリーダーを自動的に優先レプリカに再割り当てし、それによって均一な分散を復元できます。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管理者は、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kafka-preferred-replica-election.sh</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スクリプト</font><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">実行し</font><font style="vertical-align: inherit;">て手動で再割り当てできます。</font></font></li>
+</ul><br>
+<br>
+<img src="https://habrastorage.org/webt/qt/2l/th/qt2lth99rb1fhzq8g4r93uoxh6k.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">6.リバランス後のレプリカ</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+これは障害を単純化したバージョンでしたが、ここではあまり複雑なものはありませんが、現実はより複雑です。</font><font style="vertical-align: inherit;">それはすべて、同期されたレプリカ（同期レプリカ、ISR）です。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同期レプリカ（ISR）</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ISRは、「同期」（同期）されていると見なされるパーティションのレプリカのセットです。</font><font style="vertical-align: inherit;">リーダーはいますが、フォロワーはいないかもしれません。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">replica.lag.time.max.ms</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">間隔が満了する前にフォロワーがすべてのリーダーメッセージの正確なコピーを作成した場合、フォロワーは同期していると見なされます</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下の場合、フォロワーはISRセットから削除されます。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">間隔</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">replica.lag.time.max.ms</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（死んだと見なされる）の</font><font style="vertical-align: inherit;">サンプリングを要求しませんでした</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">間隔</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">replica.lag.time.max.msの</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ために更新する時間がありません</font><i><font style="vertical-align: inherit;">でした</font></i><font style="vertical-align: inherit;">（遅いと考えられます）</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フォロワーは、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">replica.fetch.wait.max.ms</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の間隔（</font><font style="vertical-align: inherit;">デフォルトでは500ミリ秒）で</font><font style="vertical-align: inherit;">フェッチ要求を行います</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ISRの目的を明確に説明するには、プロデューサー（プロデューサー）からの確認といくつかの障害シナリオを確認する必要があります。</font><font style="vertical-align: inherit;">プロデューサーは、ブローカーが確認を送信するタイミングを選択できます。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = 0、確認は送信されません</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = 1、リーダーがローカルログにメッセージを書き込んだ後に確認が送信されます</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = all、ISR内のすべてのレプリカがローカルログにメッセージを書き込んだ後に確認が送信されます</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kafkaの用語では、ISRがメッセージを保存するとコミットします。</font><font style="vertical-align: inherit;">Acks = allが最も安全なオプションですが、追加の遅延もあります。</font><font style="vertical-align: inherit;">失敗の2つの例と、さまざまな「ack」オプションがISRコンセプトとどのように相互作用するかを見てみましょう。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Acks = 1およびISR</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この例では、リーダーがすべてのフォロワーからの各メッセージが保存されるのを待たない場合、リーダーが失敗するとデータが失われる可能性があることがわかります。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">unclean.leader.election.enable</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を設定することで、同期されていないフォロワーへの移動を有効または無効にできます</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この例では、製造元はacks = 1に設定されています。セクションは3つのブローカーすべてに分散されます。ブローカー3は遅れており、8秒前にリーダーと同期し、現在7456メッセージ遅れています。ブローカー1は1秒遅れています。私たちのプロデューサーはメッセージを送信し、迅速に確認応答を受け取ります。リーダーが予期しない遅いフォロワーや死んだフォロワーのオーバーヘッドはありません。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ej/bh/g7/ejbhg7svgcphrhpdtzbwuw--wg4.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 7. 3つのレプリカを持つISR</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ブローカー2が失敗し、製造元が接続エラーを受け取ります。リーダーシップがブローカー1に移行した後、123通のメッセージが失われます。ブローカー1のフォロワーはISRの一部でしたが、リーダーが倒れたときにリーダーと完全に同期しませんでした。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/6y/th/y9/6ythy9olfa5zr2wyqtfqcrq8u5e.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 8.障害が発生した場合、メッセージは</font></font></font></i><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;"> bootstrap.servers</font></i></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+構成</font><font style="vertical-align: inherit;">で</font><i><font color="gray"><font style="vertical-align: inherit;">失わ</font></font></i><font style="vertical-align: inherit;">れ、</font><font style="vertical-align: inherit;">製造元はいくつかのブローカーをリストし、セクションの新しいリーダーになった別のブローカーに尋ねることができます。次に、ブローカー1との接続を確立し、引き続きメッセージを送信します。</font><i><font color="gray"><font style="vertical-align: inherit;">図。 9.メッセージの送信は、短い休憩後に再開されます</font></font></i></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"></font><br>
+<br>
+<img src="https://habrastorage.org/webt/br/o6/jr/bro6jrn5nt-a0wzvg_yt0csmdgg.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ブローカー3はさらに遅れます。フェッチ要求を行いますが、同期できません。これは、ブローカー間の低速のネットワーク接続、ストレージの問題などが原因である可能性があります。ISRから削除されました。現在、ISRは1つの発言で構成されています-リーダーです！製造業者は引き続きメッセージを送信し、確認を受け取ります。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/b2/qj/aj/b2qjaj5g_yx2wfb-jdkalxr9074.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 10.ブローカー3のフォロワーがISRから削除され、</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ブローカー1がドロップし、リーダーの役割がブローカー3に移り、15286メッセージが失われます。製造元は、接続エラーメッセージを受け取ります。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">unclean.leader.election.enable = trueに</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">設定されているため、ISRの外部のリーダーに移動することのみが可能</font><i><font style="vertical-align: inherit;">でした</font></i><font style="vertical-align: inherit;">。</font><i><font style="vertical-align: inherit;">falseに</font></i><font style="vertical-align: inherit;">設定されている場合</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の場合、遷移は発生せず、すべての読み取りおよび書き込みリクエストが拒否されます。</font><font style="vertical-align: inherit;">この例では、ブローカー1がレプリカにそのままのデータで戻ってくるのを待っています。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rr/n1/-n/rrn1-nekmhjtro9pxeueciytb50.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">11.ブローカー1がドロップします。</font><font style="vertical-align: inherit;">失敗すると、多数のメッセージが失わ</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+れ、製造元は最後のブローカーとの接続を確立し、彼が現在このセクションのリーダーであることがわかります。</font><font style="vertical-align: inherit;">彼はブローカー3にメッセージを送信し始めます</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/qj/qq/go/qjqqgoevfafcmcxtidd_bvjw9wi.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">12.短い休憩の後、メッセージは再びセクション0に</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+送信されます。新しい接続を確立して新しいリーダーを検索するための短い中断に加えて、製造元は常にメッセージを送信していることがわかりました。</font><font style="vertical-align: inherit;">この構成では、一貫性（データセキュリティ）を通じてアクセシビリティが提供されます。</font><font style="vertical-align: inherit;">Kafkaは何千ものメッセージを失いましたが、新しいエントリを受け入れ続けました。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Acks = allおよびISR</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このシナリオをもう一度繰り返しましょう</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">ただし、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = allを使用し</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。ブローカー3を平均4秒遅延させます。製造元が</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = allの</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メッセージを送信しましたが</font><font style="vertical-align: inherit;">、今は迅速な応答を受け取りません。リーダーは、ISR内のすべてのメッセージがメッセージを保存するまで待機します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/3c/6j/a5/3c6ja5msoncfx1s-xbyjpmujtdo.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 13. 3つのレプリカを持つISR。 1つは遅いため、書き込み遅延が発生し、</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+さらに4秒の</font><i><font color="gray"><font style="vertical-align: inherit;">遅延の</font></font></i><font style="vertical-align: inherit;">後、ブローカー2はackを送信します。すべてのレプリカが完全に更新されました。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ol/eg/y6/olegy6unibvup0tlza6cbd4gqic.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 14.すべてのレプリカがメッセージを保存してACKを送信します。</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ブローカー3はさらに遅延し、ISRから削除されます。 ISRに低速のレプリカが残っていないため、遅延が大幅に減少します。ブローカー2はブローカー1のみを待機しており、平均遅延は500ミリ秒です。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ub/0e/7j/ub0e7jm1siaa9dvcmxyldti1ify.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 15.ブローカー3のレプリカがISRから削除され、</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ブローカー2が落ち、メッセージを失うことなくリーダーシップがブローカー1に渡されます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/a7/ts/8m/a7ts8mywsvuowiof5jp6f6eszlq.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 16.ブローカー2が落ちる：</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+製造業者は新しいリーダーを見つけ、メッセージの送信を開始します。 ISRは1つのレプリカで構成されているため、遅延は依然として減少しています。したがって、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> acks = all</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オプション</font><font style="vertical-align: inherit;">は冗長性を追加しません。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/-z/i_/od/-zi_odb0nc-nf0xe1tsxmzlr-uq.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 17.ブローカー1のレプリカがメッセージを失うことなくリーダーシップをとると、ブローカー1は</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+落ち、リーダーシップはブローカー3に渡され、メッセージは14238失われます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/sr/x5/1m/srx51mjemyxnksoewy6n91_lgqy.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 18.ブローカー1が</font></font></font></i><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;">停止し、クリーンで</font></i></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ない設定</font><i><font color="gray"><font style="vertical-align: inherit;">でリーダーシップが移行すると、データが大幅に失わ</font></font></i><font style="vertical-align: inherit;">れるため、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> unclean.leader.election.enable</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オプション</font><font style="vertical-align: inherit;">を</font><i><font style="vertical-align: inherit;"> trueに</font></i><font style="vertical-align: inherit;">設定できませんでした</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">デフォルトでは</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">false</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font><i><font style="vertical-align: inherit;">unclean.leader.election.enable = true</font></i><font style="vertical-align: inherit;">で</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = all</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">設定</font><font style="vertical-align: inherit;">すると、いくつかの追加のデータセキュリティでアクセシビリティが提供されます。</font><font style="vertical-align: inherit;">しかし、ご覧のとおり、メッセージは失われる可能性があります。</font><font style="vertical-align: inherit;">
+しかし、データのセキュリティを強化したい場合はどうでしょうか？</font><i><font style="vertical-align: inherit;">unclean.leader.election.enable = false</font></i><font style="vertical-align: inherit;">を設定できますが</font><font style="vertical-align: inherit;">、これは必ずしもデータ損失から私たちを保護するわけではありません。</font><font style="vertical-align: inherit;">リーダーが激しく倒れてデータを持ち歩いた場合でも、メッセージは失われ、管理者が状況を回復するまでアクセシビリティは失われます。</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてのメッセージの冗長性を保証し、それ以外の場合は記録を拒否することをお勧めします。</font><font style="vertical-align: inherit;">次に、少なくともブローカーの観点から見ると、データ損失は、2つ以上の同時障害が発生した場合にのみ可能です。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Acks = all、min.insync.replicasおよびISR</font></font></h3><br><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min.insync.replicas</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+トピック</font><i><font style="vertical-align: inherit;">構成を使用すると、</font></i><font style="vertical-align: inherit;">データのセキュリティが向上します。</font><font style="vertical-align: inherit;">最後のシナリオの最後の部分をもう一度見てみましょうが、今回は</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min.insync.replicas = 2を使用し</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、ブローカー2にはレプリカリーダーがあり、ブローカー3のフォロワーはISRから削除されます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/5g/ij/ls/5gijlstkvqxo4ojr6wfxxwn719m.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">19. 2つのレプリカ</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ブローカー2 </font><i><font color="gray"><font style="vertical-align: inherit;">のISRが</font></font></i><font style="vertical-align: inherit;">低下し、メッセージを失うことなくリーダーシップがブローカー1に渡されます。</font><font style="vertical-align: inherit;">しかし、ISRは1つのレプリカのみで構成されています。</font><font style="vertical-align: inherit;">これは、レコードを受信するための最小数に対応していないため、ブローカーは</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NotEnoughReplicas</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エラーで記録の試行に応答します</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ng/p5/fj/ngp5fjym6nvykpohj8brnl8bvxc.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">20. ISRの数は、min.insync.replicasで指定された数より1つ少ない</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この構成では、一貫性のために可用性が犠牲になります。</font><font style="vertical-align: inherit;">メッセージを確認する前に、少なくとも2つのレプリカにメッセージが記録されることを保証します。</font><font style="vertical-align: inherit;">これにより、メーカーはより大きな自信を得ることができます。</font><font style="vertical-align: inherit;">ここで、メッセージが失われる可能性があるのは、メッセージが追加のフォロワーに複製されるまで、短い間隔で2つのレプリカが同時に失敗した場合のみです。</font><font style="vertical-align: inherit;">ただし、スーパー</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラノイドの</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">場合は、レプリケーション率を5に、</font><i><font style="vertical-align: inherit;">min.insync.replicas</font></i><font style="vertical-align: inherit;">を3に</font><font style="vertical-align: inherit;">設定できます</font><font style="vertical-align: inherit;">。次に、3つのブローカーが同時に落ちて、レコードを失う必要があります。</font><font style="vertical-align: inherit;">もちろん、そのような信頼性のために、追加の遅延を支払うことになります。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データのセキュリティのためにアクセシビリティが必要な場合</font></font></h1><br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RabbitMQ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と</font><font style="vertical-align: inherit;">
+同様に</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">、</font></a><font style="vertical-align: inherit;">データのセキュリティのためにアクセシビリティが必要になる場合があります。</font><font style="vertical-align: inherit;">これについて考える必要があります：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パブリッシャーがエラーを返すだけで、上位のサービスまたはユーザーが後で再試行できますか？</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パブリッシャーはメッセージをローカルまたはデータベースに保存して後で再試行できますか？</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+答えが「いいえ」の場合、アクセシビリティの最適化によりデータのセキュリティが向上します。</font><font style="vertical-align: inherit;">オプトアウトではなく可用性を選択すると、失われるデータが少なくなります。</font><font style="vertical-align: inherit;">したがって、すべてはバランスを見つけることに帰着し、決定は特定の状況に依存します。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ISRの意味</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ISRスイートを使用すると、データセキュリティと遅延の間の最適なバランスを選択できます。たとえば、障害が発生した場合にほとんどのレプリカにアクセスできるようにするために、遅延の観点からデッドまたは低速のレプリカの影響を最小限に抑えます。</font><font style="vertical-align: inherit;">ニーズに応じて</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">replica.lag.time.max.ms</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の値を自分で選択し</font><font style="vertical-align: inherit;">ます。本質的に、このパラメーターは、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = allで</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">受け入れる準備ができている遅延を意味し</font><i><font style="vertical-align: inherit;">ます</font></i><font style="vertical-align: inherit;">。デフォルト値は10秒です。これが長すぎる場合は、減らすことができます。その後、フォロワーがより頻繁に削除および追加されるため、ISRの変更頻度が増加します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+RabbitMQは複製が必要なミラーの集まりにすぎません。</font><font style="vertical-align: inherit;">遅いミラーは追加の遅延を導入し、デッドミラーの応答は、各ノードの可用性をチェックするパケットの期限が切れる前に予想できます（ネットティック）。</font><font style="vertical-align: inherit;">ISRは、遅延の増加に伴うこれらの問題を回避する興味深い方法です。</font><font style="vertical-align: inherit;">ただし、ISRはリーダーにしか削減できないため、冗長性が失われるリスクがあります。</font><font style="vertical-align: inherit;">このリスクを回避するには、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min.insync.replicas</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">設定を使用します</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">顧客接続保証</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">製造元と消費者</font><font style="vertical-align: inherit;">
+の</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">bootstrap.servers</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">設定で、</font><font style="vertical-align: inherit;">クライアントを接続するためにいくつかのブローカーを指定できます。つまり、1つのノードを切断すると、クライアントが接続を開くための予備のノードがいくつか存在します。これらは必ずしもセクションリーダーではなく、単にブートストラップの出発点です。クライアントは、読み取り/書き込みセクションのリーダーがどのノードにあるかを尋ねることがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+RabbitMQでは、クライアントは任意のノードに接続でき、内部ルーティングは必要に応じてリクエストを送信します。つまり、RabbitMQの前にロードバランサーをインストールできます。 Kafkaは、対応するパーティションのリーダーをホストするホストにクライアントが接続することを要求します。この状況では、ロードバランサーは配信しません。</font><i><font style="vertical-align: inherit;">Bootstrap.servers</font></i><font style="vertical-align: inherit;">リスト</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 顧客が適切なサイトにアクセスして、障害発生後にそれらを見つけることができることが重要です。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kafkaコンセンサスアーキテクチャ</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これまでのところ、クラスターがブローカーの落ち込みをどのようにして見つけ、新しいリーダーがどのように選ばれるかについては考慮していません。</font><font style="vertical-align: inherit;">Kafkaがネットワークパーティションでどのように機能するかを理解するには、まずコンセンサスアーキテクチャを理解する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+各KafkaクラスターはZookeeperクラスターとともにデプロイされます。これは、システムが特定の状態でコンセンサスに到達できるようにする分散型コンセンサスサービスであり、可用性よりも一貫性を優先します。</font><font style="vertical-align: inherit;">読み取りおよび書き込み操作の承認には、ほとんどのZookeeperノードの同意が必要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Zookeeperはクラスター状況を保管します。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トピック、セクション、構成、現在のリーダーレプリカ、優先レプリカのリスト。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クラスターメンバー。</font><font style="vertical-align: inherit;">各ブローカーはZookeeperクラスターにpingを送信します。</font><font style="vertical-align: inherit;">一定期間pingを受信しない場合、Zookeeperはブローカーにアクセスできないように書き込みます。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コントローラのプライマリノードとセカンダリノードの選択。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コントローラーノードは、レプリカリーダーの選出を担当するKafkaブローカーの1つです。</font><font style="vertical-align: inherit;">Zookeeperは、クラスターメンバーシップとトピックの変更の通知をコントローラーに送信し、コントローラーはこれらの変更に従って動作する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえば、10個のセクションと3の複製係数を持つ新しいトピックを考えてみましょう。コントローラーは、各セクションのリーダーを選択し、ブローカー間でリーダーを最適に分散させる必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+各セクションについて、コントローラーは次のことを行います。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ISRとリーダーに関するZookeeperの情報を更新します。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LeaderAndISRCommandコマンドをこのセクションのレプリカを投稿する各ブローカーに送信し、ISRとリーダーについてブローカーに通知します。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リーダーを持つブローカーが落ちると、Zookeeperはコントローラーに通知を送信し、新しいリーダーを選択します。</font><font style="vertical-align: inherit;">この場合も、コントローラーは最初にZookeeperを更新し、次に各ブローカーにコマンドを送信して、リーダーシップの変更を通知します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+各リーダーはISRの募集を担当します。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">設定replica.lag.time.max.ms</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">そこに行くするかを決定します。</font><font style="vertical-align: inherit;">ISRが変更されると、リーダーはZookeeperに新しい情報を渡します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Zookeeperには常に変更が通知されるため、障害が発生した場合、管理者はスムーズに新しいリーダーに移動します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/yi/1v/in/yi1vinwmeg4exdiautqohweg8rq.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">21.コンセンサスカフカ</font></font></font></i><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">複製プロトコル</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+レプリケーションの詳細を理解すると、潜在的なデータ損失シナリオをよりよく理解するのに役立ちます。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サンプルリクエスト、ログ終了オフセット（LEO）、および最高水準点（HW）</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちはフォロワーが定期的にリーダーにフェッチ要求を送信すると考えました。</font><font style="vertical-align: inherit;">デフォルトの間隔は500ミリ秒です。</font><font style="vertical-align: inherit;">これは、RabbitMQではレプリケーションがキューミラーではなくウィザードによって開始されるという点で、RabbitMQとは異なります。</font><font style="vertical-align: inherit;">マスターは変更をミラーにプッシュします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リーダーとすべてのフォロワーは、Log End Offset（LEO）およびHighwater（HW）ラベルを保持します。</font><font style="vertical-align: inherit;">LEOフラグはローカルレプリカの最後のメッセージのオフセットを格納し、HWは最後のコミットのオフセットを格納します。</font><font style="vertical-align: inherit;">コミットステータスの場合、メッセージはすべてのISRレプリカに保存する必要があることに注意してください。</font><font style="vertical-align: inherit;">これは、通常、LEOがHWよりわずかに進んでいることを意味します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リーダーはメッセージを受信すると、ローカルに保存します。フォロワーは自分のLEOを渡してフェッチ要求を出します。リーダーは、このLEOで始まるメッセージパケットを送信し、現在のハードウェアも送信します。リーダーは、すべてのレプリカが特定のオフセットでメッセージを保存したという情報を受け取ると、HWマークを移動します。 HWを移動できるのはリーダーだけなので、すべてのフォロワーは要求に対する応答の現在の値を知っています。これは、フォロワーがHWの報告と知識の両方でリーダーに遅れをとることができることを意味します。消費者は、現在のハードウェアまでのメッセージのみを受信します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「永続的」とは、ディスクではなくメモリに書き込まれることを意味することに注意してください。</font><font style="vertical-align: inherit;">パフォーマンスのために、Kafkaは指定された間隔でディスクと同期します。</font><font style="vertical-align: inherit;">RabbitMQにもこのような間隔がありますが、マスターとすべてのミラーがメッセージをディスクに書き込んだ後にのみ、パブリッシャーに確認を送信します。</font><font style="vertical-align: inherit;">Kafka開発者は、パフォーマンス上の理由から、メッセージがメモリに書き込まれるとすぐにackを送信することを決定しました。</font><font style="vertical-align: inherit;">Kafkaは、冗長性が確認されたメッセージをメモリにのみ短期保存するリスクを補うという事実に依存しています。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リーダーの失敗</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リーダーが倒れると、Zookeeperはコントローラーに通知し、新しいリーダーレプリカを選択します。</font><font style="vertical-align: inherit;">新しいリーダーは彼のLEOに合わせて新しいHWマークを設定します。</font><font style="vertical-align: inherit;">その後、フォロワーは新しいリーダーに関する情報を受け取ります。</font><font style="vertical-align: inherit;">Kafkaのバージョンに応じて、フォロワーは次の2つのシナリオのいずれかを選択します。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ローカルログを既知のHWに切り捨て、このマークの後のメッセージの要求を新しいリーダーに送信します。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それはリーダーに彼のリーダーとしての選挙の時にHWを見つけるようにリーダーに要求を送り、そしてこのオフセットにログを切り捨てます。</font><font style="vertical-align: inherit;">次に、このオフセットから開始して、定期的なサンプリング要求を行います。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フォロワーは、次の理由でログをトリミングする必要がある場合があります。</font></font><br>
+<br>
+<ul>
+<li>   ,     ISR,   Zookeeper,     .    ISR,    «»,          .  ,        . Kafka ,     .  ,   ,         HW      .    ,   <i>acks=all</i>    .<br>
+</li>
+<li>    .      ,        .  ,       ,  ,   ,    ,        .</li>
+</ul><br>
+<h3> c </h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クラスタに接続するとき、レプリカはリーダーに障害が発生したときと同じように動作します。リーダーはレプリカのチェックを行い、ログをHWに切り詰めます（選択時）。比較すると、RabbitMQは再結合されたノードをまったく新しいものと見なします。どちらの場合も、ブローカーは既存の状態を破棄します。自動同期を使用する場合、マスターは現在のコンテンツをすべて完全に新しいミラーに複製し、「世界全体を待つ」必要があります。この操作中、マスターは読み取りまたは書き込み操作を受け入れません。この方法では、大きなキューで問題が発生します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kafkaは分散ログであり、一般に、RabbitMQキューよりも多くのメッセージを保存します。RabbitMQキューでは、データを読み取った後にキューからデータが削除されます。アクティブなキューは比較的小さいままにする必要があります。ただし、Kafkaは独自の保持ポリシーを備えたログであり、日数または週数の期間を設定できます。キューをブロックして完全に同期するアプローチは、分散ログでは絶対に受け入れられません。代わりに、カフカのフォロワーは、コピーがリーダーの前にある場合は、ログをリーダーのハードウェア（選挙時）にクリップするだけです。より可能性の高いケースでは、フォロワーが遅れている場合、彼は現在のLEOから始めて、サンプルリクエストを作成し始めます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+新規または再会したフォロワーはISRの外部で開始し、コミットしません。</font><font style="vertical-align: inherit;">彼らはグループの隣で働き、リーダーに追いつき、ISRに入るまで、できるだけ早くメッセージを受信します。</font><font style="vertical-align: inherit;">ブロックはなく、すべてのデータを破棄する必要はありません。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">接続の中断</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+KafkaにはRabbitMQよりも多くのコンポーネントがあるため、クラスターで接続が切断された場合の動作のより複雑なセットを次に示します。</font><font style="vertical-align: inherit;">しかし、Kafkaはもともとクラスター向けに設計されていたため、ソリューションは非常によく考えられています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下は、いくつかの接続シナリオです。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ1.フォロワーにはリーダーは表示されませんが、Zookeeperは表示されます。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ2.リーダーにはフォロワーは表示されませんが、Zookeeperは表示されます。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ3.フォロワーにはリーダーが表示されますが、Zookeeperは表示されません。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ4.リーダーにはフォロワーが表示されますが、Zookeeperは表示されません。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ5.フォロワーは、他のKafkaノードおよびZookeeperの両方から完全に分離しています。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ6.リーダーは、他のKafkaノードおよびZookeeperの両方から完全に分離しています。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ7. Kafkaコントローラーノードが別のKafkaノードを認識しない。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ8. KafkaコントローラーにZookeeperが表示されません。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+各シナリオには独自の動作があります。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ1.フォロワーにはリーダーは表示されませんが、Zookeeperは表示されます</font></font></h3><br>
+<img src="https://habrastorage.org/webt/je/cd/f1/jecdf1kc9y8gc8ej5sfmuelo30a.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">22.シナリオ1. 3つのレプリカのISR</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+切断</font><i><font color="gray"><font style="vertical-align: inherit;">により、</font></font></i><font style="vertical-align: inherit;">ブローカー3はブローカー1および2から分離され</font><i><font color="gray"><font style="vertical-align: inherit;">ます</font></font></i><font style="vertical-align: inherit;">が、Zookeeperからは分離されません。</font><font style="vertical-align: inherit;">ブローカー3はサンプルリクエストを送信できなくなりました。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">replica.lag.time.max.ms</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">時間が</font><i><font style="vertical-align: inherit;">経過すると、</font></i><font style="vertical-align: inherit;">それはISRから削除され、メッセージのコミットには参加しません。</font><font style="vertical-align: inherit;">接続が回復すると、彼はサンプリング要求を再開し、リーダーに追いついたときにISRに参加します。</font><font style="vertical-align: inherit;">Zookeeperは引き続きpingを受信し、ブローカーが正常に稼働していると想定します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ir/tq/ir/irtqir6cr8whigmvfqo1t-bbsso.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">23.シナリオ1.ブローカーがreplica.lag.time.max.ms間隔中にサンプル要求を受信しない場合、ISRから削除され</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ますRabbitMQのように、スプリットブレインやノードの一時停止はありません。</font><font style="vertical-align: inherit;">代わりに、冗長性が低下します。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ2.リーダーにはフォロワーは表示されませんが、Zookeeperは表示されます</font></font></h3><br>
+<img src="https://habrastorage.org/webt/ri/fy/q6/rifyq652am8lmbhlgpfvfq-pjnm.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">24.シナリオ2.リーダーと2人のフォロワー</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ネットワーク接続の中断により、リーダーとフォロワーが分離されますが、ブローカーは依然としてZookeeperを認識しています。</font><font style="vertical-align: inherit;">最初のシナリオと同様に、ISRは圧縮されますが、今回はリーダーにのみ送信されます。これは、すべてのフォロワーが選択要求の送信を停止するためです。</font><font style="vertical-align: inherit;">ここでも、論理的な分離はありません。</font><font style="vertical-align: inherit;">代わりに、接続が復元されるまで、新しいメッセージの冗長性が失われます。</font><font style="vertical-align: inherit;">Zookeeperは引き続きpingを受信し、ブローカーが正常に稼働していると信じています。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/hj/8g/-1/hj8g-1veu8rkisccp7t6c9bxq7k.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">25.シナリオ2. ISRはリーダーのみに縮小</font></font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ3.フォロワーにはリーダーが表示されるが、Zookeeperは表示されない</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フォロワーはZookeeperから分離されますが、リーダーを持つブローカーからは分離されません。</font><font style="vertical-align: inherit;">その結果、フォロワーは引き続きサンプルリクエストを行い、ISRのメンバーになります。</font><font style="vertical-align: inherit;">Zookeeperはpingを受信せず、ブローカーのクラッシュを登録しますが、これは単なるフォロワーなので、リカバリー後の影響はありません。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/cv/tb/gj/cvtbgjgw7ub1w8dmii46aql3bhc.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">26.シナリオ3.フォロワーは引き続きリーダーにサンプルリクエストを送信します。</font></font></font></i><br>
+ <br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ4.リーダーにはフォロワーが表示されますが、Zookeeperは表示されません</font></font></h3><br>
+<img src="https://habrastorage.org/webt/zw/k4/8o/zwk48obscffldqgdhpyl0dvvipc.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 27.シナリオ4.リーダーと2人のフォロワー</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+リーダーはZookeeperから分離していますが、フォロワーを持つブローカーからは分離していません。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/eh/s1/hx/ehs1hxu4sako2udflhmhhbqhtsu.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 28.シナリオ4.リーダーがZookeeperから孤立して</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+いるしばらくすると、Zookeeperはブローカーのクラッシュを登録し、それをコントローラーに通知します。彼は信者の中から新しいリーダーを選びます。ただし、元のリーダーは引き続き自分がリーダーであると考え、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> acks = 1の</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エントリを引き続き受け入れます</font><font style="vertical-align: inherit;">。フォロワーはもはやサンプルリクエストを送信しないので、フォロワーは死んでいると見なし、ISRを自分に圧縮しようとします。しかし、彼はZookeeperに接続していないため、これを行うことはできず、その時点では、それ以上のレコードの受け入れを拒否します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+メッセージ</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ACK =すべて</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最初にISRにすべてのレプリカが含まれ、メッセージがそれらに届かないため、確認を受け取りません。元のリーダーがISRからそれらを削除しようとすると、彼はこれを行うことができなくなり、メッセージをまったく受信しなくなります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+顧客はすぐにリーダーの交代に気づき、新しいサーバーにレコードを送信し始めます。ネットワークが復元されるとすぐに、元のリーダーは自分がリーダーではなくなったことを確認し、ログの相違を回避するために、障害時に新しいリーダーが持っていたHW値にログを切り捨てます。その後、彼は新しいリーダーにサンプリング要求の送信を開始します。新しいリーダーに複製されない元のリーダーのすべてのエントリは失われます。つまり、2人のリーダーが働いた数秒間に元のリーダーによって確認されなかったメッセージは失われました。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pt/z_/pn/ptz_pnhoyrwvw4v-l9re3ffjzcg.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">29.シナリオ4.ネットワークの復旧後、ブローカー1のリーダーがフォロワーになる</font></font></font></i><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ5.フォロワーが他のKafkaノードおよびZookeeperの両方から完全に分離されている</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フォロワーは他のKafkaノードおよびZookeeperから完全に分離されています。</font><font style="vertical-align: inherit;">これは、ネットワークが復元されるまでISRから削除され、その後残りに追いつきます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ik/aj/a1/ikaja1i4z3fnodbcmam8sp2jbjc.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。</font><font style="vertical-align: inherit;">30.シナリオ5.分離されたフォロワーがISRから削除された</font></font></font></i><br>
+ <br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ6.リーダーは他のKafkaノードおよびZookeeperの両方から完全に分離されています</font></font></h3><br>
+<img src="https://habrastorage.org/webt/cz/5h/2m/cz5h2mnqelpalxozp-jv4yv23rc.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 31.シナリオ6.リーダーと2人のフォロワー</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+リーダーは、フォロワー、コントローラー、Zookeeperから完全に隔離されています。しばらくの間、彼は</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> acks = 1の</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">エントリを受け入れ続けます</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pj/pi/vj/pjpivjf1bsnvowntmkjqxdzipfe.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 32.シナリオ6.他のKafkaおよびZookeeperノードからのリーダーの分離</font></font></font></i><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;"> replica.lag.time.max.msの期限が切れた</font></i></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+後</font><font style="vertical-align: inherit;">、</font><font style="vertical-align: inherit;">リクエストを受信しなかった</font><font style="vertical-align: inherit;">ため、ISRを自分に圧縮しようとし</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ますが</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、Zookeeperとの接続がないため、これを実行できません。メモを取るのをやめます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その間、Zookeeperは孤立したブローカーをデッドとしてマークし、コントローラーは新しいリーダーを選択します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/g8/rg/wo/g8rgwol3elzkz8dwxojtclogyns.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 33.シナリオ6. 2人のリーダー</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+元のリーダーは数秒間録音を受信できますが、その後メッセージの受信を停止します。クライアントは60秒ごとに最新のメタデータで更新されます。彼らはリーダーの交代について知らされ、新しいリーダーにメモを送り始めます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zu/zl/dh/zuzldhf62qbynz_voxil-25roxe.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 34.シナリオ6.製造業者が新しいリーダーに切り替える</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+接続が失われた瞬間から元のリーダーが行った確認済みのエントリはすべて失われます。ネットワークが復元されると、Zookeeperの元のリーダーは、自分がリーダーではなくなったことを発見します。次に、選挙時にログを新しいリーダーのHWに切り捨て、フォロワーとしてリクエストの送信を開始します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zj/5e/vd/zj5evdyqhphl9uupogfvbjx7zjk.png"><br>
+<i><font color="gray"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">図。 35.シナリオ6.ネットワーク接続の復元後、元のリーダーがフォロワーになる</font></font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この状況では、論理的な分離は短期間観察できますが、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = 1</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">かつ</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min.insync.replicas</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">も1の</font><font style="vertical-align: inherit;">場合のみです</font><font style="vertical-align: inherit;">。論理的な分離は、ネットワークが復元された後、元のリーダーがリーダーではなくなったことを認識したとき、またはすべてのときに自動的に完了します。お客様は、リーダーが変更されたことを理解し、新しいリーダーへの書き込みを開始します。いずれの場合も、一部のメッセージは失われますが、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = 1の</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">場合のみ</font><font style="vertical-align: inherit;">です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このシナリオには別のバリアントがあり、ネットワークが分離する直前に、フォロワーが後れを取り、リーダーがISRを自分自身に圧迫しました。次に、接続が失われたために隔離されます。新しいリーダーが選出されますが、元のリーダーは引き続きメモを取ります</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = all</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。なぜなら、ISRには彼以外に誰もいないからです。</font><font style="vertical-align: inherit;">これらのエントリは、ネットワークの回復後に失われます。</font><font style="vertical-align: inherit;">このオプションを回避する唯一の方法は、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min.insync.replicas = 2</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ7. Kafkaコントローラーノードが別のKafkaノードを認識しない</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般に、Kafkaホストとの通信が失われると、コントローラーはリーダーの変更に関する情報をホストに送信できなくなります。</font><font style="vertical-align: inherit;">最悪の場合、シナリオ6のように、これは短期的な論理的分離につながります。多くの場合、ブローカーは、後者が失敗した場合、リーダーシップの候補にならないだけです。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ8. KafkaコントローラーにZookeeperが表示されない</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Zookeeperは、障害のあるコントローラーからpingを受信せず、コントローラーによって新しいKafkaノードを選択します。</font><font style="vertical-align: inherit;">ソースコントローラー自体がそのまま表示される可能性がありますが、Zookeeperからの通知を受信しないため、実行するタスクはありません。</font><font style="vertical-align: inherit;">ネットワークが回復するとすぐに、彼はもはやコントローラーではないが、通常のKafkaホストになったことを理解します。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シナリオ調査結果</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+フォロワーの接続が失われてもメッセージが失われるわけではなく、ネットワークが復旧するまで一時的に冗長性が低下するだけです。</font><font style="vertical-align: inherit;">もちろん、1つ以上のノードが失われると、データが失われる可能性があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+接続が失われたためにリーダーがZookeeperから分離された場合、これにより</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = 1の</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メッセージが失われる可能性があります</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">Zookeeperとの通信が不足すると、2人のリーダーが短期的に論理的に分離します。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">acks = all</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータはこの問題を解決します</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">2つ以上のレプリカ</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+の</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min.insync.replicas</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメーター</font><font style="vertical-align: inherit;">は、シナリオ6のように、このような短期間のスクリプトがメッセージの損失を</font><i><font style="vertical-align: inherit;">引き起こさ</font></i><font style="vertical-align: inherit;">ないという追加の保証を提供します。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メッセージ損失の要約</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kafkaでデータを失う方法をすべてリストします。</font></font><br>
+<br>
+<ul>
+<li>  ,      <i>acks=1</i><br>
+</li>
+<li>  (unclean)  ,       ISR,   <i>acks=all</i><br>
+</li>
+<li>   Zookeeper,      <i>acks=1</i><br>
+</li>
+<li>  ,     ISR   .    ,  <i>acks=all</i>.      ,  <i>min.insync.replicas=1</i>.<br>
+</li>
+<li>    .     ,       .        .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+不純なリーダーシップの移行は、それらを禁止するか、少なくとも2つの冗長性を提供することによって回避できます。</font><font style="vertical-align: inherit;">最強の構成は、の組み合わせで</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">のACK =全て</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min.insync.replicas</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 1より大きい。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">RabbitMQとKafkaの信頼性の直接比較</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+信頼性と高可用性を確保するために、両方のプラットフォームにプライマリとセカンダリのレプリケーションシステムが実装されています。ただし、RabbitMQにはアキレス腱があります。障害後に再接続すると、ノードはデータを破棄し、同期はブロックされます。この二重の打撃は、RabbitMQでの大きなキューの寿命に疑問を投げかけます。冗長性の低下、または長いロックに我慢する必要があります。冗長性を減らすと、大量のデータ損失のリスクが高まります。ただし、キューが小さい場合は、短時間（数秒）のアクセス不能による冗長性のために、接続の試行を繰り返し使用して対処できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+カフカにはそのような問題はありません。リーダーとフォロワーの不一致の点からのみデータを破棄します。すべての共有データが保存されます。さらに、レプリケーションはシステムをブロックしません。リーダーは、新しいフォロワーが追いつくまでメモを取り続けます。そのため、クラスターへの参加または再結合の開発者にとっては、簡単な作業になります。もちろん、レプリケーション中のネットワーク帯域幅などの問題は残っています。複数のフォロワーを同時に追加すると、帯域幅の制限に達する可能性があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+RabbitMQは、クラスター内の複数のサーバーを同時にクラッシュさせながら、信頼性においてKafkaよりも優れています。すでに述べたように、RabbitMQは、マスターとすべてのミラーからディスクにメッセージを書き込んだ後にのみ、発行元に確認を送信します。ただし、次の2つの理由により、遅延が追加されます。</font></font><br>
+<br>
+<ul>
+<li>fsync    <br>
+</li>
+<li>         ,      (net tick).     ,   .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Kafkaは、メッセージが複数のノードに保存されている場合、メッセージがメモリにあるとすぐに確認できるという事実に依存しています。このため</font><font style="vertical-align: inherit;">、同時に障害が発生した場合、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">すべての</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">タイプのメッセージ（</font><i><font style="vertical-align: inherit;">acks = all</font></i><font style="vertical-align: inherit;">、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min.insync.replies = 2でも</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">が失われるリスクがあります</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+全体として、Kafkaはより高いパフォーマンスを発揮し、もともとクラスター用に設計されました。信頼性が必要な場合は、フォロワーの数を11人に増やすことができます。レプリケーション係数が5で、同期状態が</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">min.insync.replicas = 3</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">のレプリカの最小数の</font><font style="vertical-align: inherit;">場合、メッセージの損失は非常にまれなイベントになります。インフラストラクチャがこのようなレプリケーションレートと冗長性のレベルを提供できる場合は、このオプションを選択できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+RabbitMQクラスタリングは、小さなキューに適しています。ただし、小さなキューであっても、トラフィックが多いと急速に大きくなる可能性があります。キューが大きくなると、可用性と信頼性の間で厳しい選択を行う必要があります。 RabbitMQのクラスタリングは、RabbitMQの柔軟性の利点がクラスタリングの欠点のどれよりも重要であるという、一般的ではない状況に最適です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+RabbitMQの大きなキューの脆弱性に対する解毒剤の1つは、それらを多数の小さなキューに分割することです。キュー全体の完全な順序付けが必要ではなく、対応するメッセージ（たとえば、特定のクライアントのメッセージ）のみが必要な場合、または何もない場合は、このオプションを使用できます。</font><font style="vertical-align: inherit;">キューを分割するための</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rebalanser</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プロジェクト</font><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">確認して</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ください</font></a><font style="vertical-align: inherit;">（プロジェクトはまだ初期段階です）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最後に、RabbitMQとKafkaの両方のクラスタリングとレプリケーションのメカニズムにおける多くのバグを忘れないでください。時間の経過とともに、システムはより成熟して安定しましたが、単一のメッセージが損失から100％保護されることは決してありません！また、データセンターで大規模事故が発生！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私が何かを逃した、ミスをした、またはあなたがこれらの論文のいずれかに同意しない場合は、コメントを書くか、私に連絡することを躊躇しないでください。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「KafkaとRabbitMQのどちらを選択するか」、「どちらのプラットフォームの方が良いか」という質問がよく寄せられます。</font><font style="vertical-align: inherit;">実はそれはあなたの状況や現在の経験などに本当に依存します。すべてのユースケースと可能な制限に対して1つのプラットフォームを推奨するのはあまりにも単純化しすぎるので、私はあえて意見を述べません。</font><font style="vertical-align: inherit;">あなたがあなた自身の意見を形成できるように、私はこのシリーズの記事を書きました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+どちらのシステムもこの分野のリーダーであると言いたいです。</font><font style="vertical-align: inherit;">私のプロジェクトの経験から、保証されたメッセージの順序や信頼性などを高く評価する傾向があるため、おそらく私は少し偏っています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この信頼性と順序付けが保証されていない他のテクノロジーを見つけてから、RabbitMQとKafkaを見てみます。これらのシステムの両方の信じられないほどの価値を理解しています。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja474966/index.html">OntologyネットワークでスマートPythonコントラクトを作成する方法。パート1：ブロックチェーンとブロックAPI</a></li>
+<li><a href="../ja474968/index.html">最小の...プロジェクト向けRxDart</a></li>
+<li><a href="../ja474976/index.html">ボートシティ：ヴェネツィアは車なしでどのように存在するか</a></li>
+<li><a href="../ja474978/index.html">IBM Watson Visual Recognition：オブジェクト認識機能がIBM Cloudで利用可能に</a></li>
+<li><a href="../ja474982/index.html">JavaFXチュートリアル：FXMLとSceneBuilder</a></li>
+<li><a href="../ja474988/index.html">Mitapへようこそ：初心者のためのデータサイエンスでのキャリア</a></li>
+<li><a href="../ja474990/index.html">ハードプラクティス：都市公園でWi-Fiネットワークを作成する方法</a></li>
+<li><a href="../ja474992/index.html">故障したラップトップのバッテリーの分析。電気バイカーノート</a></li>
+<li><a href="../ja474996/index.html">11月のITイベントのダイジェスト（パート2）</a></li>
+<li><a href="../ja475000/index.html">イーサリアムクラウドとクラウドのプライバシーおよびスケーラビリティソリューションの公的なテスト</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

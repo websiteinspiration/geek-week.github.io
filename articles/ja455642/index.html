@@ -1,0 +1,327 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💃🏼 🦍 🖕🏾 Yandex.Cloudの分散メッセージキューサービスのアーキテクチャ 👩🏽‍🤝‍👨🏾 🐹 🤤</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="こんにちは、私の名前はヴァシーリーボゴナトフです。私は手と頭を持ち、Yandex Message Queueの分散永続メッセージキューのサービスに私の魂を注ぎ込んだ1人です。このサービスは5月下旬に公開されましたが、Yandex内では、さまざまな製品で長い間積極的に使用されてきました。
+ 
+ 今日は...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Yandex.Cloudの分散メッセージキューサービスのアーキテクチャ</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/455642/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">こんにちは、私の名前はヴァシーリーボゴナトフです。</font><font style="vertical-align: inherit;">私は手と頭を持ち、Yandex Message Queueの分散永続メッセージキューのサービスに私の魂を注ぎ込んだ1人です。</font><font style="vertical-align: inherit;">このサービスは5月下旬に公開されましたが、Yandex内では、さまざまな製品で長い間積極的に使用されてきました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+今日は、メッセージキュー全般、特にYandexメッセージキューについてHabrの読者に伝えたいと思います。</font><font style="vertical-align: inherit;">最初に、「分散永続メッセージキュー」とは何か、なぜそれが必要なのかを説明します。</font><font style="vertical-align: inherit;">その実用的な価値、メッセージを操作するメカニズム、APIと使いやすさについて説明します。</font><font style="vertical-align: inherit;">記事の後半では、技術面について見ていきます。キューでのYandexデータベースの使用方法（これは、サービスの信頼できる基盤です）、アーキテクチャを構築するための素朴で改良されたアプローチがどのように見えるか、配布によって発生する問題とその解決方法です。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/xy/ht/eb/xyhtebqslkofciotlmohtwlopb4.png"><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分散永続メッセージキューとは何ですか？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ウィキペディアでは、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メッセージキュー</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を「単一プロセス内のプロセス間またはスレッド間通信に使用されるソフトウェアおよびエンジニアリングコンポーネント」と</font><font style="vertical-align: inherit;">定義してい</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">実際、この概念は多少広範です。キューを使用して対話するプロセスは、異なるサーバー上に配置することも、異なるデータセンター内に配置することもできます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+用語を少し明確にします。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メッセージキュー</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、特定の順序でデータの配置と読み取りを行うリポジトリです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常、2種類のエンティティがキューと対話します。</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ライター（プロデューサー）</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -メッセージをキューに送信します。</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">readers（consumers）</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -キューからメッセージを受信（読み取り）します。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューを使用する場合、リーダーとライターは互いに独立しています。さまざまなパフォーマンス、信頼性、可用性で動作し、さまざまなプログラミング言語で作成することもできます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューの主なシナリオ：ライターからリーダーにメッセージを確実かつ迅速に送信します。データベースとは異なり、キューはメッセージの長期保存用ではありません。多くの一般的な実装では、対応するパラメータ「メッセージ保持期間」があります。メッセージが完全に削除されるまでの保存期間を決定します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューの概念を理解し、「分散」と「持続性」に進みます。</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この場合の</font><b><font style="vertical-align: inherit;">分散と</font></b><font style="vertical-align: inherit;">は、データとキューメタデータを格納および処理するクラスターの存在を意味し、コンピューターネットワークを使用してすべてのノードを単一の全体に結合します。</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">持続性と</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、キュー内のすべてのメッセージがディスクに書き込まれ、書き込みが成功した後にのみ、書き込みの送信確認がライターに送信されることを意味します。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+分散と永続性はキューの主な機能には影響しません。データストレージのフォールトトレランスと信頼性を提供します。</font><font style="vertical-align: inherit;">システムで発生する可能性のある障害の種類については、少し後で検討します。</font><font style="vertical-align: inherit;">ただし、私は喜びを否定できず、カードを少し開くことはできません。サービスの存在の歴史全体を通して、クライアントからの1つの保存メッセージを失っていません。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メッセージキューとは何ですか？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューを使用すると、サービスの論理的に独立した部分を互いに分離できます</font><font style="vertical-align: inherit;">。つまり、現在人気のあるマイクロサービスで非常に需要の高い</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分離が</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">提供されます</font><font style="vertical-align: inherit;">。これにより、スケーラビリティと信頼性が向上します。リーダーの障害がライターの作業に影響を与えることなく、キュー内の記録のストリームを常に増やし、リーダー-メッセージハンドラーを追加できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューはピーク負荷を平準化します。キューはリーダーのバッファとして機能します。現在のリーダーの容量がすべての着信メッセージの即時処理に十分でない場合、キューに入れられたメッセージは、負荷が減少したときに処理されます。バッファリングは、着信イベントの即時処理が不要な、負荷が不安定なサービスに役立ちます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Webページをダウンロードして処理し、データベースに配置</font><font style="vertical-align: inherit;">
+する</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">検索ロボット</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（結局のところ、Yandexは検索から始め</font><font style="vertical-align: inherit;">た）の例を使用して、それがどのように機能するかを見てみましょう</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">このアーキテクチャを見てみましょう。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/zo/oe/dh/zooedh0t0qs4uu1lhpdc0psa2qi.png" width="600" height="778"></div><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+メッセージキューは、ここで次の問題を解決します。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ロボットは、ページの解析とデータベースへのロードを担当するワーカーよりもはるかに速く動作します。</font><font style="vertical-align: inherit;">リンクが外れると、リンクが蓄積され、使用可能なメモリまたはディスクがいっぱいになります。</font><font style="vertical-align: inherit;">労働者が一時的に利用できなくなった場合も同じことが起こります。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キューがない場合、ロボットはワーカーにタスクを割り当てるためにワーカーの作業インターフェイスを「知る」必要があります。</font><font style="vertical-align: inherit;">製品の開発に伴い、インターフェースが変更される場合があります。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">個々のワーカーの信頼性はかなり低いため、送信されたリンクが完全に処理される保証はありません。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューはスケーリングを備えた信頼性の高いデータストレージを提供し、リンクの処理を遅らせることができます。</font><font style="vertical-align: inherit;">1つのワーカーが失敗した場合、一定期間後の未加工リンクは、別のワーカーによる処理のためにキューに戻されます。</font><font style="vertical-align: inherit;">キューには、ドキュメントでテストおよび説明されている独自のインターフェイスがあるため、検索ロボットとワーカーシステムは、異なるプログラミング言語で異なるチームを開発できます。</font><font style="vertical-align: inherit;">これは全体的なパフォーマンスには影響しません。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Yandex Message Queueがメッセージを処理する方法</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは3つの主要な段階を区別できます。</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キューにメッセージを</font><b><font style="vertical-align: inherit;">書き込む</font></b><font style="vertical-align: inherit;">。</font></font></li>
+<li><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キューからメッセージを</font><b><font style="vertical-align: inherit;">読み取る</font></b><font style="vertical-align: inherit;">。</font></font></li>
+<li><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キューからメッセージを</font><b><font style="vertical-align: inherit;">削除</font></b><font style="vertical-align: inherit;">します。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+メッセージが安全に保存され、読者が間もなく利用できるようになれば、レコードは成功したと見なされます。重複排除の記録が可能です。送信されたメッセージを記録する繰り返し試行が無視された場合。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+読み取り時には、メッセージは、表示タイムアウトと呼ばれる期間キューから非表示になり、他のリーダーからアクセスできなくなります。可視性タイムアウトが期限切れになると、メッセージはキューに戻り、再び処理できるようになります。メッセージが読み取られる順序は、リーダーではなくキューによって決まります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リーダー自体とそれにつながるネットワーク接続は、信頼性が低い可能性があります。</font><font style="vertical-align: inherit;">リーダーがクラッシュしたり、接続が切断されたときにメッセージをキューに返すことができるようにするには、可視性タイムアウトが必要です。</font><font style="vertical-align: inherit;">そうしないと、単一のメッセージが正しく処理されない可能性があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+読み取りに成功すると、メッセージは識別子ReceiptHandleとともにクライアントに送信されます。</font><font style="vertical-align: inherit;">識別子は、メッセージキューから削除する必要がある特定のデータを示します。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Yandexメッセージキューのキュータイプ</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初に最も一般的に使用されるタイプは、標準キューです。</font><font style="vertical-align: inherit;">これは、高スループット（1秒あたり数千のメッセージ）、優れたパフォーマンス、および基本操作の短い実行時間を特徴としています。</font><font style="vertical-align: inherit;">標準キューは論理シャードで構成され、ほぼ線形の帯域幅スケーリングをサポートします。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/wy/p0/jp/wyp0jpi_pmhorpq2mikwm_mgl-u.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+標準キューは、キューへの書き込み時にメッセージの重複排除をサポートせず、読み取り順序を保証しません。</font><font style="vertical-align: inherit;">シャーディングを使用しているため、読み取りリクエストは、キューに入っていても単一のメッセージを返さない場合があります。</font><font style="vertical-align: inherit;">ほとんどの場合、これは</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ショートポーリング</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">モード</font><font style="vertical-align: inherit;">で</font><font style="vertical-align: inherit;">発生し</font><font style="vertical-align: inherit;">、ランダムに選択された1つのシャードから読み取りが行われます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2番目のタイプは</font></font><abbr title="先入先出"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">FIFOです</font></font></abbr><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-標準キューの反対。</font><font style="vertical-align: inherit;">厳密な読み取り順序を提供し、書き込み時の重複排除とメッセージの読み取りの繰り返し試行をサポートします。</font><font style="vertical-align: inherit;">パフォーマンスとスケーラビリティは標準よりも低くなっています。</font><font style="vertical-align: inherit;">FIFOキューのパフォーマンスは、1秒あたり30リクエストに制限されています。</font><font style="vertical-align: inherit;">FIFOは、「正確に1回」の配信セマンティクスを確保する必要がある場合に使用することをお勧めします。</font><font style="vertical-align: inherit;">通常、「キュー」という語はFIFOを意味します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/yr/jy/l5/yrjyl5kbyfzqzkruqhaoqdrsxzs.png" width="421" height="801"></div><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Yandex Message Queue API</font></font></h3><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">API</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、あらゆる製品の非常に重要なコンポーネントです。優れたソフトウェアインターフェースは、シンプルでわかりやすく、効果的に使用するためにドキュメントをよく理解する必要があります。 「契約」違反をタイムリーに報告し、奇妙な、または不必要な行動をとって、愚かな間違いを防ぐことを許すべきではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+システムにそのようなAPIがある場合、それは忠実なユーザーをすぐに獲得し、さまざまなプラットフォームおよびプログラミング言語用の便利な「ラッパー」に囲まれます。</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Amazon Simple Queue Service API（AWS SQS API）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、時間と膨大な数のクライアントによってテストされたそのようなインターフェースの例です。したがって、Yandex Message Queueに固有のインターフェイスを発明しないことを決定しましたが、AWS SQS APIのサポートを非常に慎重に実装しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ほとんどの場合、SQSユーザーはエンドポイント（サービスアドレス）、リージョン（現時点では「ru-central1」のみを使用）を変更し、Yandex.Cloud内で新しい認証情報を取得するだけで十分です。</font><font style="vertical-align: inherit;">それ以外、たとえば、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">AWSコマンドライン</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用するスクリプト</font><font style="vertical-align: inherit;">、AWS SDKを使用するコード、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Celery</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">または</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">botoの</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">既製のサービス</font><font style="vertical-align: inherit;">など</font><font style="vertical-align: inherit;">、ほとんどの場合、操作する必要はありません。</font><font style="vertical-align: inherit;">キューサービスのロジックと機能は変わりません。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/_r/td/kn/_rtdknyixiytyqo63khne5gz4uq.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yandex Message Queue APIメソッドの詳細な説明は、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サービスドキュメントにあります</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">利便性について</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yandex Message Queueは、マネージドサービス、つまりYandexです。クラウドは、サーバーとソフトウェアの運用を担当します。</font><font style="vertical-align: inherit;">サービスチームは、キューの状態を監視し、障害が発生したディスクをすばやく交換し、ネットワークの切断をなくし、更新をロールアウトします。</font><font style="vertical-align: inherit;">更新によってサービスが停止することはありません。新しいバージョンのYMQを1つのサーバーグループにインストールしている間、ロードバランサーはトラフィックを他のサーバーに慎重にリダイレクトします。</font><font style="vertical-align: inherit;">したがって、ユーザーは何も気づきません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューの操作をより簡単に制御できるようにするために、YMQに多数のビジュアルグラフを追加しましたが、ここではそれらの一部のみを示しています。</font><font style="vertical-align: inherit;">グラフは、Yandex.Cloudコンソールの[統計]セクションにあります。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/bi/cp/nn/bicpnn5tjwzqustzy9ye5abnrho.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちは、私たちの意見で最も有用な4つのグラフについて説明します。</font></font><br>
+<br>
+<ul>
+<li> <b>«  »</b>       .    ,         .</li>
+<li> <b>«     »</b>:        .    ,       .</li>
+<li> <b>«   »</b> ,      .   ,        - .</li>
+<li> <b>«   »</b> ,            .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+グラフは、ログを表示することなく、キューのダイナミクスと障害の有無を即座に評価するのに役立ちます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+おおまかに言って一般的な点について話し合ったので、詳細に移りましょう。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">YandexデータベースキューでのYandexデータベースの使用方法</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yandexメッセージキューサービスは、地理的に分散されたフォールトトレラントな</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Yandexデータベース（YDB）データベースの上に構築され</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、厳密な一貫性とACIDトランザクションのサポートを提供します。</font><font style="vertical-align: inherit;">ここでは、そのデバイスと特性を分解するのではなく、一般的なスキームに限定します。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/uq/5m/o3/uq5mo3fm83hovqxkgt7no-yjevg.png" width="742" height="860"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+YMQのキューは、YDBテーブルの固定セットで表される論理シャードで構成されています。各テーブルには、独自の情報が格納されています。たとえば、オフと実際のメッセージ数を格納するStateという一般的な状態テーブルがあります。データとメッセージのメタデータを含むテーブルがあります。関連する属性を持つテーブルがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューのすべての主要な操作（メッセージの操作、属性の変更、作成と削除）は、テーブルとYDBディレクトリの階層、またはキューの1つ以上のテーブルに対するトランザクションクエリを操作します。キューテーブル内のデータは、絶対的な真実のソースです。したがって、データベースが正しく安定して動作することに加えて、信頼性の高いストレージと高いデータ可用性を確保する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちの情報はいくつかのレプリカに保存されています。3つのYandexデータセンターのそれぞれに1つのコピーがあります。</font><font style="vertical-align: inherit;">データセンターの1つが利用できない場合、残りのレプリカの数は2倍になります。</font><font style="vertical-align: inherit;">したがって、必要なレベルの信頼性が復元されます。</font><font style="vertical-align: inherit;">データセンター全体と別のサービスデスクの1つに障害が発生した場合でも、データに完全にアクセスできます。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Yandex Message Queueアーキテクチャの最初のバージョン</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たち自身がナイーブと呼んでいたYMQアーキテクチャの最初のバージョンは、次のようになりました。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/aj/qc/eu/ajqceuaoisynocw4u3ffek3epjo.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この図は、YMQクライアントからYDBリポジトリへのHTTPSリクエストのパスを示しています。</font><font style="vertical-align: inherit;">主なコンポーネントを見てみましょう：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">L3-balancerは、ユーザーに最も近いYandexデータセンターにリクエストを送信します。</font><font style="vertical-align: inherit;">これにより、負荷が不均一に分散されますが、ネットワーク遅延が減少します。</font></font></li>
+<li>Nginx    .  HTTPS-,         ,   YMQ,   HTTP.</li>
+<li>HTTP- YMQ   SQS HTTP API,          protobuf.</li>
+<li>YMQ Actor system – <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="> </a>.       ,  .     —   .         . - YMQ    ,  -  YDB.</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">YDBタブレット（「タブレット」）-クエリとトランザクションでテーブルを操作する責任があるコアYDBの一部。</font><font style="vertical-align: inherit;">タブレット自体はデータを保存しません。</font><font style="vertical-align: inherit;">これらは、ハードウェア障害が発生した場合に状態を復元できるメモリ内の制御構造です。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ストレージは、信頼性の高い、分散型のフォールトトレラントストレージです。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このアーキテクチャには欠点があります。クラスター内のすべてのサーバーは、同じキューのテーブルを個別に処理します。</font><font style="vertical-align: inherit;">これはパフォーマンスに悪影響を与え、隠された読み取り可能なメッセージの信頼できるキャッシュの編成を妨げます。</font><font style="vertical-align: inherit;">リクエストのフローを制限することは難しく、これは負荷の高いサービスにとって非常に重要です。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キューマスターを備えたYandex Message Queueアーキテクチャ</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ロードファイヤリングは、アーキテクチャの最初のバージョンが1つのシャードでキューごとに1秒あたり約450メッセージに耐えることを示しました。とても小さかったです。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+主な問題は競合クエリでした。論理的に競合する多数のトランザクションにより、非表示のメッセージキャッシュがすぐに不整合な状態になりました。この問題を解決するために、キューマスターという特別なエンティティを導入しました。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/gc/b4/om/gcb4omkmhk28uhwe2hrlewhzsig.png"></div><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キューマスター</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、通常の状態では、単一インスタンスのクラスターに存在し、特定のキューに関連付けられているすべてのリクエストを通過するアクターです。キューへのリクエストが、目的のマスターが見つからないサーバーに到着した場合、特別なプロキシアクターがリクエストをリダイレクトし、マスターから受信した応答を変換します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューウィザードを使用する場合、ロック解除されたメッセージの正しいキャッシュにより、テーブルを操作するときの競合が減少します。たとえば、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Leakyバケットを</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">介したリクエストのフローの制限の簡素化された実装</font><font style="vertical-align: inherit;">。メッセージの数、総トラフィックなど、高速で正確なキューメトリックを使用できます。同様のリクエストをグループ化できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+理論的には、このようなアーキテクチャには一元化に関連する特定の欠点があります。</font></font><br>
+<br>
+<ol>
+<li> :        ,        .    YDB          .     .</li>
+<li> :      .    YDB.        .         .    «» ,     « »   .</li>
+</ol><br>
+<h3>    </h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データベーステーブルを使用した分散トランザクションは、特定の追加コストにつながるため、クエリの数を減らすという考えは私たちにとっては論理的に思えました。メッセージを1つずつ記録するための100トランザクションは、一度に100メッセージを記録するための1つのトランザクションに変換することをお勧めします。キューマスターを使用すると、このようなバッチ処理（バッチ処理）の実装がはるかに簡単になります。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/yc/rn/0j/ycrn0j7obrbg0_cimvkyzj5izr4.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッチ処理により、操作中の待ち時間がわずかに増加します。</font><font style="vertical-align: inherit;">代わりに、帯域幅が大幅に増加します。</font><font style="vertical-align: inherit;">バッチ処理を使用すると、単一シャードのキューで1秒あたり最大30,000のリクエストを処理できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般に、キューの負荷は非常に異なります。1秒あたり数千のメッセージと1日あたり数個のメッセージです。</font><font style="vertical-align: inherit;">柔軟なアルゴリズムを使用して、キューでの作業を最適化する必要がありました。</font><font style="vertical-align: inherit;">しきい値数までのバッファー内のメッセージの蓄積またはタイマーのリセットを伴う正面オプションは、私たちには適していませんでした。</font><font style="vertical-align: inherit;">したがって、両方のケースでうまく機能するYMQの適応バッチアルゴリズムを開発しました。</font><font style="vertical-align: inherit;">彼の作品はタイムチャート形式で示されています。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/qm/g2/rx/qmg2rx2e8pllaxuajav0gyxe2kg.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは、新しいメッセージが到着したときに、3つのシナリオのいずれかが可能です。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">このタイプの他のトランザクションが実行されていない場合、トランザクションは即座に起動されます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">すでに実行中のトランザクションがある場合、メッセージはバッファに追加され、トランザクションが完了するのを待ちます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファサイズがしきい値を超えると、別の並列トランザクションが起動されます。</font><font style="vertical-align: inherit;">同時トランザクションの数は制限されています。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+適応バッチ処理のアイデアは</font><font style="vertical-align: inherit;">、TCP / IPの</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nagleアルゴリズムに</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">似て</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">い</font></a><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">興味深いのは次のとおりです。負荷テストの結果によると、アダプティブバッチ処理によって操作の待ち時間がわずかに短縮されることがわかりました。</font><font style="vertical-align: inherit;">同時トランザクションの数が減り、それに伴ってテーブルの負荷が減ります。</font><font style="vertical-align: inherit;">これらの要因を合計すると、適応バッチ処理ソリューションは、すべてのシナリオで最初の単純なソリューションを上回りました。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">問題が発生するとウィザードはどうなりますか</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yandex Message Queueでは、他の分散システムと同様に、緊急事態が発生する可能性があります。</font><font style="vertical-align: inherit;">サーバーに障害が発生し、ディスクにブレーキがかかり、ネットワークがデータセンター内およびデータセンター間で破壊されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このような場合、YDBは影響を受けるタブレットを数秒以内にクラスター内のより適切なサーバーに自動的に転送します。</font><font style="vertical-align: inherit;">YMQキューマスターはタブレットを持ち越します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべての場合において、ネットワークを介してサーバーのステータスを確実に判断できるわけではないため、新しいウィザードがすでに実行されていて、古いウィザードが機能を停止していない場合があります。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/ol/yb/ay/olybayeljh8jcdbcmod9dpylopw.png" width="808" height="712"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+YMQの場合、これは問題ではありません。</font><font style="vertical-align: inherit;">データベースへの要求は、表示されるメッセージのキャッシュが正しいことを想定しておらず、非表示のプロセスでそれらのそれぞれを再度チェックします。</font><font style="vertical-align: inherit;">したがって、「余分な」マスターが存在しても、生産性が一時的にわずかに低下するだけです。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キューの作成時にフォールトトレランスを実現する方法</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+YDBでは、単一のトランザクションで複数のテーブルを作成し、データを変更することはできません。</font><font style="vertical-align: inherit;">私たちにとって、これは物理的にテーブルのセットであるキューを「トランザクションで」作成できないことを意味しました。</font><font style="vertical-align: inherit;">並列リクエストでレースをしたり、車が故障したりすると、一貫性のない状態になり、外部からの干渉がなければ外に出られなくなります。</font><font style="vertical-align: inherit;">私たちは問題を解決するために、まさにそのようなスキームを考え、開発しました。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/webt/eg/em/eg/egemegamvnhmv-c5t8pw4im73u0.png" width="661" height="685"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+基本的な考え方は次のとおりです。キュー作成リクエストごとに、必要なキューデータ構造が並行して独立して作成されます。</font><font style="vertical-align: inherit;">このようにして、最後に特別なテーブルへの行として「コミット」されるバージョンが作成されます。</font><font style="vertical-align: inherit;">勝者のバージョンが選択され、すべての「負けた」リクエストはどのバージョンが「勝った」かを理解し、正しいリンクを返します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「オールオアナッシング」パラダイムにおけるこのようなアルゴリズムは、作成された構造の独立性と、バージョンコミットを伴う最終トランザクションの存在により、失敗に対して耐性があります。</font><font style="vertical-align: inherit;">コミットが成功した場合、要求されたキューが正しく作成されたと見なすことができます。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Yandex Message Queueによるテストと監視の構成</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yandex Message Queueは、複雑なハードウェアとソフトウェアの複合体です。</font><font style="vertical-align: inherit;">それは多くの可能な障害点を持っています。</font><font style="vertical-align: inherit;">私たちは、提供するサービスの品質を確認する必要があります。</font><font style="vertical-align: inherit;">したがって、定期的にテストします。</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">単体テストで</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、解析リクエストの正確さ、パラメーター、属性などの検証が行われます。</font><font style="vertical-align: inherit;">これらのテストは、可能な限り速くて狭いものです。</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">機能テスト</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、実装されたAPIが通常ではなくさまざまな状況で完全に動作することを確認します。</font><font style="vertical-align: inherit;">十分に長い間、これらはリポジトリでコードが変更されるたびに必ず実行されます。</font></font></li>
+<li><b> </b>  ,     :    ,           . ,       .          .     boto,    24/7,     -    .</li>
+<li><b> </b>    ,   ,         .        .</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テストの実行に加えて、生産の状態を監視することが重要です。</font><font style="vertical-align: inherit;">これを行うために、しきい値を設定してアラートを構成したさまざまなオンラインチェックとグラフがあります。</font><font style="vertical-align: inherit;">アラートが義務付けられています。</font><font style="vertical-align: inherit;">私たちのチーム全体が毎日のシフトに参加しています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まず、追跡します。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">5xxコードのエラーの数。理想的にはまったくないはずです。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">失敗したYDBトランザクションの数。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プロセッサ、ディスク、ネットワーク、クラスタアクターシステムの輻輳。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">実際のユーザーのアクションをシミュレートするモデルロードの正確さとパフォーマンス。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">当社のサービスとすべての関連機器を備えたYandex.Cloud仮想マシンの操作性。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらすべてが、小さなチームの努力を通じて高い信頼性とサービスの可用性を提供し、製品開発に集中するのに役立ちます。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最終的に</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yandexのインフラストラクチャチームのタスクは、エンドユーザーの生活を改善する新製品を迅速かつ成功裏に立ち上げることができることに基づいて、信頼性が高く、スケーラブルで生産的なソリューションを作成および維持することです。</font><font style="vertical-align: inherit;">社内では、キューサービスがその有用性を長い間証明しており、Yandex.Video、Yandex.Market、Yandex.Education、Yandex.Taxi、その他のサービスのアーキテクチャの一部となっています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これはYandex.Cloudエコシステムで利用可能になり、クラウド自体の内外でサービスを構築するために使用できます。</font><font style="vertical-align: inherit;">これで、登録時に新しいユーザー</font><font style="vertical-align: inherit;">が慣れるための</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">お金の助成金</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">受け取るため、</font><font style="vertical-align: inherit;">Yandex Message Queueを無料で</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">試す</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ことができます</font><font style="vertical-align: inherit;">。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja455632/index.html">注意！Visual Studio 2017でのC ++ std :: map :: mergeおよびstd :: set :: mergeの実装における危険なバグ</a></li>
+<li><a href="../ja455634/index.html">数学とゲーム「セット」</a></li>
+<li><a href="../ja455636/index.html">Eximの脆弱性の影響を受ける最初の波。治療のためのスクリプト</a></li>
+<li><a href="../ja455638/index.html">アランケイはオブジェクトを発明しませんでした</a></li>
+<li><a href="../ja455640/index.html">マーヴィンミンスキーの「感情マシン」：第4章「意識の認識方法」</a></li>
+<li><a href="../ja455644/index.html">実際にデータを使用</a></li>
+<li><a href="../ja455646/index.html">セキュリティウィーク24：Androidスマートフォンの工場バックドア</a></li>
+<li><a href="../ja455648/index.html">戦闘におけるMLライフサイクル</a></li>
+<li><a href="../ja455650/index.html">ネジを分類するためのニューラルネットワークのトレーニング方法</a></li>
+<li><a href="../ja455652/index.html">ディープラーニングと常識：チャットボットの開発</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

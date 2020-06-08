@@ -1,0 +1,357 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🕺🏽 ↘️ 👨‍👦 ClickHouseでクエリのパフォーマンス分析。Yandexレポート 🎟️ 👰🏻 🙇🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="データベースクエリの実行速度が不十分な場合はどうなりますか？クエリがコンピューティングリソースを最適に使用しているか、または高速化できるかをどのようにして知ることができますか？前回のモスクワでのHighLoad ++カンファレンスで、クエリパフォーマンスの内省についてお話しました。
+ 
+ 
+ 
+ リ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>ClickHouseでクエリのパフォーマンス分析。Yandexレポート</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/yandex/blog/459198/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データベースクエリの実行速度が不十分な場合はどうなりますか？クエリがコンピューティングリソースを最適に使用しているか、または高速化できるかをどのようにして知ることができますか？前回のモスクワでのHighLoad ++カンファレンスで、クエリパフォーマンスの内省についてお話しました。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mi/yo/wu/miyowuhgorpfpl9zih8cszids0y.jpeg"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リクエストするたびに、結果だけでなく、このリクエストが何をするのかも気になります。たとえば、1秒間動作します。それはたくさんですか、それとも少しですか？私はいつも思います：なぜ0.5秒ではないのですか？次に、何かを最適化し、スピードアップして、10ミリ秒の間動作します。私は通常満足しています。しかし、それでも、この場合は不快な表情を作ってみて、「なぜ5ミリ秒ではないのですか？」リクエストの処理に費やされた時間を知るにはどうすればよいですか？原理的に加速できますか？</font></font><br>
+<br>
+<a name="habracut"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">通常、リクエストの処理速度は単純な計算です。私たちはコードを書きました-おそらく最適です-そして私たちはシステムにいくつかのデバイスを持っています。デバイスには仕様があります。たとえば、L1キャッシュからの読み取り速度。または、SSDが実行できるランダム読み取りの数。我々はすべてそれを知っている。これらの特性を取り入れ、加算、減算、乗算、除算を行い、答えを確認する必要があります。しかし、これは理想的なケースであり、ほとんど起こりません。ほぼ。実際、これはClickHouseで時々起こります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サーバーにあるデバイスとリソースについてのささいな事実を考えてみましょう。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/6e/gz/us/6egzusxqlzhg81ledkch36wrld4.jpeg" width="700"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセッサ、メモリ、ディスク、ネットワーク。私はこれらのリソースを、レビューと最適化のための最も単純で最も便利なものから最も不便で複雑​​なものまで、このような方法で特別に配置しました。たとえば、クエリを実行すると、プログラムがCPU上にあるように見えます。どういう意味ですか？私が見つけたのは、ある種の内部ループ、最も頻繁に実行される関数、コードの書き直し、再コンパイル、そして1回です-私のプログラムはより高速に実行されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+RAMを使いすぎると、すべてが少し複雑になります。データ構造を再考し、いくつかのビットを絞る必要があります。いずれにせよ、プログラムを再起動すると、RAMの使用量が少なくなります。確かに、これは多くの場合、プロセッサに悪影響を及ぼします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてがディスクに依存している場合、ディスク上のデータ構造を変更できるため、これもより困難ですが、後でこのデータを変換する必要があります。新しいリリースを作成する場合、人々は何らかのデータ移行を行わなければならないでしょう。このディスクはすでにはるかに複雑であり、事前に検討することをお勧めします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、ネットワーク...私は本当にネットワークが好きではありません。なぜなら、それが何が起こっているのか、特に大陸間、データセンター間のネットワークである場合、完全に不明確であることが多いからです。何かがそこで遅くなっていて、それはあなたのネットワークでもなく、サーバーでもなく、あなたは何もできません。事前に考えられる唯一のことは、データがどのように送信されるか、およびネットワークを介した相互作用を最小限に抑える方法です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+システム内の単一のリソースが使用されておらず、プログラムが何かを待っているだけです。実際、これは非常に頻繁に発生するケースです。これは、システムが分散されており、多くの異なるプロセスやフローが存在する可能性があり、あるプロセスとフローは別のプロセスとフローを待機しているためです。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/vq/mk/sa/vqmksaynboi4frop2kzfcvk9q4w.jpeg" width="700"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最も簡単なのは、リソースの使用率を数値で確認することです。たとえば、あなたはいくつかのトップを開始し、彼は書きます：プロセッサは100％です。またはiostatを実行して、彼はこう書きます：ディスクは100％です。確かに、これはしばしば十分ではありません。一人がプログラムがディスク上にあることを見るでしょう。何ができますか？あなたは単にこれに注意して休むことができ、すべてを決定し、何も最適化することはできません。しかし、実際には、それ自体の内部の各デバイスは非常に複雑です。プロセッサには、さまざまな種類の操作に対応する多数のコンピューティングデバイスがあります。ディスクにはRAIDアレイがある場合があります。 SSDがある場合は、独自のプロセッサ、独自のコントローラの内部にあるため、何が不明かがわかります。また、1つの値（50％または100％）では不十分です。基本的なルール：一部のリソースが100％使用されていることがわかっても、あきらめないでください。多くの場合、まだ何かを改善できます。しかし、それは起こり、逆もまた同様です。リサイクルが50％であることがわかりますが、何もできません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これを詳しく見てみましょう。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pa/wj/uo/pawjuoieudajqc097ysekq30wnc.jpeg" width="700"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最も簡単で便利なリソースはプロセッサです。上を見ると、プロセッサは100％と表示されています。ただし、これは100％プロセッサではないことに注意してください。一番上のプログラムは、プロセッサがそこで何をするかを知りません。彼女はOSプランナーの観点から見ています。つまり、現在、ある種のプログラムスレッドがプロセッサで実行されています。プロセッサーは何かを行い、それが時間の平均である場合、100％が表示されます。同時に、プロセッサは何かをし、それがどれほど効率的であるかは不明です。サイクルごとに異なる数の命令を実行できます。命令が少ない場合、プロセッサ自体は、たとえばメモリからのデータのロードなど、何かを待つことができます。同時に、同じものがトップに表示されます-100％。プロセッサーが指示に従うのを待っています。そして、彼の中で何をしているのかは不明です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最後に、プログラムがプロセッサ上にあると考えると、レーキがあります。これは事実ですが、何らかの理由でプロセッサの周波数が低くなっています。過熱、電力制限など、多くの理由が考えられます。何らかの理由で、データセンターでは電力に電力制限があるか、または省エネルギー機能をオンにするだけです。そうすると、プロセッサは常に高い周波数から低い周波数に切り替わりますが、負荷が不安定な場合、これでは不十分で、平均してコードの実行速度が遅くなります。現在のプロセッサー周波数については、ターボスタットを参照してください。 dmesgで過熱をチェックします。そのようなことが起こった場合、次のようになります。周波数ダウン。」</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+内部にあるキャッシュミスの数、サイクルごとに実行される命令の数に関心がある場合は、perfレコードを使用してください。プログラムのサンプルをいくつか記録します。さらに、perf statまたはperf reportを使用してそれを確認することができます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/hl/4v/up/hl4vupofzsuha-s7cyxtba-po0c.jpeg" width="600"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+およびその逆。トップを見て、プロセッサのリサイクル率が50％未満であるとします。システムに32の仮想プロセッサコアがあり、物理コアが16あるとします。Intelプロセッサでは、これはハイパースレッディングが2倍であるためです。しかし、これは追加のカーネルが役に立たないという意味ではありません。それはすべて負荷に依存します。最適化された線形代数演算がいくつかあるか、ビットコインをマイニングするためのハッシュがあるとします。その後、コードは明確になり、多くの命令がサイクルごとに実行され、キャッシュミスや分岐予測の誤りもなくなります。また、ハイパースレッディングはまったく役に立ちません。 1つのコアが何かを待機しているときに、他のコアが別のスレッドからの命令を同時に実行できる場合に役立ちます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ClickHouseには両方の状況があります。たとえば、データ集計（GROUP BY）またはセットによるフィルタリング（INサブクエリ）を実行すると、ハッシュテーブルが作成されます。ハッシュテーブルがプロセッサキャッシュに収まらない場合、キャッシュミスが発生します。これはほとんど避けられません。この場合、ハイパースレッディングが役立ちます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+デフォルトでは、ClickHouseはハイパースレッディングを除いて物理プロセッサーコアのみを使用します。リクエストがハイパースレッディングの恩恵を受けることがわかっている場合は、スレッドの数を2倍にするだけで、SET max threads = 32となり、リクエストはより高速になります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセッサが完全に使用されている場合がありますが、グラフを見ると、たとえば10％であることがわかります。たとえば、最悪の場合、スケジュールは5分です。 1秒であっても、なんらかの平均値があります。実際、常にリクエストがあり、毎秒100ミリ秒で迅速に実行されますが、これは正常です。 ClickHouseはリクエストをできるだけ早く実行しようとするためです。彼は完全にそして絶えずあなたのプロセッサーを使用し、過熱することを試みません。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/39/ka/ei/39kaeie-ngofbbynsnlq4mum_d0.jpeg" width="700"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もう少し詳しく見てみましょう。少し複雑なオプションです。サブクエリに式を持つクエリがあります。サブクエリ内には、1億個の乱数があります。そして、この結果にフィルターをかけます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+こんな絵が見えます。ちなみに、この素​​晴らしい絵を見ることができるツールは誰でしょうか。絶対に本当-パフォーマンス。あなたがこれを知ってとても嬉しいです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私はすべてを理解したと思い、perfを開きました。アセンブラーリストを開きます。そこで私は、プログラムの実行が特定の命令であった頻度、つまり、命令ポインタがあった頻度を書きました。ここでは、数値はパーセント単位であり、test％edx、％edx命令が実行された時間のほぼ90％、つまり、4バイトがゼロかどうかがチェックされていると書かれています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+問題は、プロセッサが4バイトと0の単純な比較を実行するのになぜこんなに時間がかかるのか、ということです。 （聴衆からの回答...）部門の残りはありません。ビットシフトがあり、次にcrc32q命令がありますが、あたかも命令ポインタがその上で発生することはありません。また、乱数の生成はこのリストには含まれていません。別の機能があり、それは非常によく最適化されており、遅くなりません。他の何かがここで減速しています。コードの実行はこの命令で停止し、多くの時間を費やします。アイドルループ？番号。空のループを挿入する必要があるのはなぜですか？また、アイドルループを挿入した場合も、パフォーマンスに表示されます。ゼロによる除算はなく、単にゼロとの比較があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセッサにはパイプラインがあり、複数の命令を並行して実行できます。そして、命令ポインタがどこかにあるとき、それはそれがこの命令を実行していることを全く意味しません。多分彼はいくつかの他の指示を待っています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+いくつかのセットでいくつかの数値が発生することを確認するためのハッシュテーブルがあります。このために、メモリ内でルックアップを行います。メモリでルックアップを行うと、キャッシュミスが発生します。ハッシュテーブルには1億の数値が含まれているため、どのキャッシュにも収まるとは限りません。したがって、ゼロチェック命令を実行するには、このデータがメモリからすでにロードされている必要があります。そして、それらがロードされるまで待機します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/w9/7b/ed/w97bediv43zlhfvat95k7qdar3k.jpeg" width="700"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次のリソース、もう少し複雑な-ドライブ。 SSDはドライブとも呼ばれますが、これは完全に正しいわけではありません。この例にはSSDも含まれます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえばiostatを開くと、100％の使用率が表示されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+会議では、講演者がステージに上がり、悲惨なことを言うことがよくあります。「データベースは常にディスクに隣接しています。そのため、インメモリデータベースを作成しました。彼女は減速しないでしょう。」人があなたに近づいて言ったら、あなたは彼を安全に送ることができます。いくつかの問題があります-あなたは言う、私はそれを解決しました。 :) </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プログラムがディスク上にあるとしましょう。使用率は100です。しかし、これはもちろん、ディスクを最適に使用することを意味するものではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+典型的な例は、ランダムアクセスが多い場合です。アクセスがシーケンシャルであっても、ファイルをシーケンシャルに読み取るだけですが、それでも多かれ少なかれ最適です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえば、RAIDアレイ、いくつかのデバイス、たとえば8つのディスクがあるとします。そして、先読みなしで順次読み取るだけで、バッファーサイズは1 MBであり、RAIDのストライプのチャンクサイズも1 MBです。次に、1つのデバイスから取得する各読み取り。または、位置合わせされていない場合は、2つのデバイスから。そこでは、半メガバイトがどこかに移動し、別の場所に半メガバイトが続く、というように、ディスクが順番に使用されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+先読みする必要があります。または、O_DIRECTがある場合は、バッファーのサイズを増やします。つまり、ルールは次のとおりです。8ディスク、チャンクサイズ1 MB、バッファサイズを少なくとも8 MBに設定します。しかし、これは読み取り値が調整されている場合にのみ最適に機能します。そして、位置合わせされていない場合、最初に追加のピースがあり、さらに追加し、さらに数を掛ける必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+または、たとえば、RAID 10を使用しているとします。たとえば、8個のディスクなど、RAID 10から読み取る速度はどのくらいですか。利点は何ですか？鏡があるので4倍、または8倍？実際には、RAIDがどのように作成され、どのようにチャンクがストライプに配置されるかによって異なります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Linuxでmdadmを使用する場合は、nearレイアウトとfarレイアウトをそこで指定できます。nearは書き込みに、farは読み取りに適しています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+分析よりも書き込みが多い場合でも、分析データベースに書き込む場合、通常はそれほど重要ではないため、常に遠いレイアウトを使用することをお勧めします。これは、いくつかのバックグラウンドプロセスによって行われます。しかし、読書をするときは、できるだけ早くそれを行う必要があります。したがって、遠いレイアウトを設定して、読み取り用にRAIDを最適化することをお勧めします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+幸運なことに、Linuxではmdadmがデフォルトでほぼレイアウトに設定し、パフォーマンスの半分しか得られません。</font><font style="vertical-align: inherit;">そのような熊手がたくさんあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もう1つのひどいレーキは、RAID 5またはRAID 6です。すべてが順次読み取りと書き込みによって適切に拡張されます。</font><font style="vertical-align: inherit;">RAID 5では、多重度は「デバイスの数から1を引いた数」です。</font><font style="vertical-align: inherit;">これは、ランダム読み取りでも適切にスケーリングされますが、ランダム読み取りでは十分にスケーリングされません。</font><font style="vertical-align: inherit;">1つの場所でレコードを作成し、他のすべてのディスクからデータを読み取り、それらをpoksorit（XOR-近似）し、別の場所に書き込む必要があります。</font><font style="vertical-align: inherit;">このため、特定のストリップのキャッシュ、ひどいレーキが使用されます。</font><font style="vertical-align: inherit;">Linuxでは、デフォルトでRAID 5が作成され、速度が低下します。</font><font style="vertical-align: inherit;">そして、これは理解できるので、RAID 5は常にスローダウンすると考えるでしょう。</font><font style="vertical-align: inherit;">しかし、実際には、その理由は間違った設定です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もう1つの例。 SSDから読み取りを行っており、適切なSSDを購入した場合、仕様では1秒あたり30万回のランダム読み取りと記載されています。そして、何らかの理由でそれを行うことはできません。そして、あなたは思う-はい、それらはすべて仕様にあります。そのようなことはありません。ただし、これらの読み取りはすべて並行して行う必要があり、並列度は最大になります。これを非常に最適に行う唯一の方法は、非同期I / Oを使用することです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは</font><font style="vertical-align: inherit;">、io_submit、io_getevents、io_setupなどのシステムコールを使用して実装されます。</font><font style="vertical-align: inherit;">ちなみに、ディスク上のデータは、保存する場合は常に圧縮する必要があります。練習の例を挙げましょう。 1人が</font><font style="vertical-align: inherit;">ClickHouse </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サポートチャットで</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">私たちに連絡して</font><font style="vertical-align: inherit;">言った：</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-ClickHouseはデータを圧縮します。</font><font style="vertical-align: inherit;">プロセッサーにかかっているのがわかります。</font><font style="vertical-align: inherit;">私は非常に高速なNVMe SSDを使用しています。読み取り速度は1秒あたり数ギガバイトです。</font><font style="vertical-align: inherit;">ClickHouseで何らかの方法で圧縮を無効にすることは可能ですか？</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「いいえ、まったくありません」と私は言います。</font><font style="vertical-align: inherit;">-データを圧縮しておく必要があります。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-やめましょう。何もしない別の圧縮アルゴリズムがあるだけです。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-簡単です。</font><font style="vertical-align: inherit;">このコード行にこれらの文字を入力してください。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「確かに、すべてが非常に簡単です」と彼は1日後に答えました。</font><font style="vertical-align: inherit;">- やった。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+-パフォーマンスはどの程度変化しましたか？</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+「テストに失敗しました」と彼は別の日後に書いた。</font><font style="vertical-align: inherit;">-データが多すぎます。</font><font style="vertical-align: inherit;">SSDにはもはや適合しません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、ディスクからの読み取りがどのようになるかを見てみましょう。</font><font style="vertical-align: inherit;">dstatを開始すると、読み取り速度が表示されます。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dstatとiostatの最初の例</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/tp/bv/hc/tpbvhccpx_oezqb-bl61xfhcrtq.gif"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これが読み取り列です-300 MB /秒。</font><font style="vertical-align: inherit;">ディスクから読み取ります。</font><font style="vertical-align: inherit;">それは多かれ少なかれです-私は知りません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これを確認するためにiostatを実行します。</font><font style="vertical-align: inherit;">ここでは、デバイスごとの内訳を確認できます。</font><font style="vertical-align: inherit;">RAID、md2、8台のハードドライブがあります。</font><font style="vertical-align: inherit;">それぞれがリサイクルを示しており、100％（50-60％）にも達していません。</font><font style="vertical-align: inherit;">しかし、最も重要なことは、各ディスクから20〜30 MB /秒の速度でのみ読み取ることです。</font><font style="vertical-align: inherit;">子供の頃から、ハードドライブから100 MB /秒からどこかで読み取ることができるという規則を思い出しました。</font><font style="vertical-align: inherit;">何らかの理由で、これはまだそれほど変わっていません。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dstatとiostatの2番目の例</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/yv/x-/wf/yvx-wf4ufaglo2ehwozvvh1mj48.gif"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の例を示します。読書はより最適です。私はdstatを実行し、8台のドライブのうちこのRAID 5からの読み取り速度は1 GB /秒です。 iostatは何を示していますか？はい、ほぼ1 GB /秒。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これでドライブは最終的に100％ロードされました。確かに、何らかの理由で2つは100％で、残りは95％です。おそらく、まだ少し違います。しかし、それらのそれぞれで、私は150 MB /秒を読みました。違いはなんですか？最初のケースでは、バッファサイズが不十分で断片が不十分な状態で読み取りました。それは簡単です、私はあなたに一般的な真実を話します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ちなみに、分析データベース、つまりHighLoad ++ Siberia会議からのレポート（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データに基づくhabrastaty-概算</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）の</font><font style="vertical-align: inherit;">ためにデータを圧縮する必要がないと考えている場合</font><font style="vertical-align: inherit;">。主催者は、ノボシビルスクで最もハードコアなレポートを作成することを決定しました。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/pu/6k/kp/pu6kkpnztqtp_elvxpta__ya8f0.jpeg" width="700"> <br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次の例はメモリです。共通の真実を継続します。まず、Linuxでは、無料の番組が表示されることはありません。見ている人のために、彼らはサイトlinuxatemyram.comを特別に作成しました。さあ、説明があります。プログラムが割り当てたアドレス空間の大きさの違いは何ですか？仮想メモリの量を調べる必要もありません。使用されている物理メモリの量を確認します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、対処方法すら明確ではないもう1つのレーキ。覚えておいてください。アロケータがシステムにメモリを与えたくないことがよくあるという事実は正常です。彼らはmmapを作成しましたが、munmapは作成しません。メモリはシステムに戻りません。プログラムは考えています-私はメモリをどのように使用するかをよく知っています。私に任せます。 mmapおよびmunmapシステムコールはかなり遅いからです。アドレス空間を変更し、プロセッサのTLBキャッシュをリセットします。これを行わない方が良いでしょう。ただし、OSには、madviseシステムコールを使用してメモリを正しく解放する機能がまだあります。アドレス空間は残りますが、物理的にはメモリをアンロードできます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、データベースを備えた運用サーバーでスワップを有効にしないでください。メモリが足りないと思います。スワップをオンにします。その後、リクエストは機能しなくなります。彼は無限の時間を割くでしょう。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mb/0d/2n/mb0d2nmqxl5zq7hu5foyae9ir40.jpeg" width="650"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ネットワークがあまりにも典型的な熊手で。毎回TCP接続を作成する場合、TCPプロトコルはデータの送信に必要な速度がわからないため、正しいウィンドウサイズが選択されるまでに時間がかかります。彼はこれに適応します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+または、想像してみてください。ファイルを転送していて、ネットワークで大きな遅延が発生し、適切なパケット損失が発生しています。次に、TCPを使用してファイルを転送することが適切かどうかは、まったく明らかではありません。 TCPは一貫性を保証するので、私はそれは間違っていると思います。一方、ファイルの半分ともう一方を同時に転送することもできます。データ転送に少なくともいくつかのTCP接続を使用するか、TCPをまったく使用しないでください。たとえば、データ、映画、テレビ番組を急流でダウンロードすると、TCPがそこで使用されない場合があります。そして、データを圧縮する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ラック内に100ギガビットネットワークがある場合は、圧縮できません。しかし、データセンター間、特にヨーロッパとアメリカ間で10ギガビットを使用している場合は、バイトが海の下でどのように移動するかを誰が知っているでしょう。それらを絞る。より少ないバイトをクリープさせます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/xy/ch/_m/xych_mjdelh5uydffukjrxzbf-k.jpeg" width="800"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+みんなこの写真を見ましたか？システムのすべてが遅い場合、必要なツールがあります。あなたはそれらを使い始め、問題に対処し始め、そして経験から、あなたは他の10の問題を見つけるでしょう。これらのツールは、非常に長い間忙しい状態を維持するのに十分強力です。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/mp/p_/bq/mpp_bqykipgfxtbiu6i8_a4xfpm.jpeg" width="400"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+彼らがあなたに言うとき：「私のデータベースに何か問題があります」-あなたはサーバーに行き、これらのすべてのツールを続けて実行します。これらのうち、iotopは特に注目できます。これは、各プロセスが実際にディスクに対して読み書きする量、IOPSの数を示します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、そのような単純なツールであっても、誰もが知っているとは限らないトリックはほとんどありません。</font><font style="vertical-align: inherit;">見てみましょう。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">例：スレッドごとのトップ</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/8r/3l/wg/8r3lwg_u4l6bexuezkp-s3kdvno.gif"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私は本番サーバーでtopを実行し、clickHouse-serverがいくつかのプロセッサリソース、いくつかのプロセッサコアを使用していることを示しています。</font><font style="vertical-align: inherit;">何が起こっているのかはわかりませんが、Shift + Hを押すと、フローごとの内訳が表示されます。</font><font style="vertical-align: inherit;">便宜上、フローはClickHouseで名前が付けられています。</font><font style="vertical-align: inherit;">これは、リクエストの並列処理であるParalInputsProcです。</font><font style="vertical-align: inherit;">またはBackgrProcPool-つまり、レプリケーションのためにデータをマージまたはダウンロードします。</font><font style="vertical-align: inherit;">これで、個々のプロセッサコアが何に費やされているのか、個々のプロセッサスレッドが何をしているのかがよく理解できました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+名前がなぜそんなに愚かなのですか？</font><font style="vertical-align: inherit;">ClickHouseのソースを読んでいただければ、私がこれを気に入らないことがわかります。</font><font style="vertical-align: inherit;">私はBackgroundProcessingPoolを呼び出します。</font><font style="vertical-align: inherit;">ただし、ここでは最大15バイトが可能です。</font><font style="vertical-align: inherit;">16-1。1はゼロバイトです。</font><font style="vertical-align: inherit;">なぜ16なのか？</font><font style="vertical-align: inherit;">Linuxカーネルの開発者は、「16バイト。</font><font style="vertical-align: inherit;">それは良いです」。</font><font style="vertical-align: inherit;">:)これ</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+は素晴らしいクリックハウスベンチマークプログラムを使用した別の例です。</font><font style="vertical-align: inherit;">クリックハウスクライアントに標準で付属しています。</font><font style="vertical-align: inherit;">これは別個のバイナリではなく、同じクリックハウスクライアントであり、シンボリックリンクのみです。</font><font style="vertical-align: inherit;">これを使用すると、ある種のクエリテープまたは1つの要求を取得して、負荷テストを調整できます。</font><font style="vertical-align: inherit;">これらのクエリは、固定数の接続を使用して継続的に実行され、統計が表示されます。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">例：clickhouse-benchmark + perf top</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/bu/ol/_g/buol_gwiuvuqmnn3xxxzpkafc6g.gif"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私はユニークビジターの数を数える簡単なクエリを取ります。私はクリックハウスベンチマークを起動し、1秒あたりのリクエスト数、実行のパーセンタイル、1秒あたりに処理される行数を書き込み、1秒あたりのメガバイト単位で圧縮した後のデータの読み取り速度を表示します。普段はペフトップと併用しています。私はトップに行きましたが、今では機能別の内訳があります。ここで、ハッシュテーブルの先頭に、uniq関数を計算するために特別に設計された特定のハッシュセットへの挿入があることがわかります：UniquesHashSet。そして集約。中に入ってアセンブラーのリストを見ることができます。通常、明確なものは何もありませんが、エンターテイメントは優れています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは、たとえば、ポインタによる関数呼び出しです。実際、私は何か他のものを見たかった-ハッシュテーブルに挿入した。整数の乗算、ビットシフト、XOR、およびいくつかの長い定数があります。これはハッシュ関数の計算です。つまり、もっと簡単なハッシュ関数をそこに置くことができました。しかし、ここに示されているコードでは、これがほとんど最も単純なハッシュ関数であるため、実行できません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえば、crc32qをそこに置くことができます。しかし、それはすでにコードの他の場所で使用されており、私がここでも同じように配置すると、ハッシュ関数の相互に望ましくない相関関係が生じ、ハッシュテーブルでの巨大な衝突につながり、プログラムの速度が低下します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さまざまなリソースについて話しましたが、上記のすべてがClickHouseだけに当てはまるわけではありません。</font><font style="vertical-align: inherit;">他のデータベースにも同じルールを使用でき、内部で何が発生するかを監視します。</font><font style="vertical-align: inherit;">クリックハウスについて純粋に話したい。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/je/ki/1x/jeki1xaabpztoth-0ixuuq5abny.jpeg" width="700"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最も基本的なことから始めましょう。</font><font style="vertical-align: inherit;">どの要求が実行されているかを確認するには、驚きはありません。SHOWPROCESSLISTと入力してください。</font><font style="vertical-align: inherit;">シンプルで明確。</font><font style="vertical-align: inherit;">これは、SELECT * FROMシステムプロセスと同じです。</font><font style="vertical-align: inherit;">さまざまな種類のシステムメトリック（メモリ使用量、読み取り、カウントされたバイト数）を含む列がたくさんあります。</font><font style="vertical-align: inherit;">シンプルなClickHouseトップを描くこともできます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、ClickHouseは内部で何をしますか？</font><font style="vertical-align: inherit;">基本的に、クエリとバックグラウンド操作を実行します。</font><font style="vertical-align: inherit;">バックグラウンドオペレーションは基本的にマージです。</font><font style="vertical-align: inherit;">実行されるマージに関心がある場合は、SELECT * FROM system.mergesを確認します。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">上位の例</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/pb/gd/b3/pbgdb3f6o8qyvh6ez81heoo82tu.gif"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それがどのように見えるか見てみましょう。</font><font style="vertical-align: inherit;">これが本番サーバーです。</font><font style="vertical-align: inherit;">私は魔法のチームを運営しています。</font><font style="vertical-align: inherit;">どうぞ-トップClickHouse。</font><font style="vertical-align: inherit;">これは、実際の分析サーバーからの実際のユーザーです。</font><font style="vertical-align: inherit;">ここでは、恐怖について、1分以上のいくつかの要求が満たされています。</font><font style="vertical-align: inherit;">私はそれらを停止して最適化に行く必要があると思います。</font><font style="vertical-align: inherit;">ある種のtraf_testing。</font><font style="vertical-align: inherit;">それは何ですか？</font><font style="vertical-align: inherit;">実際、これらのリクエストはリソースによってかなり削減されます。特にアナリストはインタラクティブなリクエストに干渉しません。</font><font style="vertical-align: inherit;">ClickHouseは簡単に提供できます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ni/aj/ro/niajrokowxcc2bp1n2ookwy8ljy.jpeg" width="700"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+進め。現時点で何が起こっているのかを見たいだけではありません。問題が発生してすべてが停止し、その瞬間に何が起こったかを理解する必要があるとします。 query_logを含めるのに十分です。デフォルトではオフになっていますが、これは唯一の理由でオフになっています。一部のサーバーから読み取り、SELECTクエリを実行しているだけで、まだいくつかのテーブルが書き込まれていることを心配する必要はありません。デフォルトでどこでも本番環境でquery_logを有効にできます。問題はありません。私たちの運用サーバーでは、必ず有効になっています。個別に必要な場合は、セッションとリクエストに含めることができます。各要求は2回ログに記録されます。実行が開始されたときと終了したときです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+マージ、挿入、レプリカからのダウンロードなど、データの一部に何が起こるかに興味があるとします。このためのpart_logシステムテーブルがあります。これは構成ファイルに含めることができ、デフォルトではオフになっています。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/lt/vn/cp/ltvncpwym4jc0qpjpofzygrb9qs.jpeg" width="700"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+clickhouse-benchmarkでquery_logを使用すると便利です。リクエストの選択したフィードを作成し、それをクリックハウスベンチマークの標準入力に送信します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+または、最初の重いリクエストを見つけるためにquery_logを使用すると非常に便利です。その後、システムが十分に機能しなくなります。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zh/pm/tt/zhpmttv4oacr3fqnvanjwhrdsdg.jpeg" width="450"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+多くの場合、今すぐリクエストを実行する必要がありますが、それが何をしているかは明確ではありません。したがって、リクエストをトレースすることが可能です。 SETクライアントでsend_logs_level = 'trace'を設定し、リクエストの処理に関与するすべてのサーバーから実行ログを取得するだけです。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">例：クエリトレース</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/3z/l0/g9/3zl0g92l6zqdt7gxtqogm-wt-ai.gif"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それがどのように見えるか見てみましょう。</font><font style="vertical-align: inherit;">要求は満たされますが、すぐに98％に達します。</font><font style="vertical-align: inherit;">私は彼が残りの瞬間に何をするかを理解したいと思います。</font><font style="vertical-align: inherit;">とてもシンプルです。</font><font style="vertical-align: inherit;">SET send_logs_level = 'trace'と入力して実行を開始すると、大量のゴミが出力されます。</font><font style="vertical-align: inherit;">しかし、最終的には明らかです。集約されたデータをマージすることに気付きました。</font><font style="vertical-align: inherit;">それが残りの1％の時間です。</font><font style="vertical-align: inherit;">以前は、これについてさえ考えていませんでしたが、今ではすべてが明確になっています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、このログにはクエリIDが表示されます。これを使用して、query_logでクエリを直接検索できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+見てみましょう。このクエリのSELECT * FROM system.query_log。 2つのエントリ。確かに、トレースは不要になりました。オフにして、このquery_logの内容を確認します。選んだ。クエリの実行にはあらゆる種類の指標があります-ファイルが開かれた回数、圧縮されたブロックの数、サンセリフキャッシュのヒット数など。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/6h/em/o3/6hemo3c8u8d4qv2bwxlt-xa0x_w.jpeg" width="470"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ClickHouseの内部にはリソースカウンターがあります。最も重要なのは、すべてのクエリに対してグローバルに収集され、system.events、system.metrics、system.asynchronous_metricsテーブルで利用できることです。イベントは単に、ファイルが開かれた回数を示す増分カウンターです。 100回。または、プログラムの開始以降に完了したリクエストの数-10個。そして、system.metricsは現在の同時イベントの数です。たとえば、現在同時に10個のリクエストが実行されており、合計で10 GBのメモリを使用しています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+入力するのが非常に難しいため、問題のないようにsystem.asynchronous_metricsテーブルを呼び出しました。私は原則です。今、私自身も毎回それを入力するのに苦労しています。したがって、system.asynchronous_metricsは、特定の頻度で単純に収集されるメトリックです。 1分に1回言ってください。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リストされているすべてのカウンターは、グローバルに利用できるだけでなく、各リクエストでも利用できます。つまり、SHOW PROCESSLISTを見て、特定の要求のカウンターを見つけることができます。 query_logを確認すると、完了したリクエストのカウンターもあります。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/0p/cp/1r/0pcp1rjgl8aj4w29tcnj73n5eay.jpeg" width="520"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それらが何であるか見てみましょう。プログラム自体が収集するものがあります。たとえば、ファイルのオープン数。ファイルをいつ開くかがわかっているので、その時点でカウンターをインクリメントします。さらに、Linuxカーネルから構築された、より高度なものもあります。これがLinuxカーネルが私たちのプログラムについて考えていることです。私たちのことを考えたくもありません。読み取ったバイト数をカウントします。そして、ここには完全に異なるメトリックがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+OSReadCharsとOSReadBytesと言います。</font><font style="vertical-align: inherit;">違いはなんですか？</font><font style="vertical-align: inherit;">1つ目は、ファイルシステムから読み取るバイト数を示しています。バイトの一部は、実際のディスクからではなく、キャッシュから読み取ることができます。</font><font style="vertical-align: inherit;">2番目のメトリックは、ブロックデバイスから読み取られた実際のバイト数を示します。</font><font style="vertical-align: inherit;">実際のところ、OSはキャッシュをできるだけ透過的に実装しようとするため、ファイルから読み取っただけで、どこから読み取られたかがわかりません。</font><font style="vertical-align: inherit;">幸いなことに、カーネルから直接提供されない詳細なメトリックを直接取得できます。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ページキャッシュの例</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/ft/zd/z3/ftzdz3ycxppmbghwuxu108y3rcs.gif"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それがどのように見えるか見てみましょう。</font><font style="vertical-align: inherit;">ここでは、ある種の要求を満たしています。</font><font style="vertical-align: inherit;">何もないようで、毎秒4,000万行、6.7秒です。</font><font style="vertical-align: inherit;">いいよ </font><font style="vertical-align: inherit;">ところで、テストテーブル内のデータは偽物です、私は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それらを特異的に台無しにしました</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">もちろん、奇妙に見えます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同じことをもう一度行いますが、今では1.3秒で、5分の1になります。</font><font style="vertical-align: inherit;">どうして？</font><font style="vertical-align: inherit;">答えは誰にとっても明白だと思います-ページキャッシュが2回目に使用されたためです。</font><font style="vertical-align: inherit;">しかし、カウンターからこれをどのように理解できますか？</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リクエストの例はより複雑です</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/hr/cj/as/hrcjasfstnujjgo-fx9ene7t1g0.gif"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それほど単純ではないリクエストを実行してみましょう。以下は、最初のリクエストのすべてのメトリックです。たとえば、リクエストを実行すると、1つのリクエストが実行されることがそこに記述されていました。これは完全を期すためです。しかし、有用な測定基準もあります。ディスクから3.2 GB、ファイルシステムから2.5 GBが読み取られました。ちなみに、今回はディスクから多くのデータが読み取られたのは興味深いです。どうして？まず、仮説：先読みがある。つまり、少しだけデータを読みたいと思ったとき、念のためにOSを読みます-突然役に立ちますか？次に、いくつかの最小限のセクター（4 KB、たとえば512 KB）でディスクから読み取ることができます。正確な値は設定によって異なります。位置合わせされていない場合は、少し余分なテールが読み取られます。しかし、おそらく違いは先読みのためです。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/dj/nb/kj/djnbkjh9mdniw34_odlupzqigfa.jpeg" width="700"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これが最初のリクエストでした。 2番目の要求の場合、メトリックは異なります。これらのデータによると、リクエストが速くなっていることがはっきりとわかります。たとえば、ReadBytes（実際にディスクから読み取られるバイト数）は異なります。 3 GBでしたが、わずか3 MBになりました。なぜゼロではないのかはわかりませんが、ほぼゼロです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もう1つの興味深い指標はIOWaitです。 87秒。リクエストは約7秒間実行され、IOWait-87です。なぜですか？そうです-私たちはたくさんのスレッドを持っています。メトリックは各ストリームでカウントされます。各スレッドは、ディスクからデータが提供されるまで待機し、合計で87秒でした。 2回目にはほとんど待機せず、数ミリ秒かかりました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の指標はCPUWaitです。</font><font style="vertical-align: inherit;">これはプロセッサを使用する時間ではなく、スレッドがOSがプロセッサで実行を開始する準備ができた時間です。</font><font style="vertical-align: inherit;">なんらかの理由で、OSはそれを実行させませんでした-おそらくより多くのスレッドがありました。</font><font style="vertical-align: inherit;">つまり、CPUの枯渇が見られます。</font><font style="vertical-align: inherit;">しかし、この例では、スレッドはCPUを使い果たしません。</font><font style="vertical-align: inherit;">彼らはいくつかの指示に従う準備ができているときはいつでも、彼らはそれらに従います。</font><font style="vertical-align: inherit;">アドオンとして、たとえば、ユーザー空間で費やされたプロセッサー時間などの単純なメトリックがまだあります。</font><font style="vertical-align: inherit;">それらはほとんど違いはありませんが、何らかの理由で2回目です。</font><font style="vertical-align: inherit;">まあいいよ。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして-Linuxカーネルで費やされたCPU時間。</font><font style="vertical-align: inherit;">システムコールを実行し、内部に複雑なものがある場合、これが考慮されます。</font><font style="vertical-align: inherit;">もちろん、ディスクからの読み取り時には、少しのプロセッサーも補助操作に費やされます。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">例：query_thread_log</font></font></b><div class="spoiler_text"><img src="https://habrastorage.org/webt/fq/py/tf/fqpytfrrdsz4nxr8179r4pklzkm.gif"><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして今、私たちが持っている最も高度なもの：query_thread_log。</font><font style="vertical-align: inherit;">これにより、リクエスト実行の各スレッドが時間を浪費したものを理解できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私は自分のリクエストを探し、query_idで選択し、「ユーザースペースで費やされたプロセッサ時間の量」というメトリックを示します。</font><font style="vertical-align: inherit;">ここに私たちの流れがあります。</font><font style="vertical-align: inherit;">要求の並列処理のために、16個のスレッドが割り当てられました。</font><font style="vertical-align: inherit;">それぞれが800ミリ秒を費やしました。</font><font style="vertical-align: inherit;">次に、集計関数の状態をマージするために別の16個のスレッドが割り当てられ、それぞれに0.25秒が費やされました。</font><font style="vertical-align: inherit;">これで、各リクエストにかかった時間が正確にわかります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+HighLoad ++に関するビデオレポート：</font></font><br>
+<br>
+<iframe width="560" height="315" src="https://www.youtube.com/embed/ondHe_JUyW4" frameborder="0" allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture" allowfullscreen=""></iframe></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja459182/index.html">GitLab：バージョン12.1のリリースに伴い、MySQLのサポートを停止します</a></li>
+<li><a href="../ja459184/index.html">基本的なユニティスキル</a></li>
+<li><a href="../ja459188/index.html">Debian 10バスターとLinux 5.2がリリースされました</a></li>
+<li><a href="../ja459194/index.html">UIキットのテーマを使用して、CSS変数とSCSSの友達を作る方法</a></li>
+<li><a href="../ja459196/index.html">モノリスからモジュラーチームまで</a></li>
+<li><a href="../ja459204/index.html">C ++でハードウェアレジスタを操作する10 ++の方法（IARやCortex Mなど）</a></li>
+<li><a href="../ja459206/index.html">Node.JSのモノリスで9年間</a></li>
+<li><a href="../ja459208/index.html">義足での実行：筋肉、骨、ニューラルネットワークを使用した人間の動きのNekstgenシミュレーション</a></li>
+<li><a href="../ja459212/index.html">C ++でのプロパティの実装</a></li>
+<li><a href="../ja459214/index.html">Qsanストレージのフォールトトレランス</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

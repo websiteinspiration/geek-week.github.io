@@ -1,0 +1,348 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>💃🏼 🌮 🌥️ Docker SwarmでのNginx / LetsEncryptバンドルの構成 ♦️ 💩 ✊🏻</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Nginxコンテナを引き上げて、LetsEncrypt証明書の自動更新を構成する方法については、かなりの数の記事があります。これはかなり非標準的なスキームを説明します。ハイライト：
+ 
+
+1. Nginxは、スタンドアロンコンテナとしてではなく、Docker Swarmのサービスとしてデプロイされま...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Docker SwarmでのNginx / LetsEncryptバンドルの構成</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/495890/"><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nginxコンテナを引き上げて、LetsEncrypt証明書の自動更新を構成する方法については、かなりの数の記事があります。</font><font style="vertical-align: inherit;">これはかなり非標準的なスキームを説明します。</font><font style="vertical-align: inherit;">ハイライト：</font></font></p><br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nginxは、スタンドアロンコンテナとしてではなく、Docker Swarmのサービスとしてデプロイされます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">検証には、DNS-01スキームが使用されますが、一般的なHTTP-01は使用されません。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">DNSプロバイダーGoDaddyの場合、certbot用のDNSプラグインは現在ありませんが、ドメインレコードを管理するためのAPIがあります。</font></font></li>
+</ol><a name="habracut"></a><br>
+<h1 id="chto-takoe-dns-01-i-zachem-on-nuzhen"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">DNS-01とは何か、なぜそれが必要なのか</font></font></h1><br>
+<p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LetsEncryptから証明書が要求された場合、それを要求する人が対応するドメインへの権限を持っていることを確認する必要があります。</font><font style="vertical-align: inherit;">このため、LetsEncryptはチェックを使用します。</font><font style="vertical-align: inherit;">最も一般的なチェックはHTTP-01と呼ばれます。</font><font style="vertical-align: inherit;">これは、クライアントに最初に特別なトークンが発行され、次にLetsEncryptサーバーがアドレス</font></font><code>http://&lt;DOMAIN&gt;/.well-known/acme-challenge/&lt;TOKEN&gt;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">要求し、</font><font style="vertical-align: inherit;">その応答に、トークンが書き込まれた同じクライアントの同じトークン+ハッシュされたキーが含まれていることを確認することにあります。</font><font style="vertical-align: inherit;">しかし、2つのポイントがあります。</font></font></p><br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">リクエストは常に上記のとおり正確に実行されます。</font><font style="vertical-align: inherit;">したがって、ポート80を開いておく必要があり、指定されたパスには認証なしで常に外部からアクセスできます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ワイルドカード証明書はサポートされていません。</font><font style="vertical-align: inherit;">一度に複数のサブドメインに対して1つの証明書を書き込むことができます（この場合、LetsEncryptは各サブドメインに対して要求を行います）。</font></font></li>
+</ul><br>
+<p> DNS-01 , -,    80-,  -,  Wildcard-.      ,   certbot',   DNS- <code>_acme-challenge.&lt;YOUR_DOMAIN&gt;</code>   TXT.     ,         .      API   DNS-,     dns-plugin'  certbot',       API.    GoDaddy  ,  API  .</p><br>
+<h1 id="a-zachem-docker-swarm">  Docker Swarm?</h1><br>
+<p>Docker Swarm —    Docker  .    Kubernetes   ,        .         ,  Docker Swarm   ,   :</p><br>
+<ul>
+<li>     (stack/service vs container);</li>
+<li>     ;</li>
+<li>  ;</li>
+<li>  secret' (     ,     Kubernetes).</li>
+</ul><br>
+<p>      Swarm.</p><br>
+<h1 id="chto-konkretno-budet-delatsya-v-state">     </h1><br>
+<p>,     <code>example.com,</code>   GoDaddy.    -gateway   .     ,   ,      .         Swarm'     ,  ,     ,  .  ,       gateway,       .      SSL.          ,        nginx.     SSL-.</p><br>
+<p>     wildcard-   ,  nginx     docker swarm,      .    nginx'   .  ,      <code>gateway.example.com</code>,       .</p><br>
+<h1 id="nastroyka-docker-swarm"> Docker Swarm</h1><br>
+<p><em>,  Docker Engine    .</em></p><br>
+<ol>
+<li>   ,  Swarm'   :<br>
+<br>
+<pre><code class="bash hljs">$ docker swarm init</code></pre></li>
+<li>      , :<br>
+<br>
+<pre><code class="bash hljs">$ docker node ls</code></pre></li>
+</ol><br>
+<h1 id="poluchenie-ssl-sertifikatov"> SSL-</h1><br>
+<p><em>,        LetsEncrypt  GoDaddy.</em></p><br>
+<ol>
+<li>     API  DNS-.   GoDaddy,   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">https://developer.godaddy.com/</a>    API Key.       <code>Production</code>.</li>
+<li><p> ACME-   certbot'. Certbot     :<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ docker run --rm -it --mount <span class="hljs-built_in">type</span>=<span class="hljs-built_in">bind</span>,<span class="hljs-built_in">source</span>=/opt/letsencrypt,target=/etc/letsencrypt certbot/certbot:v1.3.0 --email account@example.com --agree-tos -d *.example.com --manual --preferred-challenges dns certonly</code></pre><br>
+<p> <code>/opt/letsencrypt</code> — ,           nginx'   ;<br>
+<code>account@example.com</code> —    LetsEncrypt;<br>
+<code>*.example.com</code> — ,      (  , wildcard).</p><br>
+<p>       ,       email (  ),      ,    IP    (   ).  certbot  ,     <code>TOKEN_STRING</code>  TXT- <code>_acme-challenge.example.com</code>.</p><br>
+</li>
+<li><p>     (  certbot   ,       DNS).      curl'  API GoDaddy   .       ,           .</p><br>
+<ol>
+<li><p>  payload:<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ cat &lt;&lt;EOF &gt; payload.json<font></font>
+[{<font></font>
+  <span class="hljs-string">"data"</span>: <span class="hljs-string">"TOKEN_STRING"</span>,
+  <span class="hljs-string">"name"</span>: <span class="hljs-string">"_acme-challenge"</span>,
+  <span class="hljs-string">"type"</span>: <span class="hljs-string">"TXT"</span><font></font>
+}]<font></font>
+EOF</code></pre><br>
+<p> TOKEN_STRING — ,  certbot'.</p><br>
+</li>
+<li><p>           GoDaddy,    1:<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ <span class="hljs-built_in">export</span> GODADDY_KEY=&lt;KEY&gt;<font></font>
+$ <span class="hljs-built_in">export</span> GODADDY_SECRET=&lt;SECRET&gt;</code></pre><br>
+</li>
+<li><p>  _acme-challenge    (   ,       URL   ):<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ curl -XPUT -d @payload.json -H <span class="hljs-string">"Content-Type: application/json"</span> -H <span class="hljs-string">"Authorization: sso-key <span class="hljs-variable">$GODADDY_KEY</span>:<span class="hljs-variable">$GODADDY_SECRET</span>"</span> https://api.godaddy.com/v1/domains/example.com/records/TXT/_acme-challenge</code></pre><br>
+</li>
+<li><p>,       DNS      (  ,      . ,   ):<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ dig -t txt _acme-challenge.example.com<font></font>
+...<font></font>
+;; ANSWER SECTION:<font></font>
+_acme-challenge.example.com. 600 IN TXT <span class="hljs-string">"TOKEN_STRING"</span>
+...</code></pre><br>
+</li>
+</ol><br>
+</li>
+<li>    certbot'   Enter.    ,       <code>/opt/letsencrypt/live/example.com</code>  ,     .</li>
+</ol><br>
+<h1 id="nastroyka-servisa-nginx">  Nginx</h1><br>
+<p>       ,     <code>nginx.conf</code>.   ,   SSL,     HTTP 200   "<code>It works!</code>".            ,        .</p><br>
+<ol>
+<li><p>  nginx.conf   /opt/nginx/conf:</p><br>
+<div class="spoiler"><b class="spoiler_title">nginx.conf</b><div class="spoiler_text"><pre><code class="nginx hljs"><span class="hljs-attribute">user</span> nginx;
+<span class="hljs-attribute">worker_processes</span> <span class="hljs-number">1</span>;<font></font>
+<font></font>
+<span class="hljs-attribute">error_log</span> /var/log/nginx/error.log <span class="hljs-literal">warn</span>;
+<span class="hljs-attribute">pid</span> /var/run/nginx.pid;<font></font>
+<font></font>
+<span class="hljs-section">events</span> {
+  <span class="hljs-attribute">worker_connections</span> <span class="hljs-number">1024</span>;<font></font>
+}<font></font>
+<font></font>
+<span class="hljs-section">http</span> {
+  <span class="hljs-attribute">include</span> /etc/nginx/mime.types;
+  <span class="hljs-attribute">default_type</span> application/octet-stream;<font></font>
+<font></font>
+  <span class="hljs-attribute">log_format</span> main <span class="hljs-string">'<span class="hljs-variable">$remote_addr</span> - <span class="hljs-variable">$remote_user</span> [<span class="hljs-variable">$time_local</span>] "<span class="hljs-variable">$request</span>" '</span>
+                  <span class="hljs-string">'<span class="hljs-variable">$status</span> <span class="hljs-variable">$body_bytes_sent</span> "<span class="hljs-variable">$http_referer</span>" '</span>
+                  <span class="hljs-string">'"<span class="hljs-variable">$http_user_agent</span>" "<span class="hljs-variable">$http_x_forwarded_for</span>"'</span>;<font></font>
+<font></font>
+  <span class="hljs-attribute">access_log</span> /var/log/nginx/access.log main;<font></font>
+<font></font>
+  <span class="hljs-attribute">sendfile</span> <span class="hljs-literal">on</span>;<font></font>
+<font></font>
+  <span class="hljs-attribute">keepalive_timeout</span> <span class="hljs-number">65</span>;<font></font>
+<font></font>
+  <span class="hljs-section">server</span> {
+    <span class="hljs-attribute">listen</span> <span class="hljs-number">443</span> ssl default_server;
+    <span class="hljs-attribute">server_name</span> _;<font></font>
+<font></font>
+    <span class="hljs-attribute">ssl_certificate</span> /etc/letsencrypt/live/example.com/fullchain.pem;
+    <span class="hljs-attribute">ssl_certificate_key</span> /etc/letsencrypt/live/example.com/privkey.pem;<font></font>
+<font></font>
+    <span class="hljs-attribute">location</span> / {
+      <span class="hljs-attribute">return</span> <span class="hljs-number">200</span> <span class="hljs-string">'It works!'</span>;
+      <span class="hljs-attribute">add_header</span> Content-Type text/plain;<font></font>
+    }<font></font>
+  }<font></font>
+}</code></pre><br>
+</div></div><br>
+</li>
+</ol><br>
+<ol>
+<li>  nginx:<br>
+<br>
+<pre><code class="bash hljs">$ docker service create --name nginx -p 443:443 --mount <span class="hljs-built_in">type</span>=<span class="hljs-built_in">bind</span>,<span class="hljs-built_in">source</span>=/opt/nginx/conf/nginx.conf,target=/etc/nginx/nginx.conf,ro --mount <span class="hljs-built_in">type</span>=<span class="hljs-built_in">bind</span>,<span class="hljs-built_in">source</span>=/opt/letsencrypt,target=/etc/letsencrypt,ro nginx:1.17.9</code></pre></li>
+<li>  <code>https://gateway.example.com</code>   ,       "It works!".</li>
+<li>     ,  :<br>
+<br>
+<pre><code class="bash hljs">$ docker service update --force nginx</code></pre></li>
+</ol><br>
+<h1 id="avtomaticheskoe-obnovlenie-sertifikatov">  </h1><br>
+<p>   :)  LetsEncrypt  90 .  LetsEncrypt     60.       2 ,   .          ,     :</p><br>
+<ul>
+<li>      .  ,  ,        ,     nginx —    ;</li>
+<li>Docker Swarm     ,     (    : <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">https://github.com/docker/swarmkit/issues/2852</a>);</li>
+<li>  ,  ,  Nginx        reload,  restart. reload     HUP,        ;</li>
+<li>  :  ,   nginx  ,    foreground-  <code>while true; do nginx -s reload; sleep 1d; done</code>   .</li>
+</ul><br>
+<p>  ,   —       (  , gateway)  <code>cron</code>.        — ,  cron',  -       GoDaddy,         .     docker secrets,    Swarm-.      ,        (. . 2     Swarm).        JaaS o Alex Ellis (<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">https://github.com/alexellis/jaas</a>).</p><br>
+<div class="spoiler"><b class="spoiler_title">  </b><div class="spoiler_text"><p>  ,          - ,       .   ,  -      ,    root',       API GoDaddy    .      cron, docker run     ,     .</p></div></div><br>
+<ol>
+<li><p>   jaas:<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ git <span class="hljs-built_in">clone</span> https://github.com/alexellis/jaas</code></pre><br>
+</li>
+<li><p> :<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ <span class="hljs-built_in">cd</span> jaas<font></font>
+$ docker run --rm -v <span class="hljs-string">"<span class="hljs-variable">$PWD</span>"</span>:/usr/src/jaas -w /usr/src/jaas golang:1.13 bash -c <span class="hljs-string">"go get -d -v github.com/alexellis/jaas &amp;&amp; go build -v"</span></code></pre><br>
+</li>
+<li><p>     /usr/local/bin (   ):<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ sudo cp jaas /usr/<span class="hljs-built_in">local</span>/bin</code></pre><br>
+</li>
+<li><p>  jaas:<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ jaas run --image alpine:3.8 --env FOO=bar --<span class="hljs-built_in">command</span> <span class="hljs-string">"env"</span></code></pre><br>
+<p>       image' alpine,     FOO=bar.     env,  ,     .   ,    jaas'.</p><br>
+</li>
+<li><p> secret'       API GoDaddy:<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ <span class="hljs-built_in">printf</span> <span class="hljs-variable">$GODADDY_KEY</span> | docker secret create godaddy-key -<font></font>
+$ <span class="hljs-built_in">printf</span> <span class="hljs-variable">$GODADDY_SECRET</span> | docker secret create godaddy-secret -</code></pre><br>
+</li>
+<li><p>    DNS   certbot'  authenticate-  cleanup- (<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">https://certbot.eff.org/docs/using.html#hooks</a>).      ,   docker- certbot.      curl',    wget'    PUT-.     python 3.8   requests.   <code>authenticate.sh</code>  <code>cleanup.sh</code>  <code>/opt/godaddy-hooks</code> (     ).</p><br>
+<p>   ,    <code>certbot</code>      <code>dig</code>,   ,   DNS   (  ,    ).     60     (   45,  ,   ).          ,       DNS-,      .     ,  GoDaddy  -       DNS-. Cleanup-   API    ,   ,   .</p><br>
+</li>
+<li><p>  :<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ chmod +x /opt/godaddy-hooks/authenticate.sh /opt/godaddy-hooks/cleanup.sh</code></pre><br>
+</li>
+<li><p>  :<br>
+<br>
+</p><br>
+<pre><code class="bash hljs">$ jaas run --timeout 90s --mount /opt/letsencrypt=/etc/letsencrypt --mount /opt/godaddy-hooks=/opt/hooks -s godaddy-key -s godaddy-secret --image certbot/certbot:v1.3.0 --<span class="hljs-built_in">command</span> <span class="hljs-string">"certbot --manual --manual-auth-hook /opt/hooks/authenticate.sh --manual-cleanup-hook /opt/hooks/cleanup.sh renew --dry-run --no-random-sleep-on-renew"</span></code></pre><br>
+</li>
+<li><p>  ,     .  <code>cron</code>, ,        ,     <code>anacron</code>.       ( 2     ,   3-     4    ).   ,  <code>certbot</code>  <code>renew</code>     ,   8 . ,   ,   ,        CA      .     ""     <code>--no-random-sleep-on-renew</code>,    jaas'.    :</p><br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/sh</span>
+jaas run --timeout 90s --mount /opt/letsencrypt=/etc/letsencrypt --mount /opt/godaddy-hooks=/opt/hooks -s godaddy-key -s godaddy-secret --image certbot/certbot:v1.3.0 --<span class="hljs-built_in">command</span> <span class="hljs-string">"certbot --manual --manual-auth-hook /opt/hooks/authenticate.sh --manual-cleanup-hook /opt/hooks/cleanup.sh renew --no-random-sleep-on-renew"</span>
+docker service update --force nginx</code></pre><br>
+</li>
+</ol><br>
+<h2 id="primer-skriptov-dlya-godaddy">   GoDaddy</h2><br>
+<div class="spoiler"><b class="spoiler_title">authenticate.sh</b><div class="spoiler_text"><pre><code class="bash hljs"><span class="hljs-meta">#!/bin/sh</span>
+<span class="hljs-built_in">read</span> key &lt; /run/secrets/godaddy-key
+<span class="hljs-built_in">read</span> secret &lt; /run/secrets/godaddy-secret<font></font>
+<font></font>
+python - &lt;&lt;EOF<font></font>
+import requests<font></font>
+requests.put(<font></font>
+    url = <span class="hljs-string">'https://api.godaddy.com/v1/domains/$CERTBOT_DOMAIN/records/TXT/_acme-challenge'</span>,<font></font>
+    json = [{<span class="hljs-string">'type'</span>: <span class="hljs-string">'TXT'</span>, <span class="hljs-string">'name'</span>: <span class="hljs-string">'_acme-challenge'</span>, <span class="hljs-string">'data'</span>: <span class="hljs-string">'$CERTBOT_VALIDATION'</span>}],<font></font>
+    headers = {<span class="hljs-string">'Authorization'</span>: <span class="hljs-string">'sso-key $key:$secret'</span>}<font></font>
+)<font></font>
+EOF<font></font>
+sleep 60</code></pre></div></div> <br>
+<div class="spoiler"><b class="spoiler_title">cleanup.sh</b><div class="spoiler_text"><pre><code class="bash hljs"><span class="hljs-meta">#!/bin/sh</span>
+<span class="hljs-built_in">read</span> key &lt; /run/secrets/godaddy-key
+<span class="hljs-built_in">read</span> secret &lt; /run/secrets/godaddy-secret<font></font>
+<font></font>
+python - &lt;&lt;EOF<font></font>
+import requests<font></font>
+response = requests.get(<font></font>
+    url = <span class="hljs-string">'https://api.godaddy.com/v1/domains/$CERTBOT_DOMAIN/records'</span>,<font></font>
+    headers = {<span class="hljs-string">'Authorization'</span>: <span class="hljs-string">'sso-key $key:$secret'</span>}<font></font>
+)<font></font>
+requests.put(<font></font>
+    url = <span class="hljs-string">'https://api.godaddy.com/v1/domains/$CERTBOT_DOMAIN/records'</span>,<font></font>
+    json = [record <span class="hljs-keyword">for</span> record <span class="hljs-keyword">in</span> response.json() <span class="hljs-keyword">if</span> record[<span class="hljs-string">'name'</span>] != <span class="hljs-string">'_acme-challenge'</span>],<font></font>
+    headers = {<span class="hljs-string">'Authorization'</span>: <span class="hljs-string">'sso-key $key:$secret'</span>}<font></font>
+)<font></font>
+EOF</code></pre></div></div></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja495870/index.html">忙しいプロジェクトでCephを使用するためのヒントとコツ</a></li>
+<li><a href="../ja495880/index.html">「Head First。ラーニングゴー»</a></li>
+<li><a href="../ja495882/index.html">2020年3月の最高のオープンソース発見9つ</a></li>
+<li><a href="../ja495884/index.html">リカレントニューラルネットワークを使用した時系列予測</a></li>
+<li><a href="../ja495888/index.html">PyConロシアは、将来の講演者のためにCFPを開設しました。参加フォームと期待されるトピック</a></li>
+<li><a href="../ja495892/index.html">あなたは本当に配列が何であるか知っていますか？</a></li>
+<li><a href="../ja495894/index.html">JavaScriptパフォーマンス測定</a></li>
+<li><a href="../ja495896/index.html">Use-soundパッケージ：Reactアプリケーションの効果音</a></li>
+<li><a href="../ja495898/index.html">Node.jsでメモリリークを処理するための実用的なガイド</a></li>
+<li><a href="../ja495902/index.html">CAPTCHA：変換の強制終了</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

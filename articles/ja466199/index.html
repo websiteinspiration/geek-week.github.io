@@ -1,0 +1,427 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📥 🚴🏼 📌 PostgreSQLのロック：4.メモリ内のロック 👴 🌩️ 🚐</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="ロックの関係、行レベルのロック、他のオブジェクト（述語を含む）のブロック、およびさまざまなタイプのロックの関係についてすでに説明したことを思い出してください。
+ 
+ 今日は、メモリロックに関する記事でこのシリーズを終了します。スピンロック、軽量ロック、バッファロック、および期待値のモニタリングツール...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQLのロック：4.メモリ内のロック</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/466199/"><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ロックの関係</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">行レベルのロック</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">他のオブジェクト</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（述語を含む）の</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ブロック</font></a><font style="vertical-align: inherit;">、およびさまざまなタイプのロックの</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">関係</font></a><font style="vertical-align: inherit;">についてすでに説明したことを思い出してください</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+今日は、</font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メモリロック</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に関する記事でこのシリーズを終了し</font><strong><font style="vertical-align: inherit;">ます</font></strong><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">スピンロック、軽量ロック、バッファロック、および期待値のモニタリングツールとサンプリングツールについて説明します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/2y/vt/2g/2yvt2gpimbdqmnibpzaiuf8qu0q.png"><br>
+<a name="habracut"></a><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スピンロック</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常の「重い」ロックとは異なり、共有RAMの構造を保護するために（オーバーヘッドの観点から）より軽量で安価なロックが使用されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それらの最も単純なものは、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スピンロック</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">または</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スピンロック</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。これらは、非常に短時間（いくつかのプロセッサ命令）をキャプチャし、メモリの個々のセクションを同時に変更されないように保護するように設計されています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+スピンロックは、比較およびスワップなど、プロセッサのアトミック命令に基づいて実装されます。</font><font style="vertical-align: inherit;">それらは単一の排他モードをサポートします。</font><font style="vertical-align: inherit;">ロックがビジー状態の場合、待機中のプロセスはアクティブな待機を実行します。コマンドが正常に実行されるまで、コマンドが繰り返されます（ループ内で「スピン」するため、名前）。</font><font style="vertical-align: inherit;">これは、競合の可能性が非常に低いと評価されている場合にスピンロックが使用されるため、理にかなっています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+スピンロックはデッドロックの検出を提供せず（PostgreSQL開発者はこれを監視しています）、監視ツールを提供していません。</font><font style="vertical-align: inherit;">概して、スピンロックで実行できる唯一のことは、スピンロックの存在を知ることです。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ライトロック</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、いわゆる</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ライトロック</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（ライトウェイトロック、lwlock）があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それらは、データ構造（たとえば、ハッシュテーブルやポインタのリスト）を操作するのにかかる短時間の間、キャプチャされます。原則として、軽いロックは長期間保持されませんが、場合によっては、軽いロックがI / O操作を保護するため、原則として時間がかなり長くなることがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2つのモードがサポートされています：排他的（データの変更用）と共有（読み取り専用）。そのため、待機キューはありません。複数のプロセスがロックの解放を待機している場合、そのうちの1つが多かれ少なかれランダムにアクセスします。並列処理と高負荷の高いシステムでは、これは、例えば、参照（不快な効果につながる可能性</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の議論を</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+デッドロックをチェックするためのメカニズムは提供されていません。これはカーネル開発者の良心に残ります。</font><font style="vertical-align: inherit;">ただし、ライトロックには監視ツールがあるため、スピンロックとは異なり、「見る」ことができます（少し後で説明します）。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クリップバッファー</font></font></h1><br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファキャッシュ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+に関する記事ですでに説明した別の種類のロック</font><font style="vertical-align: inherit;">は、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファの固定</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+固定バッファを使用すると、データの変更を含むさまざまなアクションを実行できますが、マルチバージョニングのためにこれらの変更が他のプロセスに表示されないという条件があります。</font><font style="vertical-align: inherit;">つまり、ページに新しい行を追加できますが、バッファ内のページを別のページに置き換えることはできません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセスがバインディングによって妨げられている場合、通常はそのようなバッファをスキップして別のバッファを選択します。</font><font style="vertical-align: inherit;">ただし、場合によっては、この特定のバッファーが必要なときに、プロセスがキューに入れられてスリープ状態になります。バインディングが削除されると、システムはそれをウェイクアップします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+統合の期待値を監視できます。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">例：バッファキャッシュ</font></font></h1><br>
+<img src="https://habrastorage.org/webt/gt/z8/gy/gtz8gylhroqbvj7jmwemqbd4jys.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここで、ロックがどのようにどのように使用されるかについての（不完全な！）アイデアを得るために、バッファキャッシュの例を考えます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファーへの参照を含むハッシュテーブルにアクセスするには、プロセスは共有モードでライトバッファーマッピングロックをキャプチャする必要があり、テーブルを変更する必要がある場合は例外モードでキャプチャする必要があります。粒度を減らすために、このロックは</font><font style="vertical-align: inherit;">128個の個別のロックで構成される</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トランシェ</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">として配置され</font><font style="vertical-align: inherit;">、それぞれがハッシュテーブルの独自の部分を保護します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセスは、スピンロックを使用してバッファのヘッダーにアクセスします。特定の操作（カウンターの増加など）も、プロセッサーからのアトミック命令を使用して明示的なロックなしで実行できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファの内容を読み取るには、バッファの内容ロックが必要です。</font><font style="vertical-align: inherit;">通常、ラインのバージョンへのポインタを読み取るのに必要な時間だけキャプチャされ、バッファクリップによる保護で十分です。</font><font style="vertical-align: inherit;">バッファの内容を変更するには、このロックを例外モードでキャプチャする必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ディスクからバッファを読み取る（またはディスクに書き込む）とき、IO進行中ロックもキャプチャされます。これは、ページが読み取られている（または書き込まれている）ことを他のプロセスに通知します。このページで何かをする必要がある場合は、キューに入れることもできます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファを解放し、次の犠牲者を指すポインタは、単一のバッファ戦略ロックスピンロックによって保護されます。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">例：ログバッファー</font></font></h1><br>
+<img src="https://habrastorage.org/webt/_f/mu/ub/_fmuubhon3hualbtorx4rmjgur4.png"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の例：ログバッファ。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ジャーナルキャッシュでは、ページのバッファへのマッピングを含むハッシュテーブルも使用されます。バッファキャッシュとは異なり、ジャーナルキャッシュのサイズが小さく（通常はバッファキャッシュの1/32）、バッファへのアクセスがより効率化されるため、このハッシュテーブルは単一の軽量WALBufMappingLockロックによって保護されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ディスクへのページの書き込みは、軽量のWALWriteLockロックによって保護されているため、一度に1つのプロセスのみがこの操作を実行できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ジャーナルエントリを作成するには、プロセスはまずWALページのスペースを予約する必要があります。</font><font style="vertical-align: inherit;">これを行うには、スピンロックの挿入位置ロックを取得します。</font><font style="vertical-align: inherit;">場所が予約されると、プロセスはレコードの内容を指定された場所にコピーします。</font><font style="vertical-align: inherit;">コピーは複数のプロセスで同時に実行できます。この場合、レコードは8つの簡単なロック挿入ロックのトランシェによって保護されます（プロセス</font><font style="vertical-align: inherit;">はそれらの</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">いずれか</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">キャプチャする</font><em><font style="vertical-align: inherit;">必要が</font></em><font style="vertical-align: inherit;">あります）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この図は、事前記録ログに関連するすべてのロックを示しているわけではありませんが、これと前の例では、RAMでのロックの使用についてある程度の情報が得られます。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">期待モニタリング</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PostgreSQL 9.6以降、待機監視ツールがpg_stat_activityビューに組み込まれています。プロセス（システムまたはサービス）がその作業を実行できず、何かを待っている場合、この期待はビューで確認できます。wait_event_type列は期待のタイプを示し、wait_event列は特定の期待の名前を示します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ビューには、ソースコードで適切に処理される期待のみが表示されることに注意してください。ビューが期待を示さない場合、これは通常、プロセスが実際には何も期待しないという100％の確率を意味するものではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+残念ながら、期待に関して利用できる唯一の情報は</font><em><font style="vertical-align: inherit;">現在の</font></em><font style="vertical-align: inherit;">情報です。</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">蓄積された統計は保持されません。</font><font style="vertical-align: inherit;">時間の経過に伴う期待を把握する唯一の方法</font><font style="vertical-align: inherit;">は、特定の間隔でビュー</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">状態を</font><em><font style="vertical-align: inherit;">サンプリングすること</font></em><font style="vertical-align: inherit;">です。</font><font style="vertical-align: inherit;">これには組み込みの手段はありませんが、たとえば</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_wait_sampling</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">などの拡張機能を使用できます</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サンプリングの確率的性質を考慮する必要があります。</font><font style="vertical-align: inherit;">多かれ少なかれ信頼できる画像を取得するには、測定の数は十分に大きくなければなりません。</font><font style="vertical-align: inherit;">低周波数でのサンプリングでは信頼性の高い画像が得られない場合があり、周波数を高くするとオーバーヘッドが増加します。</font><font style="vertical-align: inherit;">同じ理由で、短期間のセッションの分析にはサンプリングは役に立ちません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべての期待はいくつかのタイプに分類できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+考慮されるロックへの期待は、大きなカテゴリーを構成します。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オブジェクトロックの待機（wait_event_type列のロック値）;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">軽いロックを待つ（LWLock）;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ピン留めされたバッファー（BufferPin）を待機しています。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、プロセスは他のイベントを予期できます。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">I / O期待値（IO）は、プロセスがデータを読み書きする必要があるときに発生します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プロセスは、クライアント（クライアント）または別のプロセス（IPC）からの作業に必要なデータを待つことができます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">拡張機能は、特定の期待（拡張機能）を登録できます。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセスが単に有用な作業を行わない場合があります。</font><font style="vertical-align: inherit;">このカテゴリには以下が含まれます：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">メインループ（アクティビティ）でバックグラウンドプロセスを待機します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">タイマー待ち（タイムアウト）。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+原則として、このような期待は「正常」であり、問​​題を示すものではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+期待のタイプの後には、特定の期待の名前が続きます。</font><font style="vertical-align: inherit;">完全な表</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">はドキュメントにあります</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+待機名が指定されていない場合、プロセスは待機状態ではありません。</font><font style="vertical-align: inherit;">実際には現時点で何が起こっているのか実際にはわから</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ないため</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font><font style="vertical-align: inherit;">このような時間は考慮</font><em><font style="vertical-align: inherit;">され</font></em><font style="vertical-align: inherit;">ていません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、今がその時です。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pid, backend_type, wait_event_type, wait_event
+<span class="hljs-keyword">FROM</span> pg_stat_activity;
+</code></pre><pre><code class="plaintext hljs">  pid  |         backend_type         | wait_event_type |     wait_event      <font></font>
+-------+------------------------------+-----------------+---------------------<font></font>
+ 28739 | logical replication launcher | Activity        | LogicalLauncherMain<font></font>
+ 28736 | autovacuum launcher          | Activity        | AutoVacuumMain<font></font>
+ 28963 | client backend               |                 | <font></font>
+ 28734 | background writer            | Activity        | BgWriterMain<font></font>
+ 28733 | checkpointer                 | Activity        | CheckpointerMain<font></font>
+ 28735 | walwriter                    | Activity        | WalWriterMain<font></font>
+(6 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてのバックグラウンドサービスプロセスが「めちゃくちゃ」になっていることがわかります。wait_event_typeおよびwait_eventの空の値は、プロセスが何も待機していないことを示します。この例では、サービングプロセスがリクエストの実行でビジーです。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サンプリング</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サンプリングを使用して予想される多かれ少なかれ完全な状況を取得するには、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_wait_sampling</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">拡張機能を使用し</font><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">ソースコードからコンパイルする必要があります。</font><font style="vertical-align: inherit;">この部分は省略します。</font><font style="vertical-align: inherit;">次に、ライブラリを</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">shared_preload_libraries</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータに登録し</font><font style="vertical-align: inherit;">、サーバーを再起動します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">SET</span> shared_preload_libraries = <span class="hljs-string">'pg_wait_sampling'</span>;
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main restart
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、データベースに拡張機能をインストールします。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">EXTENSION</span> pg_wait_sampling;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+拡張機能を使用すると、循環バッファーに格納されている期待履歴を表示できます。</font><font style="vertical-align: inherit;">しかし、最も興味深いのは、期待のプロファイル（作業時間全体の累積統計）を確認することです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+数秒後に表示されます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> pg_wait_sampling_profile;
+</code></pre><pre><code class="plaintext hljs">  pid  | event_type |        event        | queryid | count <font></font>
+-------+------------+---------------------+---------+-------<font></font>
+ 29074 | Activity   | LogicalLauncherMain |       0 |   220<font></font>
+ 29070 | Activity   | WalWriterMain       |       0 |   220<font></font>
+ 29071 | Activity   | AutoVacuumMain      |       0 |   219<font></font>
+ 29069 | Activity   | BgWriterMain        |       0 |   220<font></font>
+ 29111 | Client     | ClientRead          |       0 |     3<font></font>
+ 29068 | Activity   | CheckpointerMain    |       0 |   220<font></font>
+(6 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サーバーが起動してから何も起こらなかったので、主な期待はアクティビティタイプ（サービスプロセスは作業が現れるのを待っている）とクライアント（psqlはユーザーがリクエストを送信するのを待っている）です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+デフォルト設定（</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_wait_sampling.profile_period</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータ</font><font style="vertical-align: inherit;">）では、サンプリング周期は10ミリ秒です。つまり、値は1秒あたり100回保存されます。</font><font style="vertical-align: inherit;">したがって、期待期間を秒単位で見積もるには、countの値を100で割る必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+期待値がどのプロセスに属するかを理解するには、pg_stat_activityビューをリクエストに追加します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> p.pid, a.backend_type, a.application_name <span class="hljs-keyword">AS</span> app,<font></font>
+          p.event_type, p.event, p.count<font></font>
+<span class="hljs-keyword">FROM</span> pg_wait_sampling_profile p
+  <span class="hljs-keyword">LEFT JOIN</span> pg_stat_activity a <span class="hljs-keyword">ON</span> p.pid = a.pid
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> p.pid, p.count <span class="hljs-keyword">DESC</span>;
+</code></pre><pre><code class="plaintext hljs">  pid  |         backend_type         | app  | event_type |        event         | count <font></font>
+-------+------------------------------+------+------------+----------------------+-------<font></font>
+ 29068 | checkpointer                 |      | Activity   | CheckpointerMain     |   222<font></font>
+ 29069 | background writer            |      | Activity   | BgWriterMain         |   222<font></font>
+ 29070 | walwriter                    |      | Activity   | WalWriterMain        |   222<font></font>
+ 29071 | autovacuum launcher          |      | Activity   | AutoVacuumMain       |   221<font></font>
+ 29074 | logical replication launcher |      | Activity   | LogicalLauncherMain  |   222<font></font>
+ 29111 | client backend               | psql | Client     | ClientRead           |     4<font></font>
+ 29111 | client backend               | psql | IPC        | MessageQueueInternal |     1<font></font>
+(7 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+pgbenchをロードして、画像がどのように変化するかを見てみましょう。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ pgbench -i test
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+収集したプロファイルをゼロにリセットし、別のプロセスで30秒間テストを実行します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_wait_sampling_reset_profile();
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ pgbench -T 30 test
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+pgbenchプロセスが完了する前にリクエストを完了する必要があります。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> p.pid, a.backend_type, a.application_name <span class="hljs-keyword">AS</span> app,<font></font>
+          p.event_type, p.event, p.count<font></font>
+<span class="hljs-keyword">FROM</span> pg_wait_sampling_profile p
+  <span class="hljs-keyword">LEFT JOIN</span> pg_stat_activity a <span class="hljs-keyword">ON</span> p.pid = a.pid
+<span class="hljs-keyword">WHERE</span> a.application_name = <span class="hljs-string">'pgbench'</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> p.pid, p.count <span class="hljs-keyword">DESC</span>;
+</code></pre><pre><code class="plaintext hljs">  pid  |  backend_type  |   app   | event_type |   event    | count <font></font>
+-------+----------------+---------+------------+------------+-------<font></font>
+ 29148 | client backend | pgbench | IO         | WALWrite   |     8<font></font>
+ 29148 | client backend | pgbench | Client     | ClientRead |     1<font></font>
+(2 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もちろん、pgbenchプロセスの期待値は、特定のシステムによって多少異なります。</font><font style="vertical-align: inherit;">私たちのケースでは、ログエントリ（IO / WALWrite）を待機している可能性が非常に高いですが、ほとんどの場合、プロセスはアイドル状態ではなく、役立つと思われる何かに従事していました。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ライトロック</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サンプリング時に期待値がないことは、期待値がないことを意味しないことを常に覚えておく必要があります。サンプリング周期（この例では100分の1秒）よりも短い場合、単純にサンプルに分類できませんでした。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、ライトロックはプロファイルに表示されませんでしたが、長期間データを収集した場合に表示されます。それらを確実に確認するために、ファイルシステムを人為的に遅くすることができます。たとえば、</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">FUSE</font></a><font style="vertical-align: inherit;">ファイルシステム上に構築された</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">slowfs</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プロジェクトを使用し</font><font style="vertical-align: inherit;">ます</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">
+これは、I / O操作が1/10秒かかる場合に同じテストで確認できるものです。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_wait_sampling_reset_profile();
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ pgbench -T 30 test
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> p.pid, a.backend_type, a.application_name <span class="hljs-keyword">AS</span> app,<font></font>
+          p.event_type, p.event, p.count<font></font>
+<span class="hljs-keyword">FROM</span> pg_wait_sampling_profile p
+  <span class="hljs-keyword">LEFT JOIN</span> pg_stat_activity a <span class="hljs-keyword">ON</span> p.pid = a.pid
+<span class="hljs-keyword">WHERE</span> a.application_name = <span class="hljs-string">'pgbench'</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> p.pid, p.count <span class="hljs-keyword">DESC</span>;
+</code></pre><pre><code class="plaintext hljs">  pid  |  backend_type  |   app   | event_type |     event      | count <font></font>
+-------+----------------+---------+------------+----------------+-------<font></font>
+ 29240 | client backend | pgbench | IO         | WALWrite       |  1445<font></font>
+ 29240 | client backend | pgbench | LWLock     | WALWriteLock   |   803<font></font>
+ 29240 | client backend | pgbench | IO         | DataFileExtend |    20<font></font>
+(3 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+pgbenchプロセスの主な期待は、I / O、またはコミットごとに同期モードで実行されるログエントリに関連しています。</font><font style="vertical-align: inherit;">（上記の例に示されているように）ログをディスクに書き込むことはWALWriteLockライトロックによって保護されているため、このロックはプロファイルにも存在します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クリップバッファー</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファの固定を確認するには、開いているカーソルがピンを保持しているため、次の行の読み取りが速くなるという事実を利用します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+トランザクションを開始し、カーソルを開いて1つの行を選択します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">BEGIN</span>;<font></font>
+=&gt; <span class="hljs-keyword">DECLARE</span> c <span class="hljs-keyword">CURSOR</span> <span class="hljs-keyword">FOR</span> <span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> pgbench_history;<font></font>
+=&gt; <span class="hljs-keyword">FETCH</span> c;
+</code></pre><pre><code class="plaintext hljs"> tid | bid |  aid  | delta |           mtime            | filler <font></font>
+-----+-----+-------+-------+----------------------------+--------<font></font>
+   9 |   1 | 35092 |   477 | 2019-09-04 16:16:18.596564 | <font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファが固定されていることを確認します（pinning_backends）：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> pg_buffercache
+<span class="hljs-keyword">WHERE</span> relfilenode = pg_relation_filenode(<span class="hljs-string">'pgbench_history'</span>)
+<span class="hljs-keyword">AND</span> relforknumber = <span class="hljs-number">0</span> \gx
+</code></pre><pre><code class="plaintext hljs">-[ RECORD 1 ]----+------<font></font>
+bufferid         | 190<font></font>
+relfilenode      | 47050<font></font>
+reltablespace    | 1663<font></font>
+reldatabase      | 16386<font></font>
+relforknumber    | 0<font></font>
+relblocknumber   | 0<font></font>
+isdirty          | t<font></font>
+usagecount       | 1<font></font>
+pinning_backends | 1     &lt;--   1 <font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テーブル</font><font style="vertical-align: inherit;">を</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">クリアし</font></a><font style="vertical-align: inherit;">ます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">|  =&gt; <span class="hljs-keyword">SELECT</span> pg_backend_pid();
+</code></pre><pre><code class="plaintext hljs">|   pg_backend_pid <font></font>
+|  ----------------<font></font>
+|            29367<font></font>
+|  (1 row)<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs">|  =&gt; <span class="hljs-keyword">VACUUM</span> <span class="hljs-keyword">VERBOSE</span> pgbench_history;
+</code></pre><pre><code class="plaintext hljs">|  INFO:  vacuuming "public.pgbench_history"<font></font>
+|  INFO:  "pgbench_history": found 0 removable, 0 nonremovable row versions in 1 out of 1 pages<font></font>
+|  DETAIL:  0 dead row versions cannot be removed yet, oldest xmin: 732651<font></font>
+|  There were 0 unused item pointers.<font></font>
+</code></pre><pre><code class="plaintext hljs">|  Skipped 1 page due to buffer pins, 0 frozen pages.
+</code></pre><pre><code class="plaintext hljs">|  0 pages are entirely empty.<font></font>
+|  CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.00 s.<font></font>
+|  VACUUM<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ご覧のように、ページがスキップされました（バッファピンのために1ページがスキップされました）。</font><font style="vertical-align: inherit;">実際、ピン留めされたバッファのページから行バージョンを物理的に削除することは禁止されているため、クリーニングはそれを処理できません。</font><font style="vertical-align: inherit;">しかし、クリーニングは待機しません-ページは次回処理されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして今、私たちは</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">冷凍で掃除を</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">行います</font><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">|  =&gt; <span class="hljs-keyword">VACUUM</span> <span class="hljs-keyword">FREEZE</span> <span class="hljs-keyword">VERBOSE</span> pgbench_history;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+明確に要求された凍結では、凍結マップでマークされていない単一のページをスキップすることはできません。そうしないと、pg_class.relfrozenxidの凍結されていないトランザクションの最大経過時間を減らすことができません。</font><font style="vertical-align: inherit;">したがって、クリーンアップはカーソルが閉じるまでハングします。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> age(relfrozenxid) <span class="hljs-keyword">FROM</span> pg_class <span class="hljs-keyword">WHERE</span> <span class="hljs-type">oid</span> = <span class="hljs-string">'pgbench_history'</span>::<span class="hljs-type">regclass</span>;
+</code></pre><pre><code class="plaintext hljs"> age <font></font>
+-----<font></font>
+  27<font></font>
+(1 row)<font></font>
+</code></pre><pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">COMMIT</span>; <span class="hljs-comment">--   </span>
+</code></pre><br>
+<pre><code class="plaintext hljs">|  INFO:  aggressively vacuuming "public.pgbench_history"<font></font>
+|  INFO:  "pgbench_history": found 0 removable, 26 nonremovable row versions in 1 out of 1 pages<font></font>
+|  DETAIL:  0 dead row versions cannot be removed yet, oldest xmin: 732651<font></font>
+|  There were 0 unused item pointers.<font></font>
+</code></pre><pre><code class="plaintext hljs">|  Skipped 0 pages due to buffer pins, 0 frozen pages.
+</code></pre><pre><code class="plaintext hljs">|  0 pages are entirely empty.<font></font>
+|  CPU: user: 0.00 s, system: 0.00 s, elapsed: 3.01 s.<font></font>
+|  VACUUM<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> age(relfrozenxid) <span class="hljs-keyword">FROM</span> pg_class <span class="hljs-keyword">WHERE</span> <span class="hljs-type">oid</span> = <span class="hljs-string">'pgbench_history'</span>::<span class="hljs-type">regclass</span>;
+</code></pre><pre><code class="plaintext hljs"> age <font></font>
+-----<font></font>
+   0<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さて、VACUUMコマンドが実行された2番目のpsqlセッションの期待プロファイルを見てみましょう。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> p.pid, a.backend_type, a.application_name <span class="hljs-keyword">AS</span> app,<font></font>
+          p.event_type, p.event, p.count<font></font>
+<span class="hljs-keyword">FROM</span> pg_wait_sampling_profile p
+  <span class="hljs-keyword">LEFT JOIN</span> pg_stat_activity a <span class="hljs-keyword">ON</span> p.pid = a.pid
+<span class="hljs-keyword">WHERE</span> p.pid = <span class="hljs-number">29367</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> p.pid, p.count <span class="hljs-keyword">DESC</span>;
+</code></pre><pre><code class="plaintext hljs">  pid  |  backend_type  | app  | event_type |   event    | count <font></font>
+-------+----------------+------+------------+------------+-------<font></font>
+ 29367 | client backend | psql | BufferPin  | BufferPin  |   294<font></font>
+ 29367 | client backend | psql | Client     | ClientRead |    10<font></font>
+(2 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+待機タイプBufferPinは、フラッシュがバッファーが解放されるのを待っていたことを示します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、ロックが完了したと想定します。</font><font style="vertical-align: inherit;">ご静聴ありがとうございました！</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja466183/index.html">ClickHouseのスマート文字列処理アルゴリズム</a></li>
+<li><a href="../ja466187/index.html">Unity3dのビジュアルロジックエディター。パート2</a></li>
+<li><a href="../ja466191/index.html">アメリカにおけるネットワーク中立性のための戦いについての主なことは、出来事の年表と現在の状況です</a></li>
+<li><a href="../ja466193/index.html">RSSフィードからのカスタムMailChimp自動フィード</a></li>
+<li><a href="../ja466197/index.html">PVS-Studio 7.04</a></li>
+<li><a href="../ja466201/index.html">科学をITに任せてテスターに​​なる方法：1つのキャリアの歴史</a></li>
+<li><a href="../ja466203/index.html">サンクトペテルブルクのTechdir Day。ビール、ピザ、マイク2本</a></li>
+<li><a href="../ja466211/index.html">Android 10のプロジェクトメインライン</a></li>
+<li><a href="../ja466213/index.html">候補者プロファイルを作成する4つのステップ</a></li>
+<li><a href="../ja466215/index.html">モデル指向のデザイン。例として航空熱交換器を使用した信頼性の高いモデルの作成</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

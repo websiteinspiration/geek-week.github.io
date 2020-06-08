@@ -1,0 +1,583 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏼‍🚀 🍇 🤾🏿 PostgreSQLのWAL：4.ログのセットアップ 🥀 👨🏾‍🔧 ⛔️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="そのため、バッファキャッシュのデバイスについて知り、その例を使用して、障害時にRAMの内容が失われると、復元するために事前書き込みログが必要になることに気付きました。定期的に実行されるチェックポイントにより、必要なログファイルのサイズと回復時間が制限されます。
+ 
+ 以前の記事では、ジャーナルに関連...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQLのWAL：4.ログのセットアップ</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/461523/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">そのため、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファキャッシュの</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">デバイスについて知り、</font><font style="vertical-align: inherit;">その例を使用して、障害時にRAMの内容が失われると、復元するために</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">事前書き込みログが</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">必要になることに気付きました</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">定期的に実行される</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チェックポイント</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">により、必要なログファイルのサイズと回復時間が制限され</font><font style="vertical-align: inherit;">ます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以前の記事では、ジャーナルに関連するかなり多数の重要な設定を何らかの方法ですでに見てきました。</font><font style="vertical-align: inherit;">この記事（このシリーズの最後の記事）では、まだ議論されていないチューニングの問題、つまりログレベルとその目的、およびロギングの信頼性とパフォーマンスについて検討します。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ログレベル</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事前記録ログの主な目的は、障害から回復する機能を提供することです。</font><font style="vertical-align: inherit;">ただし、それでもジャーナルを保持する必要がある場合は、他のタスクに適応させて、一定量の追加情報を追加することができます。</font><font style="vertical-align: inherit;">ロギングにはいくつかのレベルがあります。</font><font style="vertical-align: inherit;">これらは</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wal_level</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメーターによって設定され、</font><font style="vertical-align: inherit;">次の各レベルのログに、前のレベルのログに入るすべてのものが含まれ、さらに何か新しいものが含まれるように編成されています。</font></font><br>
+<a name="habracut"></a><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最小限</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+可能な最小レベルは、値</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wal_level</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> = minimal </font><font style="vertical-align: inherit;">によって設定され、</font><font style="vertical-align: inherit;">障害後の回復のみを保証します。</font><font style="vertical-align: inherit;">スペースを節約するために、大量のデータ処理に関連する操作（CREATE TABLE AS SELECTやCREATE INDEXなど）はログに記録されません。</font><font style="vertical-align: inherit;">代わりに、必要なデータがすぐにディスクに書き込まれ、新しいオブジェクトがシステムディレクトリに追加され、トランザクションがコミットされると表示されます。</font><font style="vertical-align: inherit;">操作中に障害が発生した場合、すでに記録されているデータは見えないままであり、整合性に違反しません。</font><font style="vertical-align: inherit;">操作の完了後に障害が発生した場合、必要なものはすべてすでにディスクに到着しているため、ログに記録する必要はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+様子を見よう。</font><font style="vertical-align: inherit;">最初に、必要なレベルを設定します（このため、別のパラメーターを変更する必要もあります</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-max_wal_senders</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">SET</span> wal_level = minimal;<font></font>
+=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">SET</span> max_wal_senders = <span class="hljs-number">0</span>;
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main restart
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+レベルを変更すると、サーバーの再起動が必要になることに注意してください。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログの現在の位置を覚えておいてください：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/353927BC<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、テーブルを作成し（CREATE TABLE AS SELECT）、再度ログに位置を書き込みます。</font><font style="vertical-align: inherit;">この場合、SELECTステートメントで選択されるデータの量は重要ではないため、1行に制限します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> wallevel <span class="hljs-keyword">AS</span>
+  <span class="hljs-keyword">SELECT</span> <span class="hljs-number">1</span> <span class="hljs-keyword">AS</span> n;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/353A7DFC<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使い慣れたpg_waldumpユーティリティを使用して、ログエントリを見てみましょう。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_waldump -p /var/lib/postgresql/11/main/pg_wal -s 0/353927BC -e 0/353A7DFC
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もちろん、いくつかの詳細はローンチごとに異なる場合がありますが、この場合はこれが実際に起こったことです。</font><font style="vertical-align: inherit;">ヒープ2マネージャーエントリはクリーニングを指します。ここでは、システムカタログ内のテーブルの1つのページ上のクリーニングです（システムオブジェクトは、relの「短い」番号によって肉眼で簡単に区別されます）。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: Heap2       len (rec/tot):     59/  7587, tx:          0, lsn: 0/353927BC, prev 0/35392788, desc: CLEAN remxid 101126, blkref #0: rel 1663/16386/1247 blk 8 FPW
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、作成するテーブルの次のOIDの取得に関するレコードがあります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: XLOG        len (rec/tot):     30/    30, tx:          0, lsn: 0/35394574, prev 0/353927BC, desc: NEXTOID 82295
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テーブルの実際の作成：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: Storage     len (rec/tot):     42/    42, tx:          0, lsn: 0/35394594, prev 0/35394574, desc: CREATE base/16386/74103
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、テーブルへのデータの挿入はログに記録されません。</font><font style="vertical-align: inherit;">次に、さまざまなテーブルとインデックスに行を挿入することに関する多数のエントリがあります-このPostgreSQLは、作成されたテーブルをシステムディレクトリに登録します（省略形で示します）。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: Heap        len (rec/tot):    203/   203, tx:     101127, lsn: 0/353945C0, prev 0/35394594, desc: INSERT off 71, blkref #0: rel 1663/16386/1247 blk 8<font></font>
+rmgr: Btree       len (rec/tot):     53/   685, tx:     101127, lsn: 0/3539468C, prev 0/353945C0, desc: INSERT_LEAF off 37, blkref #0: rel 1663/16386/2703 blk 2 FPW<font></font>
+...<font></font>
+rmgr: Btree       len (rec/tot):     53/  2393, tx:     101127, lsn: 0/353A747C, prev 0/353A6788, desc: INSERT_LEAF off 10, blkref #0: rel 1664/0/1233 blk 1 FPW<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして最後に、トランザクションの固定：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: Transaction len (rec/tot):     34/    34, tx:     101127, lsn: 0/353A7DD8, prev 0/353A747C, desc: COMMIT 2019-07-23 18:59:34.923124 MSK
+</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レプリカ</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バックアップからシステムを復元する場合、ファイルシステムのある状態から開始し、データを回復ポイントに徐々に移動して、アーカイブされたジャーナルエントリを再生します。そのようなレコードの数は非常に多く（たとえば、数日）になる可能性があります。つまり、回復期間は1つの制御点ではなく多くの制御点をカバーします。したがって、ログの最小レベルでは不十分であることは明らかです。ログに記録されていない操作がある場合、それを繰り返す必要があることはわかりません。バックアップから復元するには、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">すべての</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">操作を</font><font style="vertical-align: inherit;">ログに記録する必要があります</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同じことがレプリケーションにも当てはまります。ログに記録されていないものはすべてレプリカに転送されず、複製されません。しかし、レプリカでリクエストを実行したい場合、それはまだ複雑です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まず、プライマリサーバーで発生する排他ロックについての情報が必要です。これは、レプリカの要求と競合する可能性があるためです。このようなロックはログに記録され、レプリカに適用されます（起動プロセスに代わって）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データスナップショット</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を作成できる必要があります</font><font style="vertical-align: inherit;">。そのためには、</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">記憶</font></a><font style="vertical-align: inherit;">にあるように</font><font style="vertical-align: inherit;">、進行中のトランザクションに関する情報が必要です。レプリカの場合、ローカルトランザクションだけでなく、メインサーバー上のトランザクションについても話します。この情報を送信する唯一の方法は、定期的にログに書き込むことです（これは15秒ごとに発生します）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バックアップから復元する機能と物理レプリケーションの可能性の両方を保証するログレベルは、値wal_level = </font><em><font style="vertical-align: inherit;">replica</font></em><font style="vertical-align: inherit;">によって設定されます。</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">（バージョン9.6以前は、archiveとhot_standbyの2つの別々のレベルがありましたが、それらは1つの共通の</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+レベルに</font><font style="vertical-align: inherit;">統合されました。）</font><font style="vertical-align: inherit;">PostgreSQL 10以降、このレベルはデフォルトで設定されていました（それ以前は最小でした）。</font><font style="vertical-align: inherit;">したがって、パラメーターをデフォルト値にリセットするだけです。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">RESET</span> wal_level;<font></font>
+=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">RESET</span> max_wal_senders;
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main restart
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テーブルを削除し、前回とまったく同じ一連のアクションを繰り返します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">DROP</span> <span class="hljs-keyword">TABLE</span> wallevel;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/353AF21C<font></font>
+(1 row)<font></font>
+</code></pre><pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> wallevel <span class="hljs-keyword">AS</span>
+  <span class="hljs-keyword">SELECT</span> <span class="hljs-number">1</span> <span class="hljs-keyword">AS</span> n;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/353BE51C<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、仕訳を確認します。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_waldump -p /var/lib/postgresql/11/main/pg_wal -s 0/353AF21C -e 0/353BE51C
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クリーニング、OIDの取得、テーブルの作成、システムディレクトリへの登録-現時点では、すべてが以前と同じです。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: Heap2       len (rec/tot):     58/    58, tx:          0, lsn: 0/353AF21C, prev 0/353AF044, desc: CLEAN remxid 101128, blkref #0: rel 1663/16386/1247 blk 8<font></font>
+rmgr: XLOG        len (rec/tot):     30/    30, tx:          0, lsn: 0/353AF258, prev 0/353AF21C, desc: NEXTOID 82298<font></font>
+rmgr: Storage     len (rec/tot):     42/    42, tx:          0, lsn: 0/353AF278, prev 0/353AF258, desc: CREATE base/16386/74106<font></font>
+rmgr: Heap        len (rec/tot):    203/   203, tx:     101129, lsn: 0/353AF2A4, prev 0/353AF278, desc: INSERT off 73, blkref #0: rel 1663/16386/1247 blk 8<font></font>
+rmgr: Btree       len (rec/tot):     53/   717, tx:     101129, lsn: 0/353AF370, prev 0/353AF2A4, …<font></font>
+rmgr: Btree       len (rec/tot):     53/  2413, tx:     101129, lsn: 0/353BD954, prev 0/353BCC44, desc: INSERT_LEAF off 10, blkref #0: rel 1664/0/1233 blk 1 FPW<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、何か新しいもの。</font><font style="vertical-align: inherit;">スタンバイマネージャーに関連する排他ロックの記録-この場合、トランザクション番号をブロックしています（なぜ必要なのか、次の一連の記事で詳しく説明します）。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: Standby     len (rec/tot):     42/    42, tx:     101129, lsn: 0/353BE2D8, prev 0/353BD954, desc: LOCK xid 101129 db 16386 rel 74106
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、これはテーブルに行を挿入することに関するレコードです（ファイル番号relを上記のCREATEレコードで示したものと比較してください）。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: Heap        len (rec/tot):     59/    59, tx:     101129, lsn: 0/353BE304, prev 0/353BE2D8, desc: INSERT+INIT off 1, blkref #0: rel 1663/16386/74106 blk 0
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コミットレコード：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: Transaction len (rec/tot):    421/   421, tx:     101129, lsn: 0/353BE340, prev 0/353BE304, desc: COMMIT 2019-07-23 18:59:37.870333 MSK; inval msgs: catcache 74 catcache 73 catcache 74 catcache 73 catcache 50 catcache 49 catcache 7 catcache 6 catcache 7 catcache 6 catcache 7 catcache 6 catcache 7 catcache 6 catcache 7 catcache 6 catcache 7 catcache 6 catcache 7 catcache 6 snapshot 2608 relcache 74106 snapshot 1214
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、定期的に発生し、完了したトランザクションに関連付けられていない別のレコードは、スタンバイマネージャーを参照し、現在進行中のトランザクションについてレポートします。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">rmgr: Standby     len (rec/tot):     50/    50, tx:          0, lsn: 0/353BE4E8, prev 0/353BE340, desc: RUNNING_XACTS nextXid 101130 latestCompletedXid 101129 oldestRunningXid 101130
+</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">論理的</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最後に、最後のレベルはパラメーター</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wal_level</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> = logicalの</font><font style="vertical-align: inherit;">値によって設定され、</font><font style="vertical-align: inherit;">論理デコードと論理複製の可能性を提供します。</font><font style="vertical-align: inherit;">公開サーバーで有効にする必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ジャーナルエントリの観点から見ると、このレベルはレプリカと実質的に違いはありません。複製元に関連するエントリと、アプリケーションログに追加できる任意の論理エントリが追加されます。</font><font style="vertical-align: inherit;">システムカタログの変更を追跡するには、データのスナップショットを作成する必要があるため、基本的に、論理デコードは進行中のトランザクションに関する情報に依存します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは、バックアップとレプリケーションの操作の詳細については説明しません。これは、一連の記事の大きなトピックです。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">記録の信頼性</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ジャーナリングメカニズムは信頼できるものであり、あらゆる状況での回復の可能性を保証する必要があることは明らかです（もちろん、データキャリアの損傷とは関係ありません）。</font><font style="vertical-align: inherit;">信頼性は多くの要因の影響を受けます。これらの要因のうち、キャッシング、データの破損、および記録の原子性について検討します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キャッシング</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+不揮発性ストレージ（ハードディスクドライブなど）へのデータパスには多数のキャッシュがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プログラム（いずれか、ただしこの場合はPostgreSQL）がオペレーティングシステムにディスクへの書き込みを要求すると、オペレーティングシステムはRAMのキャッシュにデータを転送します。実際の記録は、オペレーティングシステムのI / Oスケジューラーの設定に応じて、非同期で行われます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+OSがデータの書き込みを決定すると、それらはドライブ（ハードディスク）のキャッシュに分類されます。ドライブエレクトロニクスは、記録を遅らせることもできます。たとえば、同時に記録する方が有利なグループでデータを収集します。また、RAIDコントローラーが使用されている場合、OSとドライブの間に別のレベルのキャッシュが表示されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、特別な対策を講じないと、データが実際に安全に保管される時期が完全に不明確になります。これは通常は重要ではありませんが、PostgreSQLがデータが安全に書き込まれていることを確認する必要がある重要な場所があります。まず、これはジャーナリングです（ジャーナルエントリがディスクに到達しなかった場合は、RAMの残りの内容と共に消えます）およびチェックポイント（ダーティページが実際にディスクに書き込まれていることを確認する必要があります）。ただし、ジャーナル化されていない操作が最小レベルで実行されるなど、他の状況もあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+オペレーティングシステムは、不揮発性メモリへのデータの即時書き込みを保証する必要があるツールを提供します。いくつかのオプションがありますが、主なものは2つあります。記録後に同期コマンドが与えられる（fsync、fdatasync）、またはファイルを開く（またはファイルに書き込む）ときに、OSキャッシュをバイパスして同期または直接記録するための特別なフラグが示されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログについては、pg_test_fsyncユーティリティを使用して、特定のOSと特定のファイルシステムに最適な方法を選択できます</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">これは、構成パラメーター</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wal_sync_methodに</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">インストールされます</font><font style="vertical-align: inherit;">。通常のファイルは常にfsyncを使用して同期されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+微妙な点は、方法を選択するときは、機器の特性を考慮に入れなければならないということです。</font><font style="vertical-align: inherit;">たとえば、バックアップバッテリーでサポートされているコントローラーを使用する場合、バッテリーで電源障害が発生した場合にデータを保存できるため、そのキャッシュを使用しない理由はありません。</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ドキュメントに</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、この主題に関する</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">多くの詳細</font></a><font style="vertical-align: inherit;">が含ま</font><font style="vertical-align: inherit;">れています。</font></font><br>
+</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+いずれにせよ、同期はコストがかかり、絶対に必要な頻度でしか行われません（パフォーマンスについて話すときは、この問題に少し戻ります）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般的に、同期はオフにすることができます（</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fsync</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータがこれを担当します</font><font style="vertical-align: inherit;">）が、この場合、ストレージの信頼性については忘れてください。</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fsyncを</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">無効にすると</font><font style="vertical-align: inherit;">、いつでもデータが回復不能に失われる可能性があることに同意したことになります。</font><font style="vertical-align: inherit;">おそらく、このオプションを使用する唯一の合理的なオプションは、データを別のソースから簡単に復元できる場合（たとえば、最初の移行中）に、一時的に生産性を向上させることです。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">データ破損</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+機器が不完全で、インターフェイスケーブルなどを介してデータを送信するときに、メディア上のデータが損傷する可能性があります。これらのエラーには、ハードウェアレベルで処理されるものとそうでないものがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+問題を適時に検出するために、ジャーナルエントリには常にチェックサムが付いています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データページはチェックサムで保護することもできます。現時点では、これはクラスターが初期化されている場合にのみ実行できますが、PostgreSQL 12では、pg_checksumsユーティリティを使用してそれらをオン/オフにすることができます（まだオンザフライではありませんが、サーバーが停止している場合のみ）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+本番環境では、計算と制御のオーバーヘッドにもかかわらず、チェックサムを含める必要があります。これにより、時間内に障害が検出されない可能性が低くなります。</font></font><br>
+<br>
+<blockquote>,   .<br>
+-,         —       ,       .   <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">pg_probackup</a>         .<br>
+-, ,  ,   —      «» ,    .<br>
+-,        .      (,   XACT)   .<br>
+.<br>
+</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それがどのように機能するか見てみましょう。</font><font style="vertical-align: inherit;">まず、チェックサムが有効になっていることを確認します（Debianのようなシステムにパッケージをインストールする場合、これはデフォルトでは当てはまりません）。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SHOW</span> data_checksums;
+</code></pre><pre><code class="plaintext hljs"> data_checksums<font></font>
+----------------<font></font>
+ on<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">data_checksums</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+パラメータ</font><font style="vertical-align: inherit;">は読み取り専用です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以下は、テーブルが配置されているファイルです。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_relation_filepath(<span class="hljs-string">'wallevel'</span>);
+</code></pre><pre><code class="plaintext hljs"> pg_relation_filepath<font></font>
+----------------------<font></font>
+ base/16386/24890<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サーバーを停止し、ゼロページの数バイトを変更します。たとえば、LSNヘッダーから最後のジャーナルエントリを削除します。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main stop
+</code></pre><br>
+<pre><code class="plaintext hljs">postgres$ dd if=/dev/zero of=/var/lib/postgresql/11/main/base/16386/24890 oflag=dsync conv=notrunc bs=1 count=8
+</code></pre><pre><code class="plaintext hljs">8+0 records in<font></font>
+8+0 records out<font></font>
+8 bytes copied, 0,0083022 s, 1,0 kB/s<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+原則として、サーバーは停止できませんでした。</font><font style="vertical-align: inherit;">ページがディスクに書き込まれ、キャッシュから強制的に取り出されれば十分です（それ以外の場合、サーバーはキャッシュからページを操作します）。</font><font style="vertical-align: inherit;">しかし、そのようなシナリオは再現がより困難です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、サーバーを起動して、テーブルを読み取ってみます。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main start
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> wallevel;
+</code></pre><pre><code class="plaintext hljs">WARNING:  page verification failed, calculated checksum 23222 but expected 50884<font></font>
+ERROR:  invalid page in block 0 of relation base/16386/24890<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、バックアップからデータを復元できない場合はどうなりますか？</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ignore_checksum_failure</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータを</font><font style="vertical-align: inherit;">使用</font><em><font style="vertical-align: inherit;">する</font></em><font style="vertical-align: inherit;">と、テーブルを読み取ろうとすることができ</font><em><font style="vertical-align: inherit;">ます</font></em><font style="vertical-align: inherit;">が、当然、データが歪む危険があります。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SET</span> ignore_checksum_failure = <span class="hljs-keyword">on</span>;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> wallevel;
+</code></pre><pre><code class="plaintext hljs">WARNING:  page verification failed, calculated checksum 23222 but expected 50884<font></font>
+ n<font></font>
+---<font></font>
+ 1<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+もちろん、この場合、データ自体ではなく、ページタイトルのみを台無しにしたため、すべてが成功しています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして一瞬。チェックサムがオンになると、プロンプトのビットがログに書き込まれます（私たちは</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">調査し</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、でも非本質的な、いかなる変更するので、以前の彼らを）チェックサムの変化にもリードビット。チェックサムがオフになっていると、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wal_log_hints</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータがヒントビットを</font><em><font style="vertical-align: inherit;">ログに</font></em><font style="vertical-align: inherit;">書き込む役割を果たし</font><em><font style="vertical-align: inherit;">ます</font></em><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ツールチップビットへの変更は常に</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">フルページイメージ</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（FPI、フルページイメージ）としてログに記録されるため、ログのサイズが順番に大きくなります。この場合、</font><em><font style="vertical-align: inherit;">wal_compression</font></em><font style="vertical-align: inherit;">パラメータを使用して画像全体の圧縮を有効にすることは理に</font><em><font style="vertical-align: inherit;">かなってい</font></em><font style="vertical-align: inherit;">ます</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（このパラメーターはバージョン9.5で登場）。</font><font style="vertical-align: inherit;">以下では、具体的な数値を見ていきます。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">原子性記録</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして最後に、レコードの原子性の問題があります。</font><font style="vertical-align: inherit;">データベースページは少なくとも8 KB（16または32 KBになる可能性があります）を使用し、低レベルでは、記録は通常より小さなブロック（通常512バイトまたは4 KB）で発生します。</font><font style="vertical-align: inherit;">したがって、停電が発生した場合、データページが部分的に記録されることがあります。</font><font style="vertical-align: inherit;">回復中に、そのようなページに通常のジャーナルエントリを適用しても意味がないことは明らかです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+保護のため、PostgreSQLでは</font><font style="vertical-align: inherit;">、コントロールポイントの開始後に</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ページ</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">が最初に変更されたとき</font><em><font style="vertical-align: inherit;">に、ページの完全な画像を</font></em><font style="vertical-align: inherit;">ログに書き込むことができます</font><font style="vertical-align: inherit;">（ツールチップビットが変更されると、同じ画像が記録されます）。</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">full_page_writes</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータ</font><em><font style="vertical-align: inherit;">はこれを制御し</font></em><font style="vertical-align: inherit;">、デフォルトで有効になっています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログの復元中にページイメージが検出されると、無条件に（LSNチェックなしで）ディスクに書き込まれます。これは、他のログレコードと同様に、チェックサムによって保護されているため、信頼性が高くなります。そして、すでに通常の仕訳がこの保証された正しい画像に適用されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PostgreSQLは未割り当て領域をページ全体のイメージから除外しますが（以前</font><font style="vertical-align: inherit;">にブロック</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">構造を</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">調べました</font></a><font style="vertical-align: inherit;">）、生成されるジャーナルエントリの量は大幅に増加します。すでに述べたように、画像全体を圧縮することで状況を改善できます（パラメーター</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wal_compression</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログのサイズの変化を何らかの形で感じるために、pgbenchユーティリティを使用して簡単な実験を行います。初期化しましょう：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ pgbench -i test
+</code></pre><pre><code class="plaintext hljs">dropping old tables...<font></font>
+creating tables...<font></font>
+generating data...<font></font>
+100000 of 100000 tuples (100%) done (elapsed 0.15 s, remaining 0.00 s)<font></font>
+vacuuming...<font></font>
+creating primary keys...<font></font>
+done.<font></font>
+</code></pre><br><font style="vertical-align: inherit;"></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">full_page_writes</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+パラメータ</font><em><font style="vertical-align: inherit;">が</font></em><font style="vertical-align: inherit;">有効になっています。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SHOW</span> full_page_writes;
+</code></pre><pre><code class="plaintext hljs"> full_page_writes<font></font>
+------------------<font></font>
+ on<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ブレークポイントを実行し、すぐにテストを30秒間実行します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CHECKPOINT</span>;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/38E04A08<font></font>
+(1 row)<font></font>
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ pgbench -T 30 test
+</code></pre><pre><code class="plaintext hljs">starting vacuum...end.<font></font>
+transaction type: TPC-B (sort of)<font></font>
+scaling factor: 1<font></font>
+query mode: simple<font></font>
+number of clients: 1<font></font>
+number of threads: 1<font></font>
+duration: 30 s<font></font>
+number of transactions actually processed: 26851<font></font>
+latency average = 1.117 ms<font></font>
+tps = 895.006720 (including connections establishing)<font></font>
+tps = 895.095229 (excluding connections establishing)<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/3A69C478<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログサイズ：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_size_pretty(<span class="hljs-string">'0/3A69C478'</span>::pg_lsn - <span class="hljs-string">'0/38E04A08'</span>::pg_lsn);
+</code></pre><pre><code class="plaintext hljs"> pg_size_pretty<font></font>
+----------------<font></font>
+ 25 MB<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">full_page_writesの</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チェックを外し</font><em><font style="vertical-align: inherit;">ます</font></em><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">SET</span> full_page_writes = <span class="hljs-keyword">off</span>;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_reload_conf();
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、実験を繰り返します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CHECKPOINT</span>;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/3A69C530<font></font>
+(1 row)<font></font>
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ pgbench -T 30 test
+</code></pre><pre><code class="plaintext hljs">starting vacuum...end.<font></font>
+transaction type: TPC-B (sort of)<font></font>
+scaling factor: 1<font></font>
+query mode: simple<font></font>
+number of clients: 1<font></font>
+number of threads: 1<font></font>
+duration: 30 s<font></font>
+number of transactions actually processed: 27234<font></font>
+latency average = 1.102 ms<font></font>
+tps = 907.783080 (including connections establishing)<font></font>
+tps = 907.895326 (excluding connections establishing)<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/3BE87658<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログサイズ：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_size_pretty(<span class="hljs-string">'0/3BE87658'</span>::pg_lsn - <span class="hljs-string">'0/3A69C530'</span>::pg_lsn);
+</code></pre><pre><code class="plaintext hljs"> pg_size_pretty<font></font>
+----------------<font></font>
+ 24 MB<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+はい、サイズは減少しましたが、予想されるほど重要ではありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その理由は、クラスターがデータページのチェックサムで初期化されるため、ツールチップビットを変更するときに、ページ全体のイメージをログに書き込む必要があるためです。</font><font style="vertical-align: inherit;">これらのデータ（私たちの場合）は総量の約半分を占めています。これは統計を見るとわかります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">postgres$ /usr/lib/postgresql/11/bin/pg_waldump --stats -p /var/lib/postgresql/11/main/pg_wal -s 0/3A69C530 -e 0/3BE87658
+</code></pre><pre><code class="plaintext hljs">Type              N      (%)   Record size      (%)   FPI size      (%)   <font></font>
+----              -      ---   -----------      ---   --------      ---   <font></font>
+XLOG           1721 (  1,03)         84329 (  0,77)   13916104 (100,00)        <font></font>
+Transaction   27235 ( 16,32)        926070 (  8,46)          0 (  0,00)          <font></font>
+Storage           1 (  0,00)            42 (  0,00)          0 (  0,00)              <font></font>
+CLOG              1 (  0,00)            30 (  0,00)          0 (  0,00)              <font></font>
+Standby           4 (  0,00)           240 (  0,00)          0 (  0,00)             <font></font>
+Heap2         27522 ( 16,49)       1726352 ( 15,76)          0 (  0,00)         <font></font>
+Heap         109691 ( 65,71)       8169121 ( 74,59)          0 (  0,00)         <font></font>
+Btree           756 (  0,45)         45380 (  0,41)          0 (  0,00)           <font></font>
+           --------               --------            --------                 <font></font>
+Total        166931               10951564 [44,04%]   13916104 [55,96%]  <font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コンパクトにするために、テーブルからゼロ行を削除しました。</font><font style="vertical-align: inherit;">合計行（合計）に注意を払い、画像全体のサイズ（FPIサイズ）を通常のレコードのサイズ（レコードサイズ）と比較します。</font><em><font style="vertical-align: inherit;">full_page_writes</font></em></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+パラメータ</font><font style="vertical-align: inherit;">は、それ自体が使用するファイルシステムとハードウェアがアトミック記録を保証する場合にのみ無効にできます。</font><font style="vertical-align: inherit;">しかし、見てわかるように、これには大きな理由はありません（チェックサムが含まれていると仮定）。</font><font style="vertical-align: inherit;">
+次に、圧縮がどのように役立つかを見てみましょう。</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">SET</span> full_page_writes = <span class="hljs-keyword">on</span>;<font></font>
+=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">SET</span> wal_compression = <span class="hljs-keyword">on</span>;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_reload_conf();
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同じ実験を繰り返します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CHECKPOINT</span>;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/3BE87710<font></font>
+(1 row)<font></font>
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ pgbench -T 30 test
+</code></pre><pre><code class="plaintext hljs">starting vacuum...end.<font></font>
+transaction type: TPC-B (sort of)<font></font>
+scaling factor: 1<font></font>
+query mode: simple<font></font>
+number of clients: 1<font></font>
+number of threads: 1<font></font>
+duration: 30 s<font></font>
+number of transactions actually processed: 26833<font></font>
+latency average = 1.118 ms<font></font>
+tps = 894.405027 (including connections establishing)<font></font>
+tps = 894.516845 (excluding connections establishing)<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_current_wal_insert_lsn();
+</code></pre><pre><code class="plaintext hljs"> pg_current_wal_insert_lsn<font></font>
+---------------------------<font></font>
+ 0/3CBD3EA8<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ログサイズ：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_size_pretty(<span class="hljs-string">'0/3CBD3EA8'</span>::pg_lsn - <span class="hljs-string">'0/3BE87710'</span>::pg_lsn);
+</code></pre><pre><code class="plaintext hljs"> pg_size_pretty<font></font>
+----------------<font></font>
+ 13 MB<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+結論：（チェックサムまたは</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">full_page_writes</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">により</font><font style="vertical-align: inherit;">、つまりほとんどの場合）</font><font style="vertical-align: inherit;">多数の全ページ画像</font><font style="vertical-align: inherit;">が存在する場合、これはプロセッサーに負荷をかけるという事実にもかかわらず、圧縮を使用することはおそらく意味があります。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パフォーマンス</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常のサーバー操作中に、ログファイルの継続的な順次記録が行われます。</font><font style="vertical-align: inherit;">ランダムアクセスがないため、通常のHDDでも対応可能です。</font><font style="vertical-align: inherit;">ただし、このタイプのロードは、データファイルへのアクセス方法とは大きく異なります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、通常は、ログをサーバーのファイルシステムにマウントされている別の物理ディスク（またはディスクアレイ）に置くと便利です。</font><font style="vertical-align: inherit;">$ PGDATA / pg_walディレクトリの代わりに、対応するディレクトリへのシンボリックリンクを作成する必要があります。</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ログファイルを書き込むだけでなく読み取る必要がある状況がいくつかあります。</font><font style="vertical-align: inherit;">1つ目は、障害後の回復の理解できるケースです。</font><font style="vertical-align: inherit;">2番目はそれほど簡単ではありません。</font><font style="vertical-align: inherit;">ストリーミングレプリケーションが使用されており、レプリカがメインサーバーのRAMバッファー内にある間は、ジャーナルエントリを受信できません。</font><font style="vertical-align: inherit;">次に、walsenderプロセスは必要なデータをディスクから読み取る必要があります。</font><font style="vertical-align: inherit;">レプリケーションについては、これについて詳しく説明します。</font></font><br>
+</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ロギングは、次の2つのモードのいずれかで行われます。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">同期-トランザクションがコミットされると、このトランザクションに関するすべてのジャーナルエントリがディスク上にあるまで、作業の継続は不可能です。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">非同期-トランザクションはすぐに完了し、ログはバックグラウンドで書き込まれます。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同期モードは、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">synchronous_commit</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータによって決定され、</font><font style="vertical-align: inherit;">デフォルトで有効になっています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同期は実際の（つまり、遅い）I / Oに関連付けられているため、可能な限り少なくすることは有益です。これを行うために、トランザクションを完了してログを書き込むサービスプロセスは、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">commit_delay</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータで指定された短い休止時間をとります</font><font style="vertical-align: inherit;">。ただし、これは、システムに少なくとも</font><font style="vertical-align: inherit;">アクティブなトランザクションの</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">commit_siblings</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">がある場合にのみ発生し</font><font style="vertical-align: inherit;">ます。ここでの賭けは、待機時間中にいくつかのトランザクションが完了する時間を持ち、それらのレコードを一度に同期することが可能であるという事実にあります。これは、誰かがタクシーに降りる時間を確保するために、エレベーターのドアを保持する方法に似ています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+デフォルトのパラメーターは</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">commit_siblingsです。</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">= 5、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">commit_delay</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> = 0なので、実際には待機は発生しません。</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">commit_delayの</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">変更</font><font style="vertical-align: inherit;">は、多数の短いOLTPトランザクションを実行するシステムでのみ役立ちます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、プロセスはログをディスクにフラッシュして、必要なLSNにします（待機中に新しいエントリが追加された場合はさらに多くなります）。その後、トランザクションは完了したと見なされます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同期記録では、耐久性が保証されます（頭字語ACIDの文字D）。トランザクションがコミットされた場合、そのすべてのジャーナルエントリはすでにディスク上にあり、失われることはありません。反対に、同期記録では応答時間が長くなり（COMMITコマンドは同期が終了するまで制御を返しません）、システムのパフォーマンスが低下します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+非同期書き込みは、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">synchronous_commit</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> = off（またはローカル）を</font><font style="vertical-align: inherit;">設定することで取得できます</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+非同期記録中に、ログライタープロセスはジャーナルエントリをリセットし、待機サイクルを交互に繰り返します（これは</font><font style="vertical-align: inherit;">、デフォルトで</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wal_writer_delay</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> = 200msパラメーターによって設定されます）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次の待機後にウェイクアップすると、プロセスは、前回から完全なWALページが表示されたかどうかを確認します。存在する場合、プロセスは現在の埋められていないページを無視し、完全に埋められたページのみを記録します。 （真、常にすべてではない：記録は停止し、キャッシュの最後に達し、次回はキャッシュの最初から続行されます。）</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+単一のページがいっぱいでない場合、プロセスはログの現在の（不完全な）ページを書き込みます-何も起きていませんか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このアルゴリズムは、可能であれば同じページを数回同期しないことを目的としています。これは、変更の大規模なストリームにとって重要です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+非同期記録は、同期記録よりも効率的です。変更をコミットしても、記録を待つ必要はありません。ただし、信頼性は低下します。コミットと失敗の間の</font><font style="vertical-align: inherit;">経過時間</font><font style="vertical-align: inherit;">が3× </font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wal_writer_delay</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（デフォルトでは</font><em><font style="vertical-align: inherit;">0.5秒強）</font></em><font style="vertical-align: inherit;">未満の場合、失敗した場合にキャプチャーされたデータが失われる可能性があり&nbsp; </font><font style="vertical-align: inherit;">ます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+効率性または信頼性という難しい選択は、システム管理者に残ります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+注意：同期の無効化（</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">fsync</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">=オフ）、非同期モードでは回復は不可能になりません。障害が発生した場合でも、システムは一貫性のある状態を復元しますが、最新のトランザクションの一部がそこに存在しない可能性があります。</font><em><font style="vertical-align: inherit;">Synchronous_commit</font></em></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+パラメータ</font><font style="vertical-align: inherit;">は、個々のトランザクションの一部として設定できます。これにより、トランザクションの一部のみの信頼性を犠牲にすることにより、生産性を向上させることができます。たとえば、金融取引は常に同期して修正する必要があり、チャットメッセージが無視されることがあります。</font></font><em><font style="vertical-align: inherit;"></font></em><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際には、これらのモードは両方とも連動します。同期コミットを使用しても、長いトランザクションログは非同期に書き込まれ、WALバッファーを解放します。また、バッファキャッシュからページをリセットしたときに、対応するジャーナルエントリがまだディスク上にないことが判明した場合、同期モードですぐにリセットされます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+非同期コミットが何を与えるかを理解するために、このモードでpgbenchテストを繰り返します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">SET</span> synchronous_commit = <span class="hljs-keyword">off</span>;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> pg_reload_conf();
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ pgbench -T 30 test
+</code></pre><pre><code class="plaintext hljs">starting vacuum...end.<font></font>
+transaction type: TPC-B (sort of)<font></font>
+scaling factor: 1<font></font>
+query mode: simple<font></font>
+number of clients: 1<font></font>
+number of threads: 1<font></font>
+duration: 30 s<font></font>
+number of transactions actually processed: 45439<font></font>
+latency average = 0.660 ms<font></font>
+tps = 1514.561710 (including connections establishing)<font></font>
+tps = 1514.710558 (excluding connections establishing)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同期コミットでは、毎秒約900トランザクション（tps）、非同期コミット-1500を受け取りました。もちろん、実際の負荷がかかっている実際のシステムでは比率は異なりますが、短いトランザクションでは効果が大きくなる可能性があることは明らかです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この時点で、ジャーナリングに関する一連の記事は終了しました。</font><font style="vertical-align: inherit;">重要な事柄が舞台裏に残されている場合は、コメントを書くのは難しいことではありません。</font><font style="vertical-align: inherit;">ありがとうございます！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、ロックの世界でエキサイティングな冒険をしますが、それはまた別の話です。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja461505/index.html">あなたがプロになるのを妨げる初心者JavaScript開発者の8つのバグ</a></li>
+<li><a href="../ja461507/index.html">なぜGazprom NeftコーポレートアクセラレータStartupDriveを発売することにしたのですか？</a></li>
+<li><a href="../ja461509/index.html">旅行アシスタント：ガジェットとアクセサリーのセレクション</a></li>
+<li><a href="../ja461511/index.html">Python依存関係管理：アプローチの比較</a></li>
+<li><a href="../ja461519/index.html">﻿CおよびC ++に最適なコピーアンドペーストアルゴリズム。Haiku OSレシピコレクション</a></li>
+<li><a href="../ja461525/index.html">本当にアダプティブなスライダー（カルーセル）をどのように実行したか</a></li>
+<li><a href="../ja461527/index.html">DIY音響浮上</a></li>
+<li><a href="../ja461531/index.html">Tic Tac Toeパート6：フラスコとセロリ/ RabbitMQ</a></li>
+<li><a href="../ja461533/index.html">毛布のパターンでの子供の最初の年の睡眠の視覚化</a></li>
+<li><a href="../ja461535/index.html">C ++、FIX、Oracle、PL / SQL：ITスペシャリストが金融で仕事を得るために知っておくべきこと+実際の仕事の機会</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

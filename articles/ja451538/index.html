@@ -1,0 +1,255 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👞 ⏳ 🎊 Amazon Redshift並列スケーリングガイドとテスト結果 🌮 🙇🏼 🚒</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Skyengでは、並列スケーリングを含むAmazon Redshiftを使用しているため、dotgo.comの創設者であるStefan Gromallによるintermix.ioの記事は興味深いものでした。転送後-Daniyar Belkhodzhaevによると、エンジニアからの経験の一部。
+ 
+ ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Amazon Redshift並列スケーリングガイドとテスト結果</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/skyeng/blog/451538/"><img src="https://habrastorage.org/webt/mo/pi/gt/mopigtqlz7wpuhwhxsmrlcvgpky.png" alt="画像"><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Skyengでは、並列スケーリングを含むAmazon Redshiftを使用しているため、dotgo.comの創設者であるStefan Gromallによるintermix.ioの記事は興味深いものでした。転送後-Daniyar Belkhodzhaevによると、エンジニアからの経験の一部。</font></font></i><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Amazon Redshiftアーキテクチャで</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、クラスターに新しいノードを追加することでスケーリングが可能です。リクエストのピーク数に対処する必要がある場合、ノードのプロビジョニングが過剰になる可能性があります。同時実行スケーリングは、新しいノードを追加するのとは対照的に、必要に応じてコンピューティング能力を向上させます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Amazon Redshift並列スケーリングは、ピークリクエストを処理するための追加の能力をRedshiftクラスターに提供します。</font><font style="vertical-align: inherit;">バックグラウンドで新しい「並列」クラスターにリクエストを転送することで機能します。</font><font style="vertical-align: inherit;">要求は、WLM構成とルールに基づいてルーティングされます。</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングの料金は、自由利用クレジットモデルに基づいています。</font><font style="vertical-align: inherit;">標準の無料ローンよりも、支払いは並列スケーリングクラスターがリクエストを処理する時間に基づいています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+著者は、内部クラスターの1つで並列スケーリングをテストしました。</font><font style="vertical-align: inherit;">この投稿では、彼はテスト結果について話し、開始方法に関するヒントを提供します。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クラスターの要件</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングを使用するには、Amazon Redshiftクラスターが次の要件を満たす必要があります。 </font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プラットフォーム：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> EC2-VPC;</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ノードタイプ：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> dc2.8xlarge、ds2.8xlarge、dc2.largeまたはds2.xlarge;</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ノード数：</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 2〜32（1つのノードを持つクラスターはサポートされません）。</font></font></li>
+</ul><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有効なリクエストタイプ</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングは、すべてのタイプのクエリに適しているわけではありません。</font><font style="vertical-align: inherit;">最初のバージョンでは、次の3つの条件を満たす読み取りリクエストのみを処理します。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">読み取り専用のSELECTクエリ（より多くのタイプが計画されていますが）。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クエリがINTERLEAVED照合を使用するテーブルを参照していない。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クエリは、Amazon Redshift Spectrumを使用して外部テーブルを参照しません。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングクラスタにルーティングするには、リクエストをキューに入れる必要があります。</font><font style="vertical-align: inherit;">また、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">SQA（Short Query Acceleration）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キューに適したクエリは</font><font style="vertical-align: inherit;">、並列スケーリングクラスターでは実行されません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キューとSQAには、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Redshiftワークロード管理（WLM）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の正しい構成が必要です</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">最初にWLMを最適化することをお勧めします。これにより、並列スケーリングの必要性が減少します。</font><font style="vertical-align: inherit;">また、並列スケーリングは特定の時間だけ無料なので、これは重要です。</font><font style="vertical-align: inherit;">AWSは、97％のお客様が並列スケーリングを無料で利用できると主張しており、これが価格の問題につながります。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">並列スケーリングのコスト </font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングのために、AWSはクレジットモデルを提供しています。アクティブな各</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Amazon Redshift</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クラスターは</font><font style="vertical-align: inherit;">、1時間ごとにローンを累積し</font><font style="vertical-align: inherit;">ます</font><font style="vertical-align: inherit;">。1日あたり最大1時間の無料の並列スケーリングローンです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングクラスターを使用して、受け取ったローンの量を超えた場合にのみ支払います。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コストは、フリーレートを超えて使用される並列クラスターの1秒あたりの要求レートで計算されます。支払いは、リクエストの実行中にのみ行われ、並列スケーリングクラスターをアクティブ化するたびに最低1分の支払いが行われます。 1秒</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">あたりの</font></a><font style="vertical-align: inherit;">オンデマンドレートは、</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">Amazon Redshiftの</font></a><font style="vertical-align: inherit;">一般的な価格設定原則に基づいて計算され</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">つまり、ノードのタイプとクラスター内のノードの数によって異なります。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">並列スケーリングの実行</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+各WLMキューの並列スケーリングが開始されます。</font><font style="vertical-align: inherit;">AWS Redshiftコンソールに移動し、左側のナビゲーションメニューで[Workload Management]を選択します。</font><font style="vertical-align: inherit;">次のドロップダウンメニューでクラスターのWLMグループを選択します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+各キューの横に「同時実行スケーリングモード」という新しい列が表示されます。</font><font style="vertical-align: inherit;">デフォルト値は「オフ」です。</font><font style="vertical-align: inherit;">「変更」をクリックすると、各キューの設定を変更できます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rz/g9/mk/rzg9mkvwxcmlhry2v522jjrtcdk.png"><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">構成</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングは、適切なリクエストを新しい専用クラスターに送信することで機能します。</font><font style="vertical-align: inherit;">新しいクラスターのサイズ（ノードのタイプと数）は、メインクラスターと同じです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングに使用されるデフォルトのクラスター数は1つで、合計で最大10個のクラスターを構成できます。</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングのクラスターの総数は、max_concurrency_scaling_clustersパラメーターで設定できます。</font><font style="vertical-align: inherit;">この設定を増やすと、追加の冗長クラスターが提供されます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/p6/we/qu/p6wequjhe3-yxannbvr_zndpqdg.png"><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">モニタリング </font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+AWS Redshiftコンソールには、いくつかの追加グラフがあります。 Max Configured Concurrency Scaling Clustersグラフには、max_concurrency_scaling_clustersの値が時系列で表示されます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ti/mw/au/timwauz4qrbalhetjn3ttccxui4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+アクティブなスケーリングクラスターの数は、ユーザーインターフェースの</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zq/ai/xx/zqaixxhdn7i-pkwockkal_7ujvw.png"> <br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+[ </font><font style="vertical-align: inherit;">同時実行スケーリングアクティビティ]セクションに表示されます。</font><font style="vertical-align: inherit;">[リクエスト]タブには、リクエストがメインクラスターで実行されたかパラレルスケーリングクラスターで実行されたかを示す列があります。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/p-/sw/p8/p-swp8elamy2ecxarcydioa0_ac.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+特定のリクエストがメインクラスターで行われたか、並列スケーリングクラスターを介して、stl_query.concurrency_scaling_statusに格納されます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/kf/ns/_4/kfns_4r21bi4fbmqzpk2nfgv1ba.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+値1は、リクエストが並列スケーリングクラスターで実行されていたことを示し、他の値はメインクラスターで実行されていたことを示します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/cn/3u/vh/cn3uvh7rn90c8bydqicyz3zlir8.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングに関する情報は、SVCS_CONCURRENCY_SCALING_USAGEなどの他のいくつかのテーブルとビューにも格納されます。</font><font style="vertical-align: inherit;">さらに、並列スケーリングに関する情報を格納するカタログテーブルがいくつかあります。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">結果</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+著者は、2019年3月29日のGMT午後6時30分頃に内部クラスタの1つのキューの並列スケーリングを開始しました。2019年3月29日午後8時30分頃にmax_concurrency_scaling_clustersパラメータを3に変更しました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リクエストキューをモデル化するために、スロット数を減らしましたこのキューを15から5に変更します</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。以下は、スロットの数を減らした後、キュー内で実行中および待機中のリクエストの数を示すintermix.ioダッシュボードの図です。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/d4/0p/7q/d40p7qzi5ty79bbw_irhtk4qfzs.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最大時間は5分を超えていますが、キュー内のリクエストの待機時間が増加していることがわかります。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ov/xp/rn/ovxprnqxnz1fy9ds4xm4vmn6vte.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この期間中に何が起こったかについてAWSコンソールからの関連情報は次のとおりです。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rm/f-/ip/rmf-ipbke1vkled8fyo8zch9jpu.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redshiftは、構成に応じて3つの並列スケーリングクラスターを起動しました。</font><font style="vertical-align: inherit;">クラスター内の要求の多くがキューに入れられていたにもかかわらず、これらのクラスターは完全には使用されていなかったようです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用状況グラフはスケーリングアクティビティグラフと相関しています。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/am/ho/yk/amhoykwqbkcttpfdiv5gvizkvog.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+数時間後、作成者はキューを確認しましたが、6つのリクエストが並列スケーリングで実行されたようです。</font><font style="vertical-align: inherit;">また、ユーザーインターフェイスを介して2つの要求を選択的にチェックしました。</font><font style="vertical-align: inherit;">複数の並列クラスターが同時にアクティブである場合、これらの値の使用方法は確認されませんでした。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/fi/2f/rb/fi2frbpdkxqfcj1q-4rp12wrjz4.png"><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">調査結果</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングにより、ピーク負荷時のリクエストのキュー時間を短縮できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+基本テストの結果によると、読み込みリクエストの状況は部分的に改善されていることがわかりました。ただし、並列スケーリングだけでは、同時実行性に関するすべての問題を解決できませんでした。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは、並列スケーリングを使用できるクエリのタイプの制限によるものです。たとえば、作成者にはインターリーブされたソートキーを持つ多くのテーブルがあり、私たちのワークロードのほとんどはレコードです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+並列スケーリングは、WLMを構成する際の普遍的なソリューションではありませんが、いずれにしても、この関数の使用は簡単で理解できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、WLMキューに使用することをお勧めします。 1つの並列クラスターから開始し、コンソールを通じてピーク負荷を監視して、新しいクラスターが完全に利用されているかどうかを判断します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+AWSが追加のタイプのクエリとテーブルのサポートを追加するにつれて、並列スケーリングは徐々にますます効率的になるはずです。</font></font><br>
+<blockquote><b>   ,    Skyeng</b><br>
+<br>
+  Skyeng         .<br>
+  ,    ,    AWS        .<br>
+<br>
+ ,             Redshift.         Concurrency Scaling,      24     .<br>
+<br>
+        ,      .<br>
+<br>
+         intermix.io.<br>
+<br>
+  ,        ,        .    - ,    -    .  ,            ,     .<br>
+<br>
+     , ,    AWS,      —    .<br>
+       AWS Cost Explorer.   Service — Redshift, Usage Type — CS,  USW2-CS:dc2.large.<br>
+<br>
+        <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">.</a> </blockquote></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja451522/index.html">TypeScript、Protractor、Jasmineで数時間で自動化を展開します</a></li>
+<li><a href="../ja451524/index.html">Autoplay Media Studio 8.5.3.0ケトルが壊れた経緯</a></li>
+<li><a href="../ja451528/index.html">「そしてそうなる」：クラウドプロバイダーは個人データに同意しない</a></li>
+<li><a href="../ja451532/index.html">OpenStreetMap No. 459の世界からのニュース（2019年4月30日-2019年5月6日）</a></li>
+<li><a href="../ja451534/index.html">ビデオゲームの開発におけるアニメーションの12の原則</a></li>
+<li><a href="../ja451542/index.html">Mail.ru Cloudでどのように、そしてなぜランドマーク認識を行ったか</a></li>
+<li><a href="../ja451552/index.html">ガジェットDO-RAのネットワーク販売チャネルを構築</a></li>
+<li><a href="../ja451556/index.html">Flutter：Android Studioを使用したアプリケーションのローカリゼーション</a></li>
+<li><a href="../ja451558/index.html">QA自動化の1日</a></li>
+<li><a href="../ja451560/index.html">お客様各位、この変更に非常に時間がかかったのはそのためです。</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

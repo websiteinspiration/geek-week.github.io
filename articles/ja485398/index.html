@@ -1,0 +1,452 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🐌 🍛 🤛 PostgreSQLアンチパターン：大量のJOINを含むヒット辞書 ⌚️ 💠 🐓</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="「一見シンプルな」PostgreSQLクエリのパフォーマンスを改善するためのあまり知られていない方法の研究に向けられた一連の記事を続けます。
+ 
+ 
+
+- 珍しいレコードがJOINの真ん中に届く
+- シーシュポス結合配列
+- 有害なJOINおよびOR
+- CTE JOIN CTE
+ JOINがあまり...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQLアンチパターン：大量のJOINを含むヒット辞書</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/485398/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「一見シンプルな」PostgreSQLクエリのパフォーマンスを改善するためのあまり知られていない方法の研究に向けられた一連の記事を続けます。</font></font><br>
+<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">珍しいレコードがJOINの真ん中に届く</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シーシュポス結合配列</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有害なJOINおよびOR</font></font></a></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CTE JOIN CTE</font></font></a></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+JOINがあまり好きでないとは思わないでください... :) </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、多くの場合、それがなければ、リクエストはそれを使用するよりもはるかに生産的になります。</font><font style="vertical-align: inherit;">したがって、今日</font><font style="vertical-align: inherit;">は、辞書</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用して、リソースを大量に消費するJOINを</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">完全に</font><b><font style="vertical-align: inherit;">取り除く</font></b><font style="vertical-align: inherit;">ようにします。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/uf/33/uh/uf33uhbf3ke85rlwi6o-nhaygdw.png"><br>
+<a name="habracut"></a><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQL 12以降、以下で説明する状況の一部は、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">デフォルトではCTEが非具体</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">化されているため、少し異なる方法で再生でき</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">この動作は、キーを指定することで元に戻すことができます</font></font><code>MATERIALIZED</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></blockquote><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">限られた語彙の多くの「事実」</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+非常に実際のアプリケーションを見てみましょう- </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">受信メッセージ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">またはアクティブなタスクを送信者</font><font style="vertical-align: inherit;">にリストする必要があり</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">25.01 |  .. |    .<font></font>
+22.01 |  .. |    :   JOIN.<font></font>
+20.01 |  .. |   .<font></font>
+18.01 |  .. |    : JOIN    .<font></font>
+16.01 |  .. |   .<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+抽象の世界では、タスクの作成者は組織の全従業員に均等に分散する必要がありますが、実際には、</font></font><b><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">タスクは、原則として、かなり限られた数の人</font></font></i></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">から来ます。マーケティング ...）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+1000人の組織で、特定のアーティストごとにタスクを設定するのは20人（通常はさらに少ない）の著者だけであり</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、この主題の知識</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">使用し</font></a><font style="vertical-align: inherit;">て「伝統的な」要求を迅速化するとします。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スクリプトジェネレーター</font></font></b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-comment">-- </span>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> person <span class="hljs-keyword">AS</span>
+<span class="hljs-keyword">SELECT</span>
+  <span class="hljs-keyword">id</span>
+, <span class="hljs-keyword">repeat</span>(<span class="hljs-keyword">chr</span>(<span class="hljs-keyword">ascii</span>(<span class="hljs-string">'a'</span>) + (<span class="hljs-keyword">id</span> % <span class="hljs-number">26</span>)), (<span class="hljs-keyword">id</span> % <span class="hljs-number">32</span>) + <span class="hljs-number">1</span>) <span class="hljs-string">"name"</span>
+, <span class="hljs-string">'2000-01-01'</span>::<span class="hljs-built_in">date</span> - (random() * <span class="hljs-number">1e4</span>)::<span class="hljs-built_in">integer</span> birth_date
+<span class="hljs-keyword">FROM</span>
+  generate_series(<span class="hljs-number">1</span>, <span class="hljs-number">1000</span>) <span class="hljs-keyword">id</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> person <span class="hljs-keyword">ADD</span> PRIMARY <span class="hljs-keyword">KEY</span>(<span class="hljs-keyword">id</span>);<font></font>
+<font></font>
+<span class="hljs-comment">--    </span>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> task <span class="hljs-keyword">AS</span>
+<span class="hljs-keyword">WITH</span> aid <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span>
+    <span class="hljs-keyword">id</span>
+  , array_agg((random() * <span class="hljs-number">999</span>)::<span class="hljs-built_in">integer</span> + <span class="hljs-number">1</span>) aids
+  <span class="hljs-keyword">FROM</span>
+    generate_series(<span class="hljs-number">1</span>, <span class="hljs-number">1000</span>) <span class="hljs-keyword">id</span>
+  , generate_series(<span class="hljs-number">1</span>, <span class="hljs-number">20</span>)
+  <span class="hljs-keyword">GROUP</span> <span class="hljs-keyword">BY</span>
+    <span class="hljs-number">1</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  (<font></font>
+    <span class="hljs-keyword">SELECT</span>
+      <span class="hljs-keyword">id</span>
+    , <span class="hljs-string">'2020-01-01'</span>::<span class="hljs-built_in">date</span> - (random() * <span class="hljs-number">1e3</span>)::<span class="hljs-built_in">integer</span> task_date<font></font>
+    , (random() * <span class="hljs-number">999</span>)::<span class="hljs-built_in">integer</span> + <span class="hljs-number">1</span> owner_id
+    <span class="hljs-keyword">FROM</span>
+      generate_series(<span class="hljs-number">1</span>, <span class="hljs-number">100000</span>) <span class="hljs-keyword">id</span><font></font>
+  ) T<font></font>
+, <span class="hljs-keyword">LATERAL</span>(
+    <span class="hljs-keyword">SELECT</span>
+      aids[(random() * (array_length(aids, <span class="hljs-number">1</span>) - <span class="hljs-number">1</span>))::<span class="hljs-built_in">integer</span> + <span class="hljs-number">1</span>] author_id
+    <span class="hljs-keyword">FROM</span><font></font>
+      aid<font></font>
+    <span class="hljs-keyword">WHERE</span>
+      <span class="hljs-keyword">id</span> = T.owner_id
+    <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">1</span><font></font>
+  ) a;<font></font>
+<font></font>
+<span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> task <span class="hljs-keyword">ADD</span> PRIMARY <span class="hljs-keyword">KEY</span>(<span class="hljs-keyword">id</span>);
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> task(owner_id, task_date);
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> task(author_id);
+</code></pre></div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+特定のアーティストの過去100のタスクを表示します。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">SELECT</span><font></font>
+  task.*<font></font>
+, person.name<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  task<font></font>
+<span class="hljs-keyword">LEFT</span> <span class="hljs-keyword">JOIN</span><font></font>
+  person<font></font>
+    <span class="hljs-keyword">ON</span> person.id = task.author_id
+<span class="hljs-keyword">WHERE</span>
+  owner_id = <span class="hljs-number">777</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  task_date <span class="hljs-keyword">DESC</span>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">100</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/gt/qo/ba/gtqoba5xxrim1xd0ec98ezjuuxi.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[explain.tensor.ruを見てください]</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">表示されたタスクごとに、作成者を100回検索するためだけに</font><b><font style="vertical-align: inherit;">、全体の1/3の時間と</font></b><font style="vertical-align: inherit;">データページの</font><b><font style="vertical-align: inherit;">読み取りの3/4</font></b><font style="vertical-align: inherit;">が行われた</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ことが</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">わかり</font></a><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">しかし、この100のうち</font><b><font style="vertical-align: inherit;">20しか異なる</font></b><font style="vertical-align: inherit;">ことがわかってい</font><font style="vertical-align: inherit;">ます。この知識を使用することは可能ですか？</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hstore辞書</font></font></h2><br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hstoreタイプ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+を使用し</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">て</font></a><font style="vertical-align: inherit;">、キーと値の「辞書」を生成します。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> EXTENSION hstore</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+著者のIDと名前を辞書に追加するだけで十分なので、後でこのキーを使用して抽出できます。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-comment">--   </span>
+<span class="hljs-keyword">WITH</span> T <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    task<font></font>
+  <span class="hljs-keyword">WHERE</span>
+    owner_id = <span class="hljs-number">777</span>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+    task_date <span class="hljs-keyword">DESC</span>
+  <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">100</span><font></font>
+)<font></font>
+<span class="hljs-comment">--     </span>
+, dict <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span>
+    hstore( <span class="hljs-comment">-- hstore(keys::text[], values::text[])</span>
+      array_agg(<span class="hljs-keyword">id</span>)::<span class="hljs-built_in">text</span>[]<font></font>
+    , array_agg(<span class="hljs-keyword">name</span>)::<span class="hljs-built_in">text</span>[]<font></font>
+    )<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    person<font></font>
+  <span class="hljs-keyword">WHERE</span>
+    <span class="hljs-keyword">id</span> = <span class="hljs-keyword">ANY</span>(<span class="hljs-built_in">ARRAY</span>(
+      <span class="hljs-keyword">SELECT</span> <span class="hljs-keyword">DISTINCT</span><font></font>
+        author_id<font></font>
+      <span class="hljs-keyword">FROM</span><font></font>
+        T<font></font>
+    ))<font></font>
+)<font></font>
+<span class="hljs-comment">--    </span>
+<span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+, (<span class="hljs-keyword">TABLE</span> dict) -&gt; author_id::<span class="hljs-built_in">text</span> <span class="hljs-comment">-- hstore -&gt; key</span>
+<span class="hljs-keyword">FROM</span>
+  T;</code></pre><br>
+<img src="https://habrastorage.org/webt/vn/2f/ms/vn2fms1aupegpmtrwwh7l3dekoo.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[explain.tensor.ruを見てください]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+人に関する情報を取得する</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ために</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">費やされた</font><b><font style="vertical-align: inherit;">時間は2分の1で、読み取られたデータは7分の1でした</font></b><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">「欺瞞」に加えて、これらの結果</font><font style="vertical-align: inherit;">は、を使用して1回のパスでテーブルから</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レコード</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><b><font style="vertical-align: inherit;">大量に取得</font></b><font style="vertical-align: inherit;">するのに役立ちました</font></font><code>= ANY(ARRAY(...))</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テーブルエントリ：シリアル化と逆シリアル化</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、1つのテキストフィールドではなくレコード全体を辞書に保存する必要がある場合はどうでしょうか。</font><font style="vertical-align: inherit;">この場合、PostgreSQL </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">がテーブルを単一の値として書き込む機能を使用すると、次の</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ようになります</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="sql hljs">...<font></font>
+, dict AS (<font></font>
+  <span class="hljs-keyword">SELECT</span><font></font>
+    hstore(<font></font>
+      array_agg(<span class="hljs-keyword">id</span>)::<span class="hljs-built_in">text</span>[]<font></font>
+    , array_agg(p)::<span class="hljs-built_in">text</span>[] <span class="hljs-comment">--  #1</span><font></font>
+    )<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    person p<font></font>
+  <span class="hljs-keyword">WHERE</span><font></font>
+    ...<font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+, (((<span class="hljs-keyword">TABLE</span> dict) -&gt; author_id::<span class="hljs-built_in">text</span>)::person).* <span class="hljs-comment">--  #2</span>
+<span class="hljs-keyword">FROM</span>
+  T;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここで何が起こったか見てみましょう：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">personテーブルの完全なレコードのエイリアスとしてp</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を取り</font><font style="vertical-align: inherit;">、それらから配列を組み立てました。</font></font></li>
+<li> <b>  </b>     (person[]::text[]),     hstore-    .</li>
+<li>      <b>    </b>   .</li>
+<li>   <b>    </b> person (       ).</li>
+<li>«»       <code>(...).*</code>.</li>
+</ol><br>
+<h2>json-</h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、上記で適用したこのようなトリックは、「固定解除」を行うための対応するテーブルタイプがない場合は機能しません。まったく同じ状況が生じることになる、と直列化のためのデータソースとして、我々は、使用しようと</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CTEの行ではなく、「本当の」テーブルを</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この場合、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">jsonを操作</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">するための</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">関数</font></a><font style="vertical-align: inherit;">が役立ちます</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="sql hljs">...<font></font>
+, p AS ( <span class="hljs-comment">--   CTE</span>
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    person<font></font>
+  <span class="hljs-keyword">WHERE</span><font></font>
+    ...<font></font>
+)<font></font>
+, dict <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span>
+    json_object( <span class="hljs-comment">--    json</span>
+      array_agg(<span class="hljs-keyword">id</span>)::<span class="hljs-built_in">text</span>[]<font></font>
+    , array_agg(row_to_json(p))::<span class="hljs-built_in">text</span>[] <span class="hljs-comment">--   json   </span><font></font>
+    )<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    p<font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  *<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  T<font></font>
+, <span class="hljs-keyword">LATERAL</span>(
+    <span class="hljs-keyword">SELECT</span><font></font>
+      *<font></font>
+    <span class="hljs-keyword">FROM</span><font></font>
+      json_to_record(<font></font>
+        ((<span class="hljs-keyword">TABLE</span> dict) -&gt;&gt; author_id::<span class="hljs-built_in">text</span>)::<span class="hljs-keyword">json</span> <span class="hljs-comment">--     json</span>
+      ) <span class="hljs-keyword">AS</span> j(<span class="hljs-keyword">name</span> <span class="hljs-built_in">text</span>, birth_date <span class="hljs-built_in">date</span>) <span class="hljs-comment">--    </span>
+  ) j;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ターゲット構造を説明するとき、ソース文字列のすべてのフィールドをリストすることはできませんが、本当に必要なフィールドのみをリストできることに注意してください。</font><font style="vertical-align: inherit;">「ネイティブ」テーブルがある場合は、関数を使用することをお勧めします</font></font><code>json_populate_record</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まだ辞書にアクセスできますが、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">json- [de]シリアライゼーション</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の</font><b><font style="vertical-align: inherit;">コストは非常に高い</font></b><font style="vertical-align: inherit;">ため、この方法を使用するのは、「正直な」CTEスキャン自体が悪化した場合にのみ使用するのが妥当です。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">テスト性能</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、データをディクショナリにシリアル化する方法は2つあります</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-hstore / json_object</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font><font style="vertical-align: inherit;">さらに、キーと値の配列は、テキストへの内部または外部変換を使用して2つの方法で生成することもできます：</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">array_agg（i :: text）/ array_agg（i）:: text []</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+純粋に合成の例を使用して、さまざまなタイプのシリアル化の有効性を確認してみましょう。</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">異なる数のキー</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><b><font style="vertical-align: inherit;">シリアル化します</font></b><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> dict <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    hstore(<font></font>
+      array_agg(i::<span class="hljs-built_in">text</span>)<font></font>
+    , array_agg(i::<span class="hljs-built_in">text</span>)<font></font>
+    )<font></font>
+  <span class="hljs-keyword">FROM</span>
+    generate_series(<span class="hljs-number">1</span>, ...) i<font></font>
+)<font></font>
+<span class="hljs-keyword">TABLE</span> dict;</code></pre><br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">評価スクリプト：シリアル化</font></font></b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> T <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  , (<font></font>
+      <span class="hljs-keyword">SELECT</span>
+        regexp_replace(ea[array_length(ea, <span class="hljs-number">1</span>)], <span class="hljs-string">'^Execution Time: (\d+\.\d+) ms$'</span>, <span class="hljs-string">'\1'</span>)::<span class="hljs-built_in">real</span> et
+      <span class="hljs-keyword">FROM</span><font></font>
+        (<font></font>
+          <span class="hljs-keyword">SELECT</span><font></font>
+            array_agg(el) ea<font></font>
+          <span class="hljs-keyword">FROM</span>
+            dblink(<span class="hljs-string">'port= '</span> || current_setting(<span class="hljs-string">'port'</span>) || <span class="hljs-string">' dbname='</span> || current_database(), $$
+              <span class="hljs-keyword">explain</span> <span class="hljs-keyword">analyze</span>
+              <span class="hljs-keyword">WITH</span> dict <span class="hljs-keyword">AS</span> (
+                <span class="hljs-keyword">SELECT</span><font></font>
+                  hstore(<font></font>
+                    array_agg(i::<span class="hljs-built_in">text</span>)<font></font>
+                  , array_agg(i::<span class="hljs-built_in">text</span>)<font></font>
+                  )<font></font>
+                <span class="hljs-keyword">FROM</span>
+                  generate_series(<span class="hljs-number">1</span>, $$ || (<span class="hljs-number">1</span> &lt;&lt; v) || $$) i<font></font>
+              )<font></font>
+              <span class="hljs-keyword">TABLE</span> dict<font></font>
+            $$) T(el <span class="hljs-built_in">text</span>)<font></font>
+        ) T<font></font>
+    ) et<font></font>
+  <span class="hljs-keyword">FROM</span>
+    generate_series(<span class="hljs-number">0</span>, <span class="hljs-number">19</span>) v<font></font>
+  ,   <span class="hljs-keyword">LATERAL</span> generate_series(<span class="hljs-number">1</span>, <span class="hljs-number">7</span>) i
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+    <span class="hljs-number">1</span>, <span class="hljs-number">2</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  v<font></font>
+, <span class="hljs-keyword">avg</span>(et)::<span class="hljs-built_in">numeric</span>(<span class="hljs-number">32</span>,<span class="hljs-number">3</span>)
+<span class="hljs-keyword">FROM</span><font></font>
+  T<font></font>
+<span class="hljs-keyword">GROUP</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>;</code></pre></div></div><br>
+<img src="https://habrastorage.org/webt/le/ho/tk/lehotkorqfxuassbuqsrcexjh6k.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PostgreSQL 11では、辞書サイズが最大で2 ^ 12キーであり</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、json</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">での</font><b><font style="vertical-align: inherit;">シリアル化にかかる時間が短くなり</font></b><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">json_objectと「内部」型変換の組み合わせが最も効果的</font></font><code>array_agg(i::text)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、各キーの値を8回読み取ってみましょう。辞書にアクセスしない場合、なぜ必要なのでしょうか。</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">評価スクリプト：辞書からの読み取り</font></font></b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> T <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    *<font></font>
+  , (<font></font>
+      <span class="hljs-keyword">SELECT</span>
+        regexp_replace(ea[array_length(ea, <span class="hljs-number">1</span>)], <span class="hljs-string">'^Execution Time: (\d+\.\d+) ms$'</span>, <span class="hljs-string">'\1'</span>)::<span class="hljs-built_in">real</span> et
+      <span class="hljs-keyword">FROM</span><font></font>
+        (<font></font>
+          <span class="hljs-keyword">SELECT</span><font></font>
+            array_agg(el) ea<font></font>
+          <span class="hljs-keyword">FROM</span>
+            dblink(<span class="hljs-string">'port= '</span> || current_setting(<span class="hljs-string">'port'</span>) || <span class="hljs-string">' dbname='</span> || current_database(), $$
+              <span class="hljs-keyword">explain</span> <span class="hljs-keyword">analyze</span>
+              <span class="hljs-keyword">WITH</span> dict <span class="hljs-keyword">AS</span> (
+                <span class="hljs-keyword">SELECT</span><font></font>
+                  json_object(<font></font>
+                    array_agg(i::<span class="hljs-built_in">text</span>)<font></font>
+                  , array_agg(i::<span class="hljs-built_in">text</span>)<font></font>
+                  )<font></font>
+                <span class="hljs-keyword">FROM</span>
+                  generate_series(<span class="hljs-number">1</span>, $$ || (<span class="hljs-number">1</span> &lt;&lt; v) || $$) i<font></font>
+              )<font></font>
+              <span class="hljs-keyword">SELECT</span>
+                (<span class="hljs-keyword">TABLE</span> dict) -&gt; (i % ($$ || (<span class="hljs-number">1</span> &lt;&lt; v) || $$) + <span class="hljs-number">1</span>)::<span class="hljs-built_in">text</span>
+              <span class="hljs-keyword">FROM</span>
+                generate_series(<span class="hljs-number">1</span>, $$ || (<span class="hljs-number">1</span> &lt;&lt; (v + <span class="hljs-number">3</span>)) || $$) i<font></font>
+            $$) T(el <span class="hljs-built_in">text</span>)<font></font>
+        ) T<font></font>
+    ) et<font></font>
+  <span class="hljs-keyword">FROM</span>
+    generate_series(<span class="hljs-number">0</span>, <span class="hljs-number">19</span>) v<font></font>
+  , <span class="hljs-keyword">LATERAL</span> generate_series(<span class="hljs-number">1</span>, <span class="hljs-number">7</span>) i
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+    <span class="hljs-number">1</span>, <span class="hljs-number">2</span><font></font>
+)<font></font>
+<span class="hljs-keyword">SELECT</span><font></font>
+  v<font></font>
+, <span class="hljs-keyword">avg</span>(et)::<span class="hljs-built_in">numeric</span>(<span class="hljs-number">32</span>,<span class="hljs-number">3</span>)
+<span class="hljs-keyword">FROM</span><font></font>
+  T<font></font>
+<span class="hljs-keyword">GROUP</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>;</code></pre></div></div><br>
+<img src="https://habrastorage.org/webt/et/fq/vj/etfqvjlzj4qy4rjqwskzteg36aw.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして...すでに約</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2 ^ 6キーで、json-dictionaryからの</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">読み取りがhstoreからの読み取りに数回</font><b><font style="vertical-align: inherit;">失われ始めます</font></b><font style="vertical-align: inherit;">。jsonbの場合、2 ^ 9でも同じことが起こります。</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最終的な結論：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レコードが繰り返し繰り返されるJOIN</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を作成する必要がある場合</font><font style="vertical-align: inherit;">-「テーブルマッチング」を使用する</font><font style="vertical-align: inherit;">ことをお勧めします</font></font></li>
+<li>    <b>       </b> —   json[b]</li>
+<li>    <b>hstore + array_agg(i::text)</b>  </li>
+</ul></blockquote></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja485388/index.html">支配、苦しみ、笑顔</a></li>
+<li><a href="../ja485390/index.html">オープンデータプロジェクトのためのオープンソースのマイクログラントコンテスト</a></li>
+<li><a href="../ja485392/index.html">ドメインを監視する電報ボット</a></li>
+<li><a href="../ja485394/index.html">インターネットインフラストラクチャの誕生</a></li>
+<li><a href="../ja485396/index.html">チームのヘルスチェック：チームのヘルスの測定</a></li>
+<li><a href="../ja485402/index.html">DACおよびADCマイクロコントローラー用のマイクアンプおよびVLF</a></li>
+<li><a href="../ja485404/index.html">映画「マトリックス」の視覚効果を実感</a></li>
+<li><a href="../ja485406/index.html">Raspberry Piのクラウドオブジェクト検出器を使用したビデオ</a></li>
+<li><a href="../ja485408/index.html">ユニバーサルRESTサービスの実装例（Avalanche-Javaのアプリケーションフレームワーク）</a></li>
+<li><a href="../ja485412/index.html">ITスペシャリストの欠員に関する正しい手紙</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

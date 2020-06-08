@@ -1,0 +1,317 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏾‍🤝‍👨🏼 🚹 👎 StatsD + Grafana ImageをDockerとKubernetesにデプロイする ♾ 🏅 🙆🏼</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="DockerとKubernetesの研究を始めた当初、私はこの環境の機能を研究しているときに「遊べる」単純で理解できる例がありませんでした。この記事でこのギャップを埋めたいと思います。ここでは、.NET CoreアプリケーションとTelegrafおよびGrafanaの統合、メトリックの送信方法、Do...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>StatsD + Grafana ImageをDockerとKubernetesにデプロイする</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/486172/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">DockerとKubernetesの研究を始めた当初、私はこの環境の機能を研究しているときに「遊べる」単純で理解できる例がありませんでした。この記事でこのギャップを埋めたいと思います。ここでは、.NET CoreアプリケーションとTelegrafおよびGrafanaの統合、メトリックの送信方法、DockerおよびKubernetesへのデプロイ方法について説明します。記事の例は、この分野を研究し始める人のために設計されていますが、記事を完全に理解するために基本的な概念を持っていることが望ましいです。 StatsD、InfluxDB、Grafanaを含むコンテナをデプロイする方法と、アプリケーションからさまざまなタイプのメトリックを送信する方法について説明します。</font></font><br>
+<a name="habracut"></a><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この記事の例は、Docker for Windowsに付属するKubernetesで実行されました。</font><font style="vertical-align: inherit;">ただし、Windows Home Editionを使用している場合は、インストールできません。</font><font style="vertical-align: inherit;">Windows Professionalを使用している場合、問題はありません。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">そこ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Windows上kubernetesをインストールするためのヒントのカップルです。</font><font style="vertical-align: inherit;">Linux、Ubuntu、18.04 LTSでテストされたすべてで問題なく動作するはずです。</font></font></blockquote><h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">デモンストレーション</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まず、私が話すすべてが実際にどのように見えるかを見てみましょう。この例では、2つのアプリケーションを実行します。1つは他にリクエストを送信し、2つ目は難しいタスクを実行し、両方のアプリケーションはいくつかのStatsDメトリックを送信します。これはGrafanaに表示されます。ここで説明する手順を完了する前に、Kubernetesがコンピュータにインストールされていることを確認する必要があります。次に、以下の手順に従ってください。結果が表示されます。確かに、いくつかの設定を自分で行う必要があります。</font></font><br>
+<br>
+<pre><code class="powershell hljs"><span class="hljs-variable">$</span> git clone https://github.com/xtrmstep/DockerNetSample
+<span class="hljs-variable">$</span> <span class="hljs-built_in">cd</span> .\DockerNetSample\
+<span class="hljs-variable">$</span> kubectl apply <span class="hljs-operator">-f</span> .\src\StatsDServer\k8s<span class="hljs-literal">-deployment</span>.yaml
+<span class="hljs-variable">$</span> .\build.ps1
+<span class="hljs-variable">$</span> .\run.ps1
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、ブラウザーで</font></font><b><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">localhost</font></font></a><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> URL </font><b><font style="vertical-align: inherit;">：3003</font></b><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">ダウンロードできます</font><b><font style="vertical-align: inherit;">。</font></b></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ルート/ルート</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">資格情報</font><font style="vertical-align: inherit;">を使用して、Grafanaインターフェースにアクセスできます。</font><font style="vertical-align: inherit;">指標はすでに送信されており、ダッシュボードの追加を試すことができます。</font><font style="vertical-align: inherit;">少し調整すると、このようなものが得られます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/6d/kk/ms/6dkkms7qvifd1vxbrjf2a7iwnuq.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてを停止してリソースをクリアする場合は、ワークフローを使用して2つのウィンドウを閉じ、次のコマンドを実行してKubernetesのオブジェクトをクリアします。</font></font><br>
+<br>
+<pre><code class="powershell hljs"><span class="hljs-variable">$</span> kubectl delete svc stats<span class="hljs-literal">-tcp</span>
+<span class="hljs-variable">$</span> kubectl delete svc stats<span class="hljs-literal">-udp</span>
+<span class="hljs-variable">$</span> kubectl delete deployment stats
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+何が起こったのか話しましょう。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">StatsD、InfluxDb、GrafanaをローカルのKubernetesにデプロイした</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+少し前に、私はDockerHubに多くの有用ですでに準備されたイメージがあることを発見しました。</font><font style="vertical-align: inherit;">私の例では、これらの1つを使用します。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ここで</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">イメージのあるリポジトリを見つけることができます</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">このイメージには、InfluxDB、Telegraf（StatsD）、およびGrafanaが含まれており、これらはすでに連携するように構成されています。</font><font style="vertical-align: inherit;">イメージをデプロイする一般的な方法は2つあります。1つはDockerでdocker-composeを使用する方法、もう1つはKubernetesにデプロイする方法です。</font><font style="vertical-align: inherit;">どちらの方法でも、複数のコンポーネント（イメージ）を一度に展開したり、ネットワーク設定やその他のパラメーターを記述したりできます。</font><font style="vertical-align: inherit;">docker-composeについて簡単に説明しますが、Kubernetesでのデプロイについて詳しく説明します。</font><font style="vertical-align: inherit;">ちなみに、最近、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Docker-composeをKubernetes</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">デプロイ</font></a><font style="vertical-align: inherit;">できるようになりました</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Docker-Composeを使用してデプロイする</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Docker-composeは、Docker for Windowsとともに配布されます。ただし、YAMLで使用できるバージョンを確認する必要があります。これを行うには、インストールされているDocker </font><font style="vertical-align: inherit;">のバージョンを確認し、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">互換性マトリックス</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">から必要なバージョンを見つける必要があります。 Dockerバージョン</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">19.03.5</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">をインストールした</font><font style="vertical-align: inherit;">ので、バージョン</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3.x</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ファイルを使用できます</font><font style="vertical-align: inherit;">。ただし、Dockerの以前のバージョンとの互換性のために2を使用します。 docker-composeファイルを書き込むために必要なすべての情報は、すでにリポジトリーの説明（イメージ名とポート）にあります。</font></font><br>
+<br>
+<pre><code class="python hljs">version: <span class="hljs-string">'2'</span><font></font>
+services:<font></font>
+  stats:<font></font>
+    image: samuelebistoletti/docker-statsd-influxdb-grafana:latest<font></font>
+    ports:<font></font>
+      - <span class="hljs-string">"3003:3003"</span>
+      - <span class="hljs-string">"3004:8888"</span>
+      - <span class="hljs-string">"8086:8086"</span>
+      - <span class="hljs-string">"8125:8125/udp"</span>
+</code></pre><br><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ports</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+セクションで</font><font style="vertical-align: inherit;">は、コンテナーからのポートをホストシステムのポートを通して見えるようにします。</font><font style="vertical-align: inherit;">そうしないと、Docker内でのみ表示されるため、ホストシステムからコンテナー内のリソースにアクセスできなくなります。</font><font style="vertical-align: inherit;">大まかに言えば、ブラウザにGrafanaをロードできません。</font><font style="vertical-align: inherit;">ポートマッピングの詳細については、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">こちらをご覧ください</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">ファイルをコンパイルしたら、それをデプロイできます。</font><font style="vertical-align: inherit;">デフォルトでは、docker-compose </font><font style="vertical-align: inherit;">は現在のフォルダーで</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">docker-compose.yamlファイル</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">検索するため</font><font style="vertical-align: inherit;">、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">docker-compose upコマンドを</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">実行するだけで、最小限のパラメーターで実行できます</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">これにより、Dockerのコンテナーが拡張されます。</font><font style="vertical-align: inherit;">追加のパラメーターを使用してファイルを明示的に指定し、コンテナーをバックグラウンドで開始します。</font></font><br>
+<br>
+<pre><code class="powershell hljs"><span class="hljs-variable">$</span> docker<span class="hljs-literal">-compose</span> <span class="hljs-operator">-f</span> docker<span class="hljs-literal">-compose</span>.yaml up <span class="hljs-literal">-d</span>
+<span class="hljs-variable">$</span> docker<span class="hljs-literal">-compose</span> stop
+</code></pre><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Kubernetesのデプロイ</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一見すると、Kubernetesへのデプロイは、Deployment、Service、その他のパラメータを定義する必要があるため、少し複雑に見えます。私は、Kubernetes用のYAMLファイルを作成する時間を節約する小さなトリックに頼っています。まず、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kubectl</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用して、最小限の構成ですべてをクラスターにデプロイします</font><font style="vertical-align: inherit;">。次に、YAMLなどの必要なオブジェクトをエクスポートして、必要な設定を追加します。</font></font><br>
+<blockquote><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GCPの仮想マシンにインストールされているKubernetesに関するメモGCP</font></font></b><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+のCompute EngineにデプロイされているKubernetesを使用しようとしましたが、LoadBalancerサービスのデプロイ中に問題が発生しました。</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">保留</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">状態のままで、</font><font style="vertical-align: inherit;">外部IPアドレスを受け取りません。</font><font style="vertical-align: inherit;">この状況では、ネットワークを構成している場合でも、インターネットからサービスにアクセスできません。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Stackoverflowのアドバイスに</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">よると、これを行うには、イングレスサービスのインストールとNodePortの使用を必要とするソリューションが</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">あります</font></a><font style="vertical-align: inherit;">。</font></font><br>
+</blockquote> <h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kubectlを使用してデプロイする</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+それでは、イメージからデプロイメントを作成しましょう。</font><font style="vertical-align: inherit;">statsという名前は、私がこのオブジェクトに付けたデプロイメント名です。</font><font style="vertical-align: inherit;">別の名前を使用できます。</font></font><br>
+<br>
+<pre><code class="powershell hljs"><span class="hljs-variable">$</span> kubectl run stats -<span class="hljs-literal">-image</span>=samuelebistoletti/docker<span class="hljs-literal">-statsd</span><span class="hljs-literal">-influxdb</span><span class="hljs-literal">-grafana</span>:latest -<span class="hljs-literal">-image</span><span class="hljs-literal">-pull</span><span class="hljs-literal">-policy</span>=Always
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このコマンドはDeploymentを作成し、次にデプロイメントがk8sにポッドとレプリカセットを作成します。</font><font style="vertical-align: inherit;">Grafanaにアクセスするには、サービスを作成してポートをセットアップする必要があります。</font><font style="vertical-align: inherit;">これは、NodePortサービスまたはLoadBalancerを使用して実行できます。</font><font style="vertical-align: inherit;">ほとんどの場合、LoadBlancerサービスを作成します。</font><font style="vertical-align: inherit;">詳細については、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">こちらをご覧ください</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="powershell hljs"><span class="hljs-variable">$</span> kubectl expose deployment stats -<span class="hljs-literal">-type</span>=LoadBalancer -<span class="hljs-literal">-port</span>=<span class="hljs-number">3003</span> -<span class="hljs-literal">-target</span><span class="hljs-literal">-port</span>=<span class="hljs-number">3003</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このコマンドは、ホストポート（3003マッピングします</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">--port</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コンテナ（のポートへの）</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">--target-ポート</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font><font style="vertical-align: inherit;">コマンドを実行した後</font><font style="vertical-align: inherit;">、ブラウザーで</font></font><b><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">localhost</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：3003</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> URLをロードしてGrafanaにアクセスできます</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">次のコマンドを使用して、k8sで作成されたオブジェクトを確認できます。</font></font><br>
+<br>
+<pre><code class="powershell hljs"><span class="hljs-variable">$</span> kubectl get all
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次のような画像が表示されます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/rc/xe/cg/rcxecg7npeyrhg1sh-thgnf43zw.png"><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">YAML設定をエクスポートする</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+現時点では、デプロイしたシステムはまだ必要ではありませんが、ドラフトとして使用できます。</font><font style="vertical-align: inherit;">YAML構成をエクスポートします。</font></font><br>
+<br>
+<pre><code class="powershell hljs"><span class="hljs-variable">$</span> kubectl get deployment,service stats <span class="hljs-literal">-o</span> yaml -<span class="hljs-literal">-export</span> &gt; exported.yaml
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+エクスポートされたファイルには、現在の構成のデプロイメントとサービスの定義が含まれます。</font><font style="vertical-align: inherit;">不要な設定を削除して、ポートマッピングを追加する必要があります。</font><font style="vertical-align: inherit;">最終的なミニマリストバージョンは次のようになります。</font></font><br>
+<br>
+<pre><code class="python hljs">apiVersion: extensions/v1beta1<font></font>
+kind: Deployment<font></font>
+metadata:<font></font>
+  name: stats<font></font>
+spec:<font></font>
+  replicas: <span class="hljs-number">1</span><font></font>
+  selector:<font></font>
+    matchLabels:<font></font>
+      run: stats<font></font>
+  template:<font></font>
+    metadata:<font></font>
+      labels:<font></font>
+        run: stats<font></font>
+    spec:<font></font>
+      containers:<font></font>
+      - image: samuelebistoletti/docker-statsd-influxdb-grafana:latest<font></font>
+        imagePullPolicy: Always<font></font>
+        name: stats<font></font>
+---<font></font>
+apiVersion: v1<font></font>
+kind: Service<font></font>
+metadata:<font></font>
+  name: stats-tcp<font></font>
+spec:<font></font>
+  type: LoadBalancer<font></font>
+  ports:<font></font>
+    - name: grafana<font></font>
+      protocol: TCP<font></font>
+      port: <span class="hljs-number">3003</span>
+      targetPort: <span class="hljs-number">3003</span><font></font>
+    - name: influxdb-admin<font></font>
+      protocol: TCP<font></font>
+      port: <span class="hljs-number">3004</span>
+      targetPort: <span class="hljs-number">8888</span><font></font>
+    - name: influxdb<font></font>
+      protocol: TCP<font></font>
+      port: <span class="hljs-number">8086</span>
+      targetPort: <span class="hljs-number">8086</span><font></font>
+  selector:<font></font>
+    run: stats<font></font>
+---<font></font>
+apiVersion: v1<font></font>
+kind: Service<font></font>
+metadata:<font></font>
+  name: stats-udp<font></font>
+spec:<font></font>
+  type: LoadBalancer<font></font>
+  ports:<font></font>
+    - name: telegraf<font></font>
+      protocol: UDP<font></font>
+      port: <span class="hljs-number">8125</span>
+      targetPort: <span class="hljs-number">8125</span><font></font>
+  selector:<font></font>
+    run: stats<font></font>
+</code></pre><br>
+<blockquote><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">TCP / UDPプロトコルの使用に関する注意事項</font></font></b><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+TCPおよびUDPをサポートするLoadBalancerなどのサービスは作成できません。</font><font style="vertical-align: inherit;">これは既知の制限であり、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コミュニティはいくつかの解決策を見つけようとしています</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">一方、プロトコルのタイプごとに2つの個別のサービスを作成できます。</font></font><br>
+</blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">新しいファイルを使用する前に、Kubernetesの既存のリソースをクリアしてから、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">kubectl applyコマンドを</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用し</font><b><font style="vertical-align: inherit;">ます</font></b><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="powershell hljs"><span class="hljs-variable">$</span> kubectl delete svc stats
+<span class="hljs-variable">$</span> kubectl delete deployment stats<font></font>
+<font></font>
+<span class="hljs-variable">$</span> kubectl apply <span class="hljs-operator">-f</span> k8s<span class="hljs-literal">-deployment</span>.yaml
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+正しいポート設定でイメージをKubernetesにデプロイしたところです。</font><font style="vertical-align: inherit;">上記のURLを使用してGrafanaを開くことができますが、今でもStatsDメトリックを送信できます。</font><font style="vertical-align: inherit;">次のセクションでは、メトリックについて少し説明します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">StatsDプロトコル</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+StatsDプロトコルは非常にシンプルです。本当に必要な場合は、独自のクライアントライブラリを作成することもできます。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ここで</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、StatsDデータグラムについて詳しく読むことができます。</font><font style="vertical-align: inherit;">このプロトコルは、カウンター、時間、タイミング、ゲージなどのメトリックをサポートします。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">counter.name:1|c<font></font>
+timing.name:320|ms<font></font>
+gauge.name:333|g<font></font>
+</code></pre><br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">カウンター</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、いくつかのイベントの数をカウントするために使用されます。</font><font style="vertical-align: inherit;">通常、常に何らかのカウンター（StatsDのバケット）をインクリメントします。</font><font style="vertical-align: inherit;">集計はより低いレベルで行われるため、秒、分で値を取得する場合、追加の計算を行う必要はありません。Grafanaでは、希望どおりに秒、分などの数値が表示されます。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">タイミングは</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、プロセスの継続時間を測定するために使用されます。</font><font style="vertical-align: inherit;">たとえば、このメトリックはWebリクエストの継続時間を測定するのに最適です。</font></font><br>
+<br>
+<b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ゲージは</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、リソースの現在の状態を測定するために使用されます。</font><font style="vertical-align: inherit;">たとえば、使用可能なメモリの量や空きスレッドの数などです。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.NET Coreサービスのメトリック</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+NuGet </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JustEat.StatsD</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パッケージが必要になります</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">github上で良い説明があります。</font><font style="vertical-align: inherit;">したがって、彼の指示に従って独自の構成を作成し、IoCに登録してください。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+例として、あるメソッドが呼び出されたときに、ThreadPoolを使用してスレッドをキューに入れるAPIを考えてみましょう。</font><font style="vertical-align: inherit;">APIロジックは、特定の数の並列計算のみを許可します。</font><font style="vertical-align: inherit;">あなたのサービスについて次のことを知りたいとしましょう：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">いくつのリクエストが来ていますか？</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ThreadPoolがスレッドを発行するまでにいくつのリクエストが待機していますか？</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">操作にはどのくらい時間がかかりますか？</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">空きスレッドはAPIでどれくらい速く終了しますか？</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コードでのメトリックコレクションは次のようになります。</font></font><br>
+<br>
+<pre><code class="cs hljs"><span class="hljs-function"><span class="hljs-keyword">public</span> <span class="hljs-keyword">override</span> <span class="hljs-keyword">async</span> Task&lt;FactorialReply&gt; <span class="hljs-title">Factorial</span>(<span class="hljs-params">FactorialRequest request, ServerCallContext context</span>)</span><font></font>
+{<font></font>
+    <span class="hljs-comment">// Obtain the number of available threads in ThreadPool</span>
+    ThreadPool.GetAvailableThreads(<span class="hljs-keyword">out</span> <span class="hljs-keyword">var</span> availableThreads, <span class="hljs-keyword">out</span> _);
+    <span class="hljs-comment">// The number of available threads is the example of Gauge metric</span>
+    <span class="hljs-comment">// Send gauge metric to StatsD (using JustEat.StatsD nuget)</span>
+    _stats.Gauge(availableThreads, <span class="hljs-string">"GaugeAvailableThreads"</span>);<font></font>
+    <font></font>
+    <span class="hljs-comment">// Increment a counter metric for incoming requests</span>
+    _stats.Increment(<span class="hljs-string">"CountRequests"</span>);<font></font>
+    <font></font>
+    <span class="hljs-comment">// The method _stats.Time() will calculate the time while the _semaphoreSlim.WaitAsync() were waiting</span>
+    <span class="hljs-comment">// and send the metric to StatsD</span>
+    <span class="hljs-keyword">await</span> _stats.Time(<span class="hljs-string">"TimeWait"</span>, <span class="hljs-keyword">async</span> f =&gt; <span class="hljs-keyword">await</span> _semaphoreSlim.WaitAsync());<font></font>
+<font></font>
+    <span class="hljs-keyword">try</span><font></font>
+    {<font></font>
+        <span class="hljs-comment">// Again measure time length of calculation and send it to StatsD </span>
+        <span class="hljs-keyword">var</span> result = <span class="hljs-keyword">await</span> _stats.Time(<span class="hljs-string">"TimeCalculation"</span>, <span class="hljs-keyword">async</span> t =&gt; <span class="hljs-keyword">await</span> CalculateFactorialAsync(request.Factor));<font></font>
+<font></font>
+        <span class="hljs-comment">// Increment a counter of processed requests</span>
+        _stats.Increment(<span class="hljs-string">"CountProcessed"</span>);<font></font>
+<font></font>
+        <span class="hljs-keyword">return</span> <span class="hljs-keyword">await</span> Task.FromResult(<span class="hljs-keyword">new</span> FactorialReply<font></font>
+        {<font></font>
+            Result = result<font></font>
+        });<font></font>
+    }<font></font>
+    <span class="hljs-keyword">finally</span><font></font>
+    {<font></font>
+        _semaphoreSlim.Release();<font></font>
+    }<font></font>
+}<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コードでは、同時計算の数はSemaphoreSlimクラスによって制御されます。</font><font style="vertical-align: inherit;">並列実行の数が最大数を超えると、実行が停止し、他のスレッドの完了を待ちます。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja486156/index.html">私が教えたように、Pythonでトレーニングマニュアルを書いた</a></li>
+<li><a href="../ja486158/index.html">ニューラル機械翻訳の視覚化（注意メカニズムを備えたseq2seqモデル）</a></li>
+<li><a href="../ja486162/index.html">JavaScriptオブジェクトのプロパティの順序はどのくらい重要ですか？</a></li>
+<li><a href="../ja486164/index.html">コロナウイルス2019-nCoV。呼吸器の保護と消毒に関するFAQ</a></li>
+<li><a href="../ja486170/index.html">レポート「42」。大きなあらすじ</a></li>
+<li><a href="../ja486174/index.html">離職率はゼロ</a></li>
+<li><a href="../ja486176/index.html">コーポレートメール連絡メモ</a></li>
+<li><a href="../ja486178/index.html">FOSSニュースNo. 1-2020年1月27日〜2020年2月2日の無料およびオープンソースニュースのレビュー</a></li>
+<li><a href="../ja486180/index.html">サーバーレスアプリケーションを作成するためのヒントとソース</a></li>
+<li><a href="../ja486184/index.html">検索を効果的に使用する方法</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

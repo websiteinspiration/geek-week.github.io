@@ -1,0 +1,512 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚤 🐶 🍤 PostgreSQLのWAL：1.バッファキャッシュ 🕤 🖲️ 👨🏿‍🍳</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="前のシリーズはPostgreSQLの分離とマルチバージョンに特化したものでしたが、本日はジャーナリングのメカニズム（先読みロギング）について新しいシリーズを開始します。教材は、Pavelで行っている管理に関するトレーニングコースに基づいていることを思い出させてくださいプルザノフ、しかしそれらを逐語的...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQLのWAL：1.バッファキャッシュ</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/postgrespro/blog/458186/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前のシリーズは</font><font style="vertical-align: inherit;">PostgreSQLの</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分離とマルチバージョン</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に特化したものでしたが</font><font style="vertical-align: inherit;">、本日</font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">はジャーナリングのメカニズム</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（先読みロギング）</font><strong><font style="vertical-align: inherit;">について</font></strong><font style="vertical-align: inherit;">新しい</font><font style="vertical-align: inherit;">シリーズを</font><font style="vertical-align: inherit;">開始し</font><font style="vertical-align: inherit;">ます。</font><font style="vertical-align: inherit;">教材は</font><font style="vertical-align: inherit;">、Pavelで行っている管理に関する</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トレーニングコース</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に</font><font style="vertical-align: inherit;">基づいていることを思い出させてください</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プルザノフ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、しかしそれらを逐語的に繰り返さず、思慮深い読書と独立した実験を目的としています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このサイクルは4つの部分で構成されます。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファキャッシュ（この記事）;</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">事前記録ジャーナル</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> - </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ジャーナルの</font></a><font style="vertical-align: inherit;">配置とリカバリ時の使用方法。</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チェックポイント</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">とバックグラウンドの記録-それらが必要な理由とその構成方法</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ログのチューニング</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -レベルと解決すべきタスク、信頼性とパフォーマンス。</font></font></li>
+</ul><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">なぜジャーナリングが必要なのですか？</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このプロセスでは、DBMSが処理するデータの一部がRAMに格納され、遅延方法でディスク（または他の不揮発性メディア）に書き込まれます。これが発生する頻度が少ないほど、入出力が少なくなり、システムの動作が速くなります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、電源がオフになったときや、DBMSコードやオペレーティングシステムでエラーが発生したときなど、障害が発生した場合はどうなりますか？ RAMの内容はすべて失われ、ディスクに書き込まれたデータのみが残ります（一部の種類の障害では、ディスクも影響を受ける可能性がありますが、この場合はバックアップコピーのみが役立ちます）。原則として、I / Oは、ディスク上のデータが常に一貫した状態に維持されるように編成できますが、これは難しく、あまり効率的ではありません（私の知る限り、Firebirdのみがこの方法を使用しました）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+通常、PostgreSQLを含め、ディスクに書き込まれたデータは不整合であり、障害から回復する場合、整合性を復元するために特別なアクションが必要です。</font><font style="vertical-align: inherit;">ジャーナリングは、これを可能にするまさにそのメカニズムです。</font></font><br>
+<a name="habracut"></a><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファキャッシュ</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+奇妙なことに、バッファキャッシュを使用したジャーナリングについての会話を開始します。</font><font style="vertical-align: inherit;">バッファキャッシュは、RAMに格納される唯一の構造ではなく、最も重要で複雑な構造の1つです。</font><font style="vertical-align: inherit;">その動作の原理を理解すること自体も重要です。さらに、この例では、RAMとディスクの間でデータがどのように交換されるかを理解します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キャッシングは、最新のコンピューティングシステムのあらゆる場所で使用されています。プロセッサのみの場合、3〜4つのキャッシュレベルがあります。一般に、2つのタイプのメモリのパフォーマンスの違いを滑らかにするためにキャッシュが必要です。一方は比較的高速ですが、すべての人にとってそれは十分ではなく、もう一方は比較的低速ですが豊富です。したがって、バッファキャッシュは、RAM（ナノ秒）とディスク（ミリ秒）へのアクセス時間の違いを滑らかにします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+オペレーティングシステムにも同じ問題を解決するディスクキャッシュがあることに注意してください。したがって、DBMSは通常、OSキャッシュをバイパスしてディスクに直接アクセスすることにより、二重キャッシュを回避しようとします。しかし、PostgreSQLの場合はそうではありません。すべてのデータは通常のファイル操作を使用して読み書きされます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さらに、ディスクアレイコントローラーには独自のキャッシュがあり、ディスク自体も含まれます。</font><font style="vertical-align: inherit;">この事実は、信頼性の問題にたどり着いたときにも役立ちます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、DBMSバッファキャッシュに戻ります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファの</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">配列であるために呼び出され</font><em><font style="vertical-align: inherit;">ます</font></em><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">各バッファは、1つのデータページ（ブロック）と見出しの場所です。</font><font style="vertical-align: inherit;">タイトルには、特に次のものが含まれます。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファー内のページのディスク上の位置（その中のファイルとブロック番号）;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ページ上のデータが変更され、遅かれ早かれディスクに書き込まれるべきであるという標識（このようなバッファーは</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ダーティ</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と呼ばれ</font><font style="vertical-align: inherit;">ます）。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファーの呼び出し回数（使用回数）</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファを固定するフラグ（固定カウント）。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファキャッシュはサーバーの共有メモリにあり、すべてのプロセスからアクセスできます。</font><font style="vertical-align: inherit;">データを操作するには-読み取りまたは変更-キャッシュ内の読み取りページを処理します。</font><font style="vertical-align: inherit;">ページがキャッシュにある間、RAMで作業し、ディスクアクセスを節約します。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/1u/-j/fd/1u-jfdnjvzjwvrddgb7tbvohhge.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初、キャッシュには空のバッファが含まれており、それらはすべて空きバッファのリストにリンクされています。</font><font style="vertical-align: inherit;">「次の犠牲者」へのポインタの意味は、少し後に明らかになります。</font><font style="vertical-align: inherit;">キャッシュ内の目的のページをすばやく見つけるために、ハッシュテーブルが使用されます。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キャッシュ内の検索ページ</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセスがページを読み取る必要がある場合、最初にハッシュテーブルを使用してバッファキャッシュ内でページを見つけようとします。</font><font style="vertical-align: inherit;">ハッシュキーは、ファイル番号とファイル内のページ番号です。</font><font style="vertical-align: inherit;">ハッシュテーブルの対応するバスケットで、プロセスはバッファ番号を見つけて、目的のページが本当に含まれているかどうかを確認します。</font><font style="vertical-align: inherit;">他のハッシュテーブルと同様に、ここで衝突が発生する可能性があります。</font><font style="vertical-align: inherit;">この場合、プロセスは複数のページをチェックする必要があります。</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ハッシュテーブルの使用は長い間批判されてきました。</font><font style="vertical-align: inherit;">この構造により、ページ上のバッファをすばやく見つけることができますが、たとえば、特定のテーブルによって占有されているすべてのバッファを見つける必要がある場合は、まったく役に立ちません。</font><font style="vertical-align: inherit;">しかし、だれもまだ良い代替品を提案していません。</font></font><br>
+</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+目的のページがキャッシュ内で見つかった場合、プロセスはピン数を増やすことによってバッファを「フリーズ」する必要があります（複数のプロセスが同時にこれを実行できます）。</font><font style="vertical-align: inherit;">バッファーが固定されている（カウンター値がゼロより大きい）限り、バッファーが使用されていると見なされ、その内容を「大幅に」変更しないでください。</font><font style="vertical-align: inherit;">たとえば、新しいバージョンの行がページに表示される場合があります-マルチバージョニングと可視性のルールにより、これは誰にも邪魔されません。</font><font style="vertical-align: inherit;">しかし、別のページをピン留めされたバッファーに読み込むことはできません。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">押し出し</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+必要なページがキャッシュに見つからない場合があります。この場合は、ディスクから何らかのバッファに読み取る必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キャッシュにまだ空きバッファがある場合は、最初の空きバッファが選択されます。しかし、遅かれ早かれそれらは終了し（通常、データベースのサイズは、キャッシュに割り当てられたメモリよりも大きくなります）、占有されているバッファーの1つを選択し、そこにページを強制的に出力し、空きスペースにある新しいバッファーを読み取る必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プリエンプションメカニズムは、バッファにアクセスするたびに、プロセスがバッファのヘッダーの使用カウントを増やすという事実に基づいています。したがって、他のバッファーよりも使用頻度が低いバッファーは、カウンター値が低く、プリエンプションの候補として適しています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クロックスイープアルゴリズムはすべてのバッファをループし（「次の犠牲者」へのポインタを使用）、アクセスカウントを1つ減らします。</font><font style="vertical-align: inherit;">プリエンプトするには、最初のバッファが選択されます。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ヒットカウント（使用カウント）がゼロ、</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">固定されていません（ピン数はゼロ）。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてのバッファーにゼロ以外のヒットカウンターがある場合、アルゴリズムは複数の円を実行し、カウンターの1つが最終的にゼロになるまでカウンターをリセットする必要があります。 「曲がりくねった円」を回避するために、ヒットカウンタの最大値は5に制限されています。ただし、バッファキャッシュサイズが大きい場合、このアルゴリズムは大きなオーバーヘッドを引き起こす可能性があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファが見つかると、次のことが起こります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファは、使用されている他のプロセスを示すために固定されています。修正に加えて、他のブロッキング手段も使用されますが、これについては別途説明します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファがダーティであることが判明した場合、つまり変更されたデータが含まれている場合、ページを単純に破棄することはできません。まず、ディスクに保存する必要があります。</font><font style="vertical-align: inherit;">ページを読み取るプロセスは「外部」データの記録を待つ必要があるため、これは良い状況ではありませんが、この影響は、後で検討するチェックポイントとバックグラウンドの記録プロセスによってスムーズになります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、新しいページがディスクから選択されたバッファに読み込まれます。</font><font style="vertical-align: inherit;">コール数のカウンターは1に設定されます。</font><font style="vertical-align: inherit;">さらに、ロードされたページへのリンクは、将来見つけられるようにハッシュテーブルに登録する必要があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、「次の犠牲者」へのリンクは次のバッファを指し、ロードされたばかりのポインタは、ポインタがバッファキャッシュ全体を回って再び戻るまでヒットカウンタを増やす時間があります。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">自分の目で</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PostgreSQLの慣例として、バッファキャッシュの内部を確認できる拡張機能があります。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">EXTENSION</span> pg_buffercache;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テーブルを作成し、1つの行を挿入します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> cacheme(<font></font>
+  id <span class="hljs-type">integer</span>
+) <span class="hljs-keyword">WITH</span> (autovacuum_enabled = <span class="hljs-keyword">off</span>);<font></font>
+=&gt; <span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> cacheme <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">1</span>);
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+バッファキャッシュには何が含まれますか？</font><font style="vertical-align: inherit;">少なくとも、ページが1行追加された状態で表示されます。</font><font style="vertical-align: inherit;">これを次のクエリで確認します。このクエリでは、テーブルに属するバッファのみを選択し（ファイル番号relfilenodeによって）、レイヤ番号（relforknumber）をデコードします。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> bufferid,
+  <span class="hljs-keyword">CASE</span> relforknumber
+    <span class="hljs-keyword">WHEN</span> <span class="hljs-number">0</span> <span class="hljs-keyword">THEN</span> <span class="hljs-string">'main'</span>
+    <span class="hljs-keyword">WHEN</span> <span class="hljs-number">1</span> <span class="hljs-keyword">THEN</span> <span class="hljs-string">'fsm'</span>
+    <span class="hljs-keyword">WHEN</span> <span class="hljs-number">2</span> <span class="hljs-keyword">THEN</span> <span class="hljs-string">'vm'</span>
+  <span class="hljs-keyword">END</span> relfork,<font></font>
+  relblocknumber,<font></font>
+  isdirty,<font></font>
+  usagecount,<font></font>
+  pinning_backends<font></font>
+<span class="hljs-keyword">FROM</span> pg_buffercache
+<span class="hljs-keyword">WHERE</span> relfilenode = pg_relation_filenode(<span class="hljs-string">'cacheme'</span>::<span class="hljs-type">regclass</span>);
+</code></pre><pre><code class="plaintext hljs"> bufferid | relfork | relblocknumber | isdirty | usagecount | pinning_backends<font></font>
+----------+---------+----------------+---------+------------+------------------<font></font>
+    15735 | main    |              0 | t       |          1 |                0<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+つまり、バッファには1ページあります。</font><font style="vertical-align: inherit;">ダーティ（isdirty）であり、ヒットカウンタは1（usagecount）であり、プロセス（pinning_backends）によって修正されていません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の行を追加して、クエリを繰り返します。</font><font style="vertical-align: inherit;">手紙を保存するには、別のセッションに行を挿入し、コマンドで長いリクエストを繰り返し</font></font><code>\g</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">|  =&gt; <span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> cacheme <span class="hljs-keyword">VALUES</span> (<span class="hljs-number">2</span>);
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; \g
+</code></pre><pre><code class="plaintext hljs"> bufferid | relfork | relblocknumber | isdirty | usagecount | pinning_backends<font></font>
+----------+---------+----------------+---------+------------+------------------<font></font>
+    15735 | main    |              0 | t       |          2 |                0<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+新しいバッファは追加されませんでした-2行目は同じページに収まります。</font><font style="vertical-align: inherit;">使用カウンターが増加していることに注意してください。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">|  =&gt; <span class="hljs-keyword">SELECT</span> * <span class="hljs-keyword">FROM</span> cacheme;
+</code></pre><pre><code class="plaintext hljs">|   id<font></font>
+|  ----<font></font>
+|    1<font></font>
+|    2<font></font>
+|  (2 rows)<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; \g
+</code></pre><pre><code class="plaintext hljs"> bufferid | relfork | relblocknumber | isdirty | usagecount | pinning_backends<font></font>
+----------+---------+----------------+---------+------------+------------------<font></font>
+    15735 | main    |              0 | t       |          3 |                0<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+また、読み取りのためにページにアクセスすると、カウンターも増加します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、あなたがきれいなら？</font></font><br>
+<br>
+<pre><code class="pgsql hljs">|  =&gt; <span class="hljs-keyword">VACUUM</span> cacheme;
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; \g
+</code></pre><pre><code class="plaintext hljs"> bufferid | relfork | relblocknumber | isdirty | usagecount | pinning_backends<font></font>
+----------+---------+----------------+---------+------------+------------------<font></font>
+    15731 | fsm     |              1 | t       |          1 |                0<font></font>
+    15732 | fsm     |              0 | t       |          1 |                0<font></font>
+    15733 | fsm     |              2 | t       |          2 |                0<font></font>
+    15734 | vm      |              0 | t       |          2 |                0<font></font>
+    15735 | main    |              0 | t       |          3 |                0<font></font>
+(5 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+クリーニングにより、可視性マップ（1ページ）と空き領域マップ（3ページ-このマップの最小サイズ）が作成されました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まあなど。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サイズ設定</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キャッシュサイズは、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">shared_buffers</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータによって設定されます</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">デフォルト値はとんでもない128 MBです。</font><font style="vertical-align: inherit;">これは、PostgreSQLをインストールした直後に増やすことが意味のあるパラメーターの1つです。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> setting, unit <span class="hljs-keyword">FROM</span> pg_settings <span class="hljs-keyword">WHERE</span> <span class="hljs-type">name</span> = <span class="hljs-string">'shared_buffers'</span>;
+</code></pre><pre><code class="plaintext hljs"> setting | unit<font></font>
+---------+------<font></font>
+ 16384   | 8kB<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+必要なキャッシュメモリはすべてサーバーの起動時に割り当てられるため、パラメーターを変更するとサーバーの再起動が必要になることに注意してください。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+適切な値を選択する理由は何ですか？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最大のデータベースでさえ、「ホットな」データのセットが制限されており、アクティブな作業がその時々に実行されます。理想的には、このセットはバッファキャッシュ（および「ワンタイム」データ用のスペース）に配置する必要があります。キャッシュサイズが小さい場合、頻繁に使用されるページが常に互いに圧迫し、過剰な入出力が発生します。しかし、不注意にキャッシュを増やすことも間違っています。サイズが大きいと、それを維持するためのオーバーヘッドコストが増加し、さらにRAMは他のニーズにも必要になります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、バッファキャッシュの最適なサイズはシステムによって異なります。データ、アプリケーション、負荷によって異なります。残念ながら、誰にでも似合う魔法のような意味はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+標準的な推奨事項は、RAMの1/4を最初の概算として採用することです（PostgreSQL 10より前のWindowsでは、小さいサイズを選択することが推奨されていました）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、状況を確認する必要があります。キャッシュサイズを増やしたり減らしたりして、システムのパフォーマンスを比較してみてください。もちろん、これにはテストベンチが必要であり、一般的な負荷を再現できる必要があります。本番環境では、このような実験は疑わしい喜びのように見えます。</font></font><br>
+<br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PgConf-2019でのNikolay Samokhvalovによるレポート「</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQL</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チューニング</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">へ</font></a><font style="vertical-align: inherit;">の</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">産業的アプローチ：データベース実験</font></a><font style="vertical-align: inherit;">」</font><font style="vertical-align: inherit;">を必ずご覧ください</font><font style="vertical-align: inherit;">。</font></font><br>
+</blockquote><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、何が起こっているかについてのいくつかの情報は、同じpg_buffercache拡張機能を使用して、ライブシステムで直接収集できます。最も重要なことは、直角に目を向けることです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえば、使用状況に応じてバッファの分布を調べることができます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> usagecount, count(*)
+<span class="hljs-keyword">FROM</span> pg_buffercache
+<span class="hljs-keyword">GROUP</span> <span class="hljs-keyword">BY</span> usagecount
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> usagecount;
+</code></pre><pre><code class="plaintext hljs"> usagecount | count<font></font>
+------------+-------<font></font>
+          1 |   221<font></font>
+          2 |   869<font></font>
+          3 |    29<font></font>
+          4 |    12<font></font>
+          5 |   564<font></font>
+            | 14689<font></font>
+(6 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この場合、空のカウンター値の多くは空きバッファーです。</font><font style="vertical-align: inherit;">何も起こらないシステムでも当然です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データベース内のどのテーブルがキャッシュされているか、およびこれらのデータがどれだけアクティブに使用されているかを確認できます（このクエリでアクティブに使用することで、使用カウンターが3を超えるバッファーを意味します）。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> c.relname,<font></font>
+  count(*) blocks,<font></font>
+  round( <span class="hljs-number">100.0</span> * <span class="hljs-number">8192</span> * count(*) / pg_table_size(c.oid) ) "% of rel",<font></font>
+  round( <span class="hljs-number">100.0</span> * <span class="hljs-number">8192</span> * count(*) <span class="hljs-keyword">FILTER</span> (<span class="hljs-keyword">WHERE</span> b.usagecount &gt; <span class="hljs-number">3</span>) / pg_table_size(c.oid) ) "% hot"
+<span class="hljs-keyword">FROM</span> pg_buffercache b
+  <span class="hljs-keyword">JOIN</span> pg_class c <span class="hljs-keyword">ON</span> pg_relation_filenode(c.oid) = b.relfilenode
+<span class="hljs-keyword">WHERE</span>  b.reldatabase <span class="hljs-keyword">IN</span> (
+         <span class="hljs-number">0</span>, (<span class="hljs-keyword">SELECT</span> <span class="hljs-type">oid</span> <span class="hljs-keyword">FROM</span> pg_database <span class="hljs-keyword">WHERE</span> datname = current_database())<font></font>
+       )<font></font>
+<span class="hljs-keyword">AND</span>    b.usagecount <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-keyword">null</span>
+<span class="hljs-keyword">GROUP</span> <span class="hljs-keyword">BY</span> c.relname, c.oid
+<span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> <span class="hljs-number">2</span> <span class="hljs-keyword">DESC</span>
+<span class="hljs-keyword">LIMIT</span> <span class="hljs-number">10</span>;
+</code></pre><pre><code class="plaintext hljs">          relname          | blocks | % of rel | % hot<font></font>
+---------------------------+--------+----------+-------<font></font>
+ vac                       |    833 |      100 |     0<font></font>
+ pg_proc                   |     71 |       85 |    37<font></font>
+ pg_depend                 |     57 |       98 |    19<font></font>
+ pg_attribute              |     55 |      100 |    64<font></font>
+ vac_s                     |     32 |        4 |     0<font></font>
+ pg_statistic              |     27 |       71 |    63<font></font>
+ autovac                   |     22 |      100 |    95<font></font>
+ pg_depend_reference_index |     19 |       48 |    35<font></font>
+ pg_rewrite                |     17 |       23 |     8<font></font>
+ pg_class                  |     16 |      100 |   100<font></font>
+(10 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでは、たとえば、vacテーブルが最も多くの場所を占めていることがわかります（前のトピックの1つで使用しました）が、長い間誰もアクセスしておらず、空きバッファがまだ不足していないという理由だけでまだ絞り出されていません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+思考に役立つ情報を提供する他のセクションを考え出すことができます。</font><font style="vertical-align: inherit;">そのような要求を考慮することだけが必要です：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数回繰り返す必要があります。数値は特定の制限内で異なります。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">拡張機能がバッファキャッシュを使用した操作を短時間ブロックするため、（監視の一環として）常に実行する必要はありません。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして一瞬。</font><font style="vertical-align: inherit;">PostgreSQLがオペレーティングシステムへの通常の呼び出しを通じてファイルを処理することを忘れないでください。したがって、二重のキャッシュがあります。つまり、ページはDBMSバッファキャッシュとOSキャッシュの両方に分類されます。</font><font style="vertical-align: inherit;">したがって、バッファキャッシュの「ミス」が必ずしも実際の入力/出力の必要性につながるわけではありません。</font><font style="vertical-align: inherit;">しかし、OSを混雑させる戦略は、DBMS戦略とは異なります。オペレーティングシステムは、読み取られたデータの意味について何も認識していません。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">質量変位</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+データの一括読み取りまたは書き込みを実行する操作では、有用なページをバッファキャッシュから「1回限り」のデータですばやく置き換えるリスクがあります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これが発生するのを防ぐために、いわゆる</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バッファリング</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">がそのような操作に使用され</font><font style="vertical-align: inherit;">ます。バッファキャッシュのごく一部が各操作に割り当てられます。押し出しはリング内でのみ機能するため、残りのバッファキャッシュデータは影響を受けません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+大きなテーブル（サイズがバッファキャッシュの4分の1を超えるサイズ）の順次読み取りの場合、32ページが割り当てられます。</font><font style="vertical-align: inherit;">別のプロセスもテーブルの読み取り中にこのデータを必要とする場合、最初にテーブルの読み取りを開始せず、既存のバッファリングに接続します。</font><font style="vertical-align: inherit;">スキャンした後、テーブルの「欠落」した先頭を読み取ります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+確認しよう。</font><font style="vertical-align: inherit;">これを行うには、1つの行がページ全体を占めるようにテーブルを作成します-数える方が便利です。</font><font style="vertical-align: inherit;">デフォルトのバッファキャッシュサイズは、128 MB = 8 KBの16384ページです。</font><font style="vertical-align: inherit;">したがって、4096を超えるページ行をテーブルに挿入する必要があります。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> big(<font></font>
+  id <span class="hljs-type">integer</span> <span class="hljs-keyword">PRIMARY KEY</span> <span class="hljs-keyword">GENERATED</span> <span class="hljs-keyword">ALWAYS</span> <span class="hljs-keyword">AS</span> <span class="hljs-keyword">IDENTITY</span>,<font></font>
+  s <span class="hljs-type">char</span>(<span class="hljs-number">1000</span>)<font></font>
+) <span class="hljs-keyword">WITH</span> (fillfactor=<span class="hljs-number">10</span>);<font></font>
+=&gt; <span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> big(s) <span class="hljs-keyword">SELECT</span> <span class="hljs-string">'FOO'</span> <span class="hljs-keyword">FROM</span> generate_series(<span class="hljs-number">1</span>,<span class="hljs-number">4096</span>+<span class="hljs-number">1</span>);
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テーブルを分析してみましょう。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">ANALYZE</span> big;<font></font>
+=&gt; <span class="hljs-keyword">SELECT</span> relpages <span class="hljs-keyword">FROM</span> pg_class <span class="hljs-keyword">WHERE</span> <span class="hljs-type">oid</span> = <span class="hljs-string">'big'</span>::<span class="hljs-type">regclass</span>;
+</code></pre><pre><code class="plaintext hljs"> relpages<font></font>
+----------<font></font>
+     4097<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、分析を読み取ったテーブルデータのキャッシュをクリアするためにサーバーを再起動する必要があります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main restart
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+再起動後、表全体を読みます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">EXPLAIN</span> (<span class="hljs-keyword">ANALYZE</span>, <span class="hljs-keyword">COSTS</span> <span class="hljs-keyword">OFF</span>) <span class="hljs-keyword">SELECT</span> count(*) <span class="hljs-keyword">FROM</span> big;
+</code></pre><pre><code class="plaintext hljs">                             QUERY PLAN                              <font></font>
+---------------------------------------------------------------------<font></font>
+ Aggregate (actual time=14.472..14.473 rows=1 loops=1)<font></font>
+   -&gt;  Seq Scan on big (actual time=0.031..13.022 rows=4097 loops=1)<font></font>
+ Planning Time: 0.528 ms<font></font>
+ Execution Time: 14.590 ms<font></font>
+(4 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、32のバッファだけがバッファキャッシュ内の表形式のページによって占有されていることを確認してください。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> count(*)
+<span class="hljs-keyword">FROM</span> pg_buffercache
+<span class="hljs-keyword">WHERE</span> relfilenode = pg_relation_filenode(<span class="hljs-string">'big'</span>::<span class="hljs-type">regclass</span>);
+</code></pre><pre><code class="plaintext hljs"> count<font></font>
+-------<font></font>
+    32<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+順次スキャンが禁止されている場合、テーブルはインデックスによって読み取られます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SET</span> enable_seqscan = <span class="hljs-keyword">off</span>;<font></font>
+=&gt; <span class="hljs-keyword">EXPLAIN</span> (<span class="hljs-keyword">ANALYZE</span>, <span class="hljs-keyword">COSTS</span> <span class="hljs-keyword">OFF</span>) <span class="hljs-keyword">SELECT</span> count(*) <span class="hljs-keyword">FROM</span> big;
+</code></pre><pre><code class="plaintext hljs">                                        QUERY PLAN                                         <font></font>
+-------------------------------------------------------------------------------------------<font></font>
+ Aggregate (actual time=50.300..50.301 rows=1 loops=1)<font></font>
+   -&gt;  Index Only Scan using big_pkey on big (actual time=0.098..48.547 rows=4097 loops=1)<font></font>
+         Heap Fetches: 4097<font></font>
+ Planning Time: 0.067 ms<font></font>
+ Execution Time: 50.340 ms<font></font>
+(5 rows)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この場合、バッファーリングは使用されず、テーブル全体がバッファーキャッシュに表示されます（ほとんどすべてのインデックスも同様）。 </font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> count(*)
+<span class="hljs-keyword">FROM</span> pg_buffercache
+<span class="hljs-keyword">WHERE</span> relfilenode = pg_relation_filenode(<span class="hljs-string">'big'</span>::<span class="hljs-type">regclass</span>);
+</code></pre><pre><code class="plaintext hljs"> count<font></font>
+-------<font></font>
+  4097<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同様に、バッファーリングはクリーニングプロセス（これも32ページ）と一括書き込み操作COPY INおよびCREATE TABLE AS SELECT（通常は2048ページですが、バッファーキャッシュ全体の1/8以下）に使用されます。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一時テーブル</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般的な規則の例外は一時テーブルです。</font><font style="vertical-align: inherit;">一時データは1つのプロセスしか認識できないため、共有バッファキャッシュでは何もする必要がありません。</font><font style="vertical-align: inherit;">さらに、一時データは単一のセッション内にのみ存在するため、障害から保護する必要はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一時データの場合、テーブルを所有するプロセスのローカルメモリでキャッシュが使用されます。</font><font style="vertical-align: inherit;">このようなデータは1つのプロセスでのみ使用できるため、ロックで保護する必要はありません。</font><font style="vertical-align: inherit;">ローカルキャッシュは、通常のプリエンプティブアルゴリズムを使用します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般的なバッファキャッシュとは異なり、一時テーブルはすべてのセッションで使用されるわけではないため、ローカルキャッシュのメモリは必要に応じて割り当てられます。</font><font style="vertical-align: inherit;">1つのセッションでの一時テーブルの最大メモリ量は、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">temp_buffers</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">パラメータによって制限されます</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キャッシュをウォームアップする</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+サーバーの再起動後、キャッシュが「ウォームアップ」するまでに時間がかかるはずです。実際にアクティブに使用されているデータが蓄積されます。</font><font style="vertical-align: inherit;">特定のテーブルからキャッシュにデータをすぐに読み取ると便利な場合があります。そのために特別な拡張機能が設計されています。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">EXTENSION</span> pg_prewarm;
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以前は、拡張機能はバッファキャッシュ内（またはOSキャッシュ内のみ）の特定のテーブルのみを読み取ることができました。</font><font style="vertical-align: inherit;">しかしPostgreSQL 11では、現在のキャッシュステータスをディスクに保存し、サーバーの再起動後にそれを復元することができました。</font><font style="vertical-align: inherit;">これを使用するには、ライブラリを</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">shared_preload_libraries</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に追加し</font><font style="vertical-align: inherit;">てサーバーを再起動</font><font style="vertical-align: inherit;">する必要があり</font><font style="vertical-align: inherit;">ます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">SYSTEM</span> <span class="hljs-keyword">SET</span> shared_preload_libraries = <span class="hljs-string">'pg_prewarm'</span>;
+</code></pre><br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main restart
+</code></pre><br><font style="vertical-align: inherit;"></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_prewarm.autoprewarm</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+パラメータが変更されていない場合、restartフィールド</font><font style="vertical-align: inherit;">はautoprewarmマスターバックグラウンドプロセスを自動的に開始し、</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_prewarm.autoprewarm_intervalで</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">キャッシュ内のページ</font><em><font style="vertical-align: inherit;">の</font></em><font style="vertical-align: inherit;">リストをディスクに</font><em><font style="vertical-align: inherit;">フラッシュし</font></em><font style="vertical-align: inherit;">ます（</font></font><em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">max_parallel_processesの</font></font></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">設定時に新しいプロセスを考慮することを忘れないでください</font><font style="vertical-align: inherit;">）。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> <span class="hljs-type">name</span>, setting, unit <span class="hljs-keyword">FROM</span> pg_settings <span class="hljs-keyword">WHERE</span> <span class="hljs-type">name</span> <span class="hljs-keyword">LIKE</span> <span class="hljs-string">'pg_prewarm%'</span>;
+</code></pre><pre><code class="plaintext hljs">              name               | setting | unit<font></font>
+---------------------------------+---------+------<font></font>
+ pg_prewarm.autoprewarm          | on      |<font></font>
+ pg_prewarm.autoprewarm_interval | 300     | s<font></font>
+(2 rows)<font></font>
+</code></pre><br>
+<pre><code class="plaintext hljs">postgres$ ps -o pid,command --ppid `head -n 1 /var/lib/postgresql/11/main/postmaster.pid` | grep prewarm
+</code></pre><pre><code class="plaintext hljs">10436 postgres: 11/main: autoprewarm master   
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+キャッシュに大きなテーブルはありません：</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> count(*)
+<span class="hljs-keyword">FROM</span> pg_buffercache
+<span class="hljs-keyword">WHERE</span> relfilenode = pg_relation_filenode(<span class="hljs-string">'big'</span>::<span class="hljs-type">regclass</span>);
+</code></pre><pre><code class="plaintext hljs"> count<font></font>
+-------<font></font>
+     0<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そのすべての内容が非常に重要であると想定すると、次の関数を呼び出すことで、それをバッファキャッシュに読み込むことができます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> pg_prewarm(<span class="hljs-string">'big'</span>);
+</code></pre><pre><code class="plaintext hljs"> pg_prewarm<font></font>
+------------<font></font>
+       4097<font></font>
+(1 row)<font></font>
+</code></pre><br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> count(*)
+<span class="hljs-keyword">FROM</span> pg_buffercache
+<span class="hljs-keyword">WHERE</span> relfilenode = pg_relation_filenode(<span class="hljs-string">'big'</span>::<span class="hljs-type">regclass</span>);
+</code></pre><pre><code class="plaintext hljs"> count<font></font>
+-------<font></font>
+  4097<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ページのリストは、autoprewarm.blocksファイルにダンプされます。</font><font style="vertical-align: inherit;">これを確認するには、自動予熱マスタープロセスが初めて実行されるまで待つだけですが、これは手動で開始します。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> autoprewarm_dump_now();
+</code></pre><pre><code class="plaintext hljs"> autoprewarm_dump_now<font></font>
+----------------------<font></font>
+                 4340<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+破棄されたページの数は4097を超えています。これには、サーバーによって既に読み取られたシステムカタログオブジェクトのページが含まれます。</font><font style="vertical-align: inherit;">そしてここにファイルがあります：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">postgres$ ls -l /var/lib/postgresql/11/main/autoprewarm.blocks
+</code></pre><pre><code class="plaintext hljs">-rw------- 1 postgres postgres 102078  29 15:51 /var/lib/postgresql/11/main/autoprewarm.blocks
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでサーバーを再起動します。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">student$ sudo pg_ctlcluster 11 main restart
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、起動直後に、テーブルは再びキャッシュに入れられます。</font></font><br>
+<br>
+<pre><code class="pgsql hljs">=&gt; <span class="hljs-keyword">SELECT</span> count(*)
+<span class="hljs-keyword">FROM</span> pg_buffercache
+<span class="hljs-keyword">WHERE</span> relfilenode = pg_relation_filenode(<span class="hljs-string">'big'</span>::<span class="hljs-type">regclass</span>);
+</code></pre><pre><code class="plaintext hljs"> count<font></font>
+-------<font></font>
+  4097<font></font>
+(1 row)<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これにより、同じ自動予熱マスタープロセスが提供されます。ファイルを読み取り、ページをデータベースに分割し、それらをソートして（ディスクからの読み取りが可能な限り一貫するように）、自動予熱ワーカーを別のワークフローに渡して処理します。</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">続くこと</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja458172/index.html">プリント回路基板上の差動ペアをトレースするときに電気接続をペアリングする方法</a></li>
+<li><a href="../ja458176/index.html">エクサフロップスの障壁は2021年に克服される</a></li>
+<li><a href="../ja458180/index.html">KeaベースのフェイルオーバーDHCPサーバー</a></li>
+<li><a href="../ja458182/index.html">私たちはRSSを通してVKontakteを読みます</a></li>
+<li><a href="../ja458184/index.html">HaxeとPHP：静的型付け、矢印関数、メタプログラミングなど</a></li>
+<li><a href="../ja458188/index.html">2019年にソーシャルネットワークを利用した方法</a></li>
+<li><a href="../ja458190/index.html">わかりました、それは私が存在することを意味します：コンピュータービジョンにおけるディープラーニングのレビュー（パート2）</a></li>
+<li><a href="../ja458204/index.html">Linuxのストレージパフォーマンスを評価する方法：オープンツールを使用したベンチマーク</a></li>
+<li><a href="../ja458206/index.html">サイトレイアウトの崇高なテキスト3。外観をカスタマイズしてプラグインをインストールします。初心者向けガイド</a></li>
+<li><a href="../ja458208/index.html">7月1日から7月7日までのモスクワでのデジタルイベント</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

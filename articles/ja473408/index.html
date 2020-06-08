@@ -1,0 +1,392 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>📝 📎 🧝🏾 Rubyの隠しメモリリークのデバッグ 🦉 😺 💃🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="2015年に、管理されたメモリリークを検出するためにRubyが提供するツールについて書きました。ほとんどの記事は、簡単に管理できるリークについて話しました。今回は、Rubyで分析するのが簡単ではないリークを排除するために使用できるツールとトリックについて説明します。特に、mwrap、heaptrac...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Rubyの隠しメモリリークのデバッグ</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/473408/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/vx/sf/qs/vxsfqsmdrslng_xf3oslr5os3ge.jpeg"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+2015年に、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管理されたメモリリーク</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">検出</font></a><font style="vertical-align: inherit;">するためにRubyが提供するツールについて書きました</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">ほとんどの記事は、簡単に管理できるリークについて話しました。</font><font style="vertical-align: inherit;">今回は、Rubyで分析するのが簡単ではないリークを排除するために使用できるツールとトリックについて説明します。</font><font style="vertical-align: inherit;">特に、mwrap、heaptrack、iseq_collector、およびchapについて説明します。</font></font><br>
+<a name="habracut"></a><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/5cd/bda/07b/5cdbda07b31678a618b6f6205f5f9722.png"></div><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">管理されていないメモリリーク</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この小さなプログラムは、mallocを直接呼び出すとリークを引き起こします。</font><font style="vertical-align: inherit;">RSSの消費量は16 MBで始まり、118 MBで終わります。</font><font style="vertical-align: inherit;">このコードは、1024バイトの10万ブロックをメモリに配置し、5万ブロックを削除します。</font></font><br>
+<br>
+<pre><code class="ruby hljs"><span class="hljs-keyword">require</span> <span class="hljs-string">'fiddle'</span>
+<span class="hljs-keyword">require</span> <span class="hljs-string">'objspace'</span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">usage</span></span>
+  rss = <span class="hljs-string">`ps -p <span class="hljs-subst">#{Process.pid}</span> -o rss -h`</span>.strip.to_i * <span class="hljs-number">1024</span>
+  puts <span class="hljs-string">"RSS: <span class="hljs-subst">#{rss / <span class="hljs-number">1024</span>}</span> ObjectSpace size <span class="hljs-subst">#{ObjectSpace.memsize_of_all / <span class="hljs-number">1024</span>}</span>"</span>
+<span class="hljs-keyword">end</span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">leak_memory</span></span><font></font>
+  pointers = []<font></font>
+  <span class="hljs-number">100_000</span>.times <span class="hljs-keyword">do</span>
+    i = Fiddle.malloc(<span class="hljs-number">1024</span>)<font></font>
+    pointers &lt;&lt; i<font></font>
+  <span class="hljs-keyword">end</span><font></font>
+<font></font>
+  <span class="hljs-number">50_000</span>.times <span class="hljs-keyword">do</span><font></font>
+    Fiddle.free(pointers.pop)<font></font>
+  <span class="hljs-keyword">end</span>
+<span class="hljs-keyword">end</span><font></font>
+<font></font>
+usage<font></font>
+<span class="hljs-comment"># RSS: 16044 ObjectSpace size 2817</span><font></font>
+<font></font>
+leak_memory<font></font>
+<font></font>
+usage<font></font>
+<span class="hljs-comment"># RSS: 118296 ObjectSpace size 3374</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+RSSは118 MBですが、Rubyオブジェクトは3メガバイトしか認識しません。</font><font style="vertical-align: inherit;">分析では、この非常に大きなメモリリークのごく一部のみを確認しています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そのようなリークの実際の例は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Oleg Dashevskyによって説明されてい</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。この素晴らしい記事を読むことをお勧めします。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mwrapを適用する</font></font></h1><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">mwrap</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、メモリ内のデータのすべての配置を監視し、このファミリのmallocおよびその他の機能をインターセプトするRuby用のメモリプロファイラです。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LD_PRELOAD</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用してメモリを配置および解放する呼び出しを傍受します</font><font style="vertical-align: inherit;">。カウントには</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">liburcu</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用し</font><font style="vertical-align: inherit;">、CおよびRubyコードで、各呼び出しポイントの割り当てカウンターと削除カウンターを追跡できます。 Mwrapはサイズが小さく、プロファイルされたプログラムのRSSの約2倍で、約2倍の速度です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+非常に小さいサイズとRubyサポートで他の多くのライブラリとは異なります。 Rubyファイル内の場所を追跡し、valgrind + masif Cレベルのバックトラックおよび類似のプロファイラーに限定されません。これにより、問題の原因の特定が大幅に簡素化されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロファイラーを使用するには、Mwrapシェルを介してアプリケーションを実行する必要があります。これにより、LD_PRELOAD環境が実装され、Rubyバイナリーが実行されます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mwrapをスクリプトに追加しましょう。</font></font><br>
+<br>
+<pre><code class="ruby hljs"><span class="hljs-keyword">require</span> <span class="hljs-string">'mwrap'</span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">report_leaks</span></span><font></font>
+  results = []<font></font>
+  Mwrap.each <span class="hljs-keyword">do</span> <span class="hljs-params">|location, total, allocations, frees, age_total, max_lifespan|</span><font></font>
+    results &lt;&lt; [location, ((total / allocations.to_f) * (allocations - frees)), allocations, frees]<font></font>
+  <span class="hljs-keyword">end</span>
+  results.sort! <span class="hljs-keyword">do</span> <span class="hljs-params">|(_, growth_a), (_, growth_b)|</span><font></font>
+    growth_b &lt;=&gt; growth_a<font></font>
+  <span class="hljs-keyword">end</span><font></font>
+<font></font>
+  results[<span class="hljs-number">0</span>..<span class="hljs-number">20</span>].each <span class="hljs-keyword">do</span> <span class="hljs-params">|location, growth, allocations, frees|</span>
+    <span class="hljs-keyword">next</span> <span class="hljs-keyword">if</span> growth == <span class="hljs-number">0</span>
+    puts <span class="hljs-string">"<span class="hljs-subst">#{location}</span> growth: <span class="hljs-subst">#{growth.to_i}</span> allocs/frees (<span class="hljs-subst">#{allocations}</span>/<span class="hljs-subst">#{frees}</span>)"</span>
+  <span class="hljs-keyword">end</span>
+<span class="hljs-keyword">end</span><font></font>
+<font></font>
+GC.start<font></font>
+Mwrap.clear<font></font>
+<font></font>
+leak_memory<font></font>
+<font></font>
+GC.start<font></font>
+<font></font>
+<span class="hljs-comment"># Don't track allocations for this block</span>
+Mwrap.quiet <span class="hljs-keyword">do</span><font></font>
+  report_leaks<font></font>
+<span class="hljs-keyword">end</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次に、Mwrapラッパーを使用してスクリプトを実行します。</font></font><br>
+<br>
+<pre><code class="ruby hljs">% gem install mwrap<font></font>
+% mwrap ruby leak.rb<font></font>
+leak.<span class="hljs-symbol">rb:</span><span class="hljs-number">12</span> <span class="hljs-symbol">growth:</span> <span class="hljs-number">51200000</span> allocs/frees (<span class="hljs-number">100000</span>/<span class="hljs-number">50000</span>)<font></font>
+leak.<span class="hljs-symbol">rb:</span><span class="hljs-number">51</span> <span class="hljs-symbol">growth:</span> <span class="hljs-number">4008</span> allocs/frees (<span class="hljs-number">1</span>/<span class="hljs-number">0</span>)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+mwrapはスクリプトのリークを正しく検出しました（50,000 * 1024）。また、特定されただけでなく、特定のライン（</font></font><code>i = Fiddle.malloc(1024)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">も分離さ</font><font style="vertical-align: inherit;">れ、リークが発生しました。プロファイラーはそれを呼び出しに正しく結び付けました</font></font><code>Fiddle.free</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+評価を扱っていることに注意してください。 mwrapは、ダイヤルピアによって割り当てられた共有メモリを監視してから、メモリの解放を監視します。ただし、異なるサイズのメモリブロックを割り当てる1つの呼び出しポイントがある場合、結果は不正確になります。推定値にアクセスできます</font></font><code>((total / allocations) * (allocations - frees))</code><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。さらに、リーク追跡を簡素化するために</font></font><code>age_total</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font><font style="vertical-align: inherit;">Mwrap </font><font style="vertical-align: inherit;">は解放された各オブジェクトの平均余命を合計し、</font></font><code>max_lifespan</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">呼び出し時に最も古いオブジェクトの有効期間</font><font style="vertical-align: inherit;">も追跡し</font><font style="vertical-align: inherit;">ます。値が</font></font><code>age_total / frees</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大量。これは、多数のガベージコレクションにもかかわらずメモリ消費が増加していることを意味します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+mwrapには、ノイズを減らすためのヘルパーがいくつかあります。</font></font><code>Mwrap.clear</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">すべての内部ストレージをクリアします。</font></font><code>Mwrap.quiet {}</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mwrapにコードのブロックを追跡させます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Mwrapのもう1つの際立った機能は、割り当てられて解放された合計バイト数の追跡です。</font></font><code>clear</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スクリプトから</font><font style="vertical-align: inherit;">削除</font><font style="vertical-align: inherit;">して実行します。</font></font><br>
+<br>
+<pre><code class="ruby hljs">usage<font></font>
+puts <span class="hljs-string">"Tracked size: <span class="hljs-subst">#{(Mwrap.total_bytes_allocated - Mwrap.total_bytes_freed) / <span class="hljs-number">1024</span>}</span>"</span><font></font>
+<font></font>
+<span class="hljs-comment"># RSS: 130804 ObjectSpace size 3032</span>
+<span class="hljs-comment"># Tracked size: 91691</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+RSSサイズは130 MBですが、Mwrapは91 MBしか表示しないため、結果は非常に興味深いものです。</font><font style="vertical-align: inherit;">これは、プロセスが膨らんでいることを示しています。</font><font style="vertical-align: inherit;">Mwrapを使用せずに実行すると、通常の状況ではプロセスに118 MBが必要であり、この単純なケースでは差は12 MBでした。</font><font style="vertical-align: inherit;">割り当て/解放パターンが断片化を引き起こしています。</font><font style="vertical-align: inherit;">この知識は非常に役立ちます。場合によっては、未構成のglibc mallocプロセスが断片化しすぎているため、RSSで使用されている非常に大量のメモリが実際に解放されています。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mwrapは古いレッドカーペットリークを分離できますか？</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+で</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">彼の記事、</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">オレグはredcarpetで非常に薄い漏れを単離する非常に徹底した方法について説明します。</font><font style="vertical-align: inherit;">多くの詳細があります。</font><font style="vertical-align: inherit;">測定することは非常に重要です。</font><font style="vertical-align: inherit;">RSSプロセスのタイムラインを構築していない場合、リークを取り除くことができない可能性があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+タイムマシンに入って、このようなリークに対してMwrapを使用する方がはるかに簡単であることを示しましょう。</font></font><br>
+<br>
+<pre><code class="ruby hljs"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">red_carpet_leak</span></span>
+  <span class="hljs-number">100_000</span>.times <span class="hljs-keyword">do</span><font></font>
+<font></font>
+    markdown = Redcarpet::Markdown.new(Redcarpet::Render::HTML, extensions = {})<font></font>
+    markdown.render(<span class="hljs-string">"hi"</span>)
+  <span class="hljs-keyword">end</span>
+<span class="hljs-keyword">end</span><font></font>
+<font></font>
+GC.start<font></font>
+Mwrap.clear<font></font>
+<font></font>
+red_carpet_leak<font></font>
+<font></font>
+GC.start<font></font>
+<font></font>
+<span class="hljs-comment"># Don't track allocations for this block</span>
+Mwrap.quiet <span class="hljs-keyword">do</span><font></font>
+  report_leaks<font></font>
+<span class="hljs-keyword">end</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redcarpet 3.3.2：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">redcarpet.rb:51 growth: 22724224 allocs/frees (500048/400028)<font></font>
+redcarpet.rb:62 growth: 4008 allocs/frees (1/0)<font></font>
+redcarpet.rb:52 growth: 634 allocs/frees (600007/600000)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Redcarpet 3.5.0：</font></font><br>
+<br>
+<pre><code class="plaintext hljs">redcarpet.rb:51 growth: 4433 allocs/frees (600045/600022)<font></font>
+redcarpet.rb:52 growth: 453 allocs/frees (600005/600000)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセスを半分の速度で実行する余裕がある場合は、結果をファイルに記録してMwrap製品で再起動するだけで、広範囲のメモリリークを特定できます。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">謎のリーク</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最近、Railsはバージョン6に更新されました。一般的に、エクスペリエンスは非常にポジティブで、パフォーマンスはほぼ同じままでした。 Rails 6には、使用する非常に優れた機能があります（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Zeitwerkなど</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。 Railsはテンプレートのレンダリング方法を変更しましたが、互換性のためにいくつかの変更が必要でした。アップデートの数日後、Sidekiqタスク実行者のRSSの増加に気付きました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+mwrapは、その割り当て（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">link</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">により、メモリ消費の急激な増加を報告しました</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="ruby hljs">    source.encode!
+    <span class="hljs-comment"># Now, validate that the source we got back from the template</span>
+    <span class="hljs-comment"># handler is valid in the default_internal. This is for handlers</span>
+    <span class="hljs-comment"># that handle encoding but screw up</span>
+    <span class="hljs-keyword">unless</span> source.valid_encoding?<font></font>
+        raise WrongEncodingError.new(source, Encoding.default_internal)<font></font>
+    <span class="hljs-keyword">end</span><font></font>
+<font></font>
+    <span class="hljs-keyword">begin</span>
+        mod.module_eval(source, identifier, <span class="hljs-number">0</span>)
+    <span class="hljs-keyword">rescue</span> SyntaxError
+        <span class="hljs-comment"># Account for when code in the template is not syntactically valid; e.g. if we're using</span>
+        <span class="hljs-comment"># ERB and the user writes &lt;%= foo( %&gt;, attempting to call a helper `foo` and interpolate</span>
+        <span class="hljs-comment"># the result into the template, but missing an end parenthesis.</span>
+        raise SyntaxErrorInTemplate.new(<span class="hljs-keyword">self</span>, original_source)
+    <span class="hljs-keyword">end</span>
+<span class="hljs-keyword">end</span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">handle_render_error</span><span class="hljs-params">(view, e)</span></span>
+    <span class="hljs-keyword">if</span> e.is_a?(Template::Error)</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初はそれは私たちをとても困惑させました。</font><font style="vertical-align: inherit;">Mwrapに不満がある理由を理解しようとしていましたか？</font><font style="vertical-align: inherit;">たぶん彼は壊れましたか？</font><font style="vertical-align: inherit;">メモリ使用量が増加しても、Rubyのヒープは変化しませんでした。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/7d0/79b/b60/7d079bb600f7d072515d081bb584c500.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ヒープ上の200万のスロットは、78 MB（スロットあたり40バイト）しか消費しませんでした。</font><font style="vertical-align: inherit;">行と配列はより多くのスペースを占める可能性がありますが、それでも、観察された異常なメモリ消費を説明していませんでした。</font><font style="vertical-align: inherit;">これは私が完了し</font></font><code>rbtrace -p SIDEKIQ_PID -e ObjectSpace.memsize_of_all</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">た</font><font style="vertical-align: inherit;">ときに確認されました</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+記憶はどこに行きましたか？</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ヒープトラック</font></font></h1><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Heaptrack</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、Linux用のヒープメモリプロファイラーです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ミリアン・ウルフは、完全に</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">説明</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">する方法プロファイラ作品を、いくつかのスピーチ（で彼の話</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">2</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。実際、これは非常に効率的なネイティブヒーププロファイラーであり、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">libunwind</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の助けを借りて、</font><font style="vertical-align: inherit;">プロファイルされたアプリケーションからバックトレースを収集します。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Valgrind / Massif</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">よりも著しく高速に動作</font><font style="vertical-align: inherit;">し、製品での一時的なプロファイリングに非常に便利です。すでに実行中のプロセスにアタッチできます！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ほとんどのヒーププロファイラーと同様に、mallocファミリーから各関数を呼び出すとき、Heaptrackはカウントする必要があります。この手順は間違いなくプロセスを遅くします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私の意見では、ここのアーキテクチャは可能な限り最高です。インターセプトは、</font></font><code>LD_PRELOAD</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">または</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GDB</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">使用して実行され</font><font style="vertical-align: inherit;">、プロファイラーをロードします。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">特別なFIFOファイル</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用して</font><font style="vertical-align: inherit;">、プロファイルされたプロセスから可能な限り迅速にデータを転送します。</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">Heaptrack</font></a><font style="vertical-align: inherit;">ラッパー</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トラブルシューティングを簡素化する単純なシェルスクリプトです。 2番目のプロセスは、FIFOから情報を読み取り、その場で追跡データを圧縮します。 Heaptrackは「チャンク」で動作するため、プロファイリングを開始して数秒後、セッションの真ん中でプロファイルを分析できます。プロファイルファイルを別の場所にコピーして、Heaptrack GUIを起動するだけです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">GitLabチケット</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、Heaptrackを起動する可能性を教えてくれました。彼らがそれを起動できれば、私はできる。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+私たちのアプリケーションはコンテナで動作し、から再起動する必要があり</font></font><code>--cap-add=SYS_PTRACE</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。これにより、GDBが</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ptrace</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用できるようになります</font><font style="vertical-align: inherit;">。これは、Heaptrackがそれ自体を実装するために必要です。私も</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">少しハック</font></a><font style="vertical-align: inherit;">が必要です</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">シェルファイルを</font></font><code>root</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">非</font></font><code>root</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プロセス</font><font style="vertical-align: inherit;">プロファイル</font><font style="vertical-align: inherit;">に適用する</font><font style="vertical-align: inherit;">には</font><font style="vertical-align: inherit;">（制限付きアカウントのコンテナーでDiscourseアプリケーションを起動しました）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すべてが完了した後は、完了</font></font><code>heaptrack -p PID</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">して結果が表示されるのを待つ</font><font style="vertical-align: inherit;">だけ</font><font style="vertical-align: inherit;">です。 Heaptrackは優れたツールであることが判明し、メモリリークで発生するすべてを追跡するのは非常に簡単でした。</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/72c/9ad/a55/72c9ada55ca01cb02e06d1b433fab705.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+グラフでは、2つの飛躍が見られます。1つはによるもの</font></font><code>cppjieba</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で、もう</font><font style="vertical-align: inherit;">1つ</font></font><code>objspace_xmalloc0</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">はRuby </font><font style="vertical-align: inherit;">によるもの</font><font style="vertical-align: inherit;">です。</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">cppjieba</font></a></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+について知ってい</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ました</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。中国語のセグメント化はコストがかかり、大きな辞書が必要なので、これはリークではありません。しかし、Rubyでメモリを割り当てることについてはどうでしょうか？</font></font><br>
+<br>
+<img src="https://habrastorage.org/getpro/habr/post_images/340/72a/c57/34072ac5776eea391854dabe54f18056.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+主な成長は</font></font><code>iseq_set_sequence</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><code>compile.c</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。リークは命令のシーケンスが原因であることが判明しました。これにより、Mwrapによって発見されたリークが解消されました。その理由は</font></font><code>mod.module_eval(source, identifier, 0)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、メモリから削除されない命令のシーケンスを作成した</font><font style="vertical-align: inherit;">ため</font><font style="vertical-align: inherit;">です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+遡及分析で、Rubyからのヒープダンプを慎重に検討した場合、これらのIMEMOはすべてこのダンプに含まれているため、これらに気付いたでしょう。それらは、インプロセス診断中は単に見えなくなります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この時点から、デバッグはかなり簡単になりました。 evalモジュールへのすべての呼び出しを追跡し、評価結果をダンプしました。大きなクラスに何度もメソッドを追加していることがわかりました。以下は、発生したバグの簡単なビューです。</font></font><br>
+<br>
+<pre><code class="python hljs">require <span class="hljs-string">'securerandom'</span><font></font>
+module BigModule; end<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">leak_methods</span>
+  10<span class="hljs-title">_000</span>.<span class="hljs-title">times</span> <span class="hljs-title">do</span>
+    <span class="hljs-title">method</span> = "<span class="hljs-title">def</span> <span class="hljs-title">_</span>#{<span class="hljs-title">SecureRandom</span>.<span class="hljs-title">hex</span>}; #{"<span class="hljs-title">sleep</span>;" * 100}; <span class="hljs-title">end</span>"
+    <span class="hljs-title">BigModule</span>.<span class="hljs-title">module_eval</span>(<span class="hljs-params">method</span>)
+  <span class="hljs-title">end</span>
+<span class="hljs-title">end</span>
+
+<span class="hljs-title">usage</span>
+# <span class="hljs-title">RSS</span>:</span> <span class="hljs-number">16164</span> ObjectSpace size <span class="hljs-number">2869</span><font></font>
+<font></font>
+leak_methods<font></font>
+<font></font>
+usage<font></font>
+<span class="hljs-comment"># RSS: 123096 ObjectSpace size 5583</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Rubyには、次の理由により一連の命令を格納するクラスがあります</font></font><code>RubyVM::InstructionSequence</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">ただし、Rubyはこれらのラッパーオブジェクトを作成するのが面倒なので、不必要にそれらを格納することは非効率的です。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">笹田</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">浩一氏</font><font style="vertical-align: inherit;">が</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">iseq_collector</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">依存関係を作成しました</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">このコードを追加すると、隠しメモリを見つけることができます。</font></font><br>
+<br>
+<pre><code class="ruby hljs"><span class="hljs-keyword">require</span> <span class="hljs-string">'iseq_collector'</span>
+puts <span class="hljs-string">"<span class="hljs-subst">#{ObjectSpace.memsize_of_all_iseq / <span class="hljs-number">1024</span>}</span>"</span>
+<span class="hljs-comment"># 98747</span><font></font>
+<font></font>
+ObjectSpace.memsize_of_all_iseq</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ 命令のすべてのシーケンスを具体化します。これにより、プロセスのメモリ消費量がわずかに増加し、ガベージコレクターに少し多くの作業を与えることができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえば、コレクターの開始前と開始後にISEQの数を計算すると、開始後</font></font><code>ObjectSpace.memsize_of_all_iseq</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、クラスカウンター</font></font><code>RubyVM::InstructionSequence</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">が0から11128に増加します（この例では）。</font></font><br>
+<br>
+<pre><code class="ruby hljs"><span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">count_iseqs</span></span><font></font>
+  ObjectSpace.each_object(RubyVM::InstructionSequence).count<font></font>
+<span class="hljs-keyword">end</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これらのラッパーは、メソッドのライフサイクル全体を通して残ります。ガベージコレクターを完全に実行して訪問する必要があります。</font><font style="vertical-align: inherit;">私たちの問題は、メールテンプレートのレンダリングを担当するクラス（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hotfix 1</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">hotfix 2</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）を</font><font style="vertical-align: inherit;">再利用することで解決しました</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">チャップ</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+デバッグ中、私は非常に興味深いツールを使用しました。数年前、Tim BoddyはVMWareがメモリリークを分析するために使用する内部ツールを引き出し、コードをオープンにしました。これが私が見つけた唯一のビデオです：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">//www.youtube.com/watch?v=EZ2n3kGtVDk</font></a><font style="vertical-align: inherit;">。ほとんどの類似したツールとは異なり、これは実行可能プロセスに影響を与えません。メインダンプのファイルに簡単に適用できますが、glibcはアロケーターとして使用されます（jemalloc / tcmallocなどのサポートはありません）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+chapを使用すると、発生したリークを簡単に検出できます。 chapバイナリーを持つディストリビューションはほとんどありませんが</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、ソースコードから</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">簡単に</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">コンパイル</font></a><font style="vertical-align: inherit;">でき</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。彼は非常に積極的にサポートされています。</font></font><br>
+<br>
+<pre><code class="plaintext hljs"># 444098 is the `Process.pid` of the leaking process I had<font></font>
+sudo gcore -p 444098<font></font>
+<font></font>
+chap core.444098<font></font>
+chap&gt; summarize leaked<font></font>
+Unsigned allocations have 49974 instances taking 0x312f1b0(51,573,168) bytes.<font></font>
+   Unsigned allocations of size 0x408 have 49974 instances taking 0x312f1b0(51,573,168) bytes.<font></font>
+49974 allocations use 0x312f1b0 (51,573,168) bytes.<font></font>
+<font></font>
+chap&gt; list leaked<font></font>
+...<font></font>
+Used allocation at 562ca267cdb0 of size 408<font></font>
+Used allocation at 562ca267d1c0 of size 408<font></font>
+Used allocation at 562ca267d5d0 of size 408<font></font>
+...<font></font>
+<font></font>
+<font></font>
+chap&gt; summarize anchored <font></font>
+....<font></font>
+Signature 7fbe5caa0500 has 1 instances taking 0xc8(200) bytes.<font></font>
+23916 allocations use 0x2ad7500 (44,922,112) bytes.</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Chapは署名を使用して、さまざまなメモリ割り当ての場所を見つけることができ、GDBを補完できます。</font><font style="vertical-align: inherit;">Rubyでデバッグする場合、プロセスが使用しているメモリを特定するのに非常に役立ちます。</font><font style="vertical-align: inherit;">使用されているメモリの合計が表示されます。時々glibc mallocが断片化しすぎて、使用されているボリュームが実際のRSSと大きく異なる場合があります。</font><font style="vertical-align: inherit;">ディスカッションを読むことができます：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">機能＃14759：[パッチ] glibcのM_ARENA_MAXを設定するmalloc-Rubyマスター-Ruby問題追跡システム</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">Chapは、使用されているすべてのメモリを正しくカウントし、その割り当てを詳細に分析できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+さらに、chapをワークフローに統合して、リークを自動的に検出し、そのようなアセンブリにフラグを付けることができます。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">フォローアップ作業</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このデバッグラウンドでは、ヘルパーツールキットに関連するいくつかの質問がありました。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">HeaptrackでRubyからコールスタックフレームをキャプチャするためのサポートが必要です。</font><font style="vertical-align: inherit;">ミリアンもこれに興味があります：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">412929-Rubyの土地からフレームを取得できますか？</font></font></a><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Rubyに幅広い診断機能をサポートしてもらいたい：</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">https</font></a><font style="vertical-align: inherit;"> : </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">//bugs.ruby-lang.org/issues/16245</font></font></a><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Mwrapを製品版で少し使いやすくしたいと思います。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">こちらをお読みください</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+</ul><br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">概要</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+非常に複雑なメモリリークをデバッグするための今日のツールキットは、4年前のものよりもはるかに優れています。</font><font style="vertical-align: inherit;">Mwrap、Heaptrack、およびchapは、開発および操作中に発生するメモリの問題を解決するための非常に強力なツールです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Rubyの単純なメモリリークを探している場合は</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、2015年の記事を</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">読む</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">こと</font></a><font style="vertical-align: inherit;">をお勧めし</font><font style="vertical-align: inherit;">ます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+次回、複雑なネイティブメモリリークのデバッグを開始するときに、それが簡単になることを願っています。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja473392/index.html">新しい銀行サイトを立ち上げるにはどうすればよいですか。パート2</a></li>
+<li><a href="../ja473394/index.html">皆嘘つきです！CRM Advertisingについて</a></li>
+<li><a href="../ja473396/index.html">別のビトリクスが必要です</a></li>
+<li><a href="../ja473400/index.html">LPCNetを使用した、高品質、軽量、適応可能なテキスト読み上げテクノロジー</a></li>
+<li><a href="../ja473406/index.html">無料マラソン「データサイエンスとAI：シリーズのスクリプトを書くように機械に教える」</a></li>
+<li><a href="../ja473412/index.html">整数オーバーフローを検索するためのClang Static Analyzerのプラグインの作成</a></li>
+<li><a href="../ja473416/index.html">ZeroNights 2019カンファレンスプログラム</a></li>
+<li><a href="../ja473418/index.html">OSCP-攻撃的なセキュリティ</a></li>
+<li><a href="../ja473420/index.html">11月2日にニジニノヴゴロドでPHPミーティングのシーズンが始まります</a></li>
+<li><a href="../ja473424/index.html">ARMはグラフィックソリューションMali-G57 ValhallおよびMali-D37、ニューロプロセッサEthos-N57およびN37を発表しました</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

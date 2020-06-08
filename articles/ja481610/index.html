@@ -1,0 +1,383 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🎃 🛐 🧟 PostgreSQLアンチパターン：負荷のかかった大きなテーブルの更新 ⏺️ 👨🏻‍⚕️ 👰</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="「数百万」のアクティブに使用されているPostgreSQLテーブルの多数のレコードを更新する必要がある場合はどうすればよいですか（絶対にしないでください）—新しいフィールドの値を初期化するか、既存のレコードのエラーを修正しますか？同時に、あなたの時間を節約し、ダウンタイムのために会社のお金を失うこと...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>PostgreSQLアンチパターン：負荷のかかった大きなテーブルの更新</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/tensor/blog/481610/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">百万」のアクティブに使用されているPostgreSQLテーブルの</font><b><font style="vertical-align: inherit;">多数のレコード</font></b><font style="vertical-align: inherit;">を</font><b><font style="vertical-align: inherit;">更新する</font></b><font style="vertical-align: inherit;">必要がある場合はどうすればよいですか（絶対にしないでください）</font><font style="vertical-align: inherit;">—新しいフィールドの値を初期化するか、既存のレコードのエラーを修正しますか？</font><font style="vertical-align: inherit;">同時に、あなたの時間を節約し、ダウンタイムのために会社のお金を失うことはありません。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/vw/8_/jj/vw8_jjubp0owqcielxtg6gjufng.png"><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+テストデータを準備します。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> tbl(k <span class="hljs-built_in">text</span>, v <span class="hljs-built_in">integer</span>);<font></font>
+<font></font>
+<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> tbl
+<span class="hljs-keyword">SELECT</span>
+  <span class="hljs-keyword">chr</span>(<span class="hljs-keyword">ascii</span>(<span class="hljs-string">'a'</span>::<span class="hljs-built_in">text</span>) + (random() * <span class="hljs-number">26</span>)::<span class="hljs-built_in">integer</span>) k<font></font>
+, (random() * <span class="hljs-number">100</span>)::<span class="hljs-built_in">integer</span> v
+<span class="hljs-keyword">FROM</span>
+  generate_series(<span class="hljs-number">1</span>, <span class="hljs-number">1000000</span>) i; <span class="hljs-comment">--  ,   !</span><font></font>
+<font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tbl(k, v);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+'q' .. 'z'の範囲のkを持つすべてのレコードについて、vの値を1だけ増やしたいとします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、実験を開始する前に、元のデータセットを保持して、毎回「クリーン」な結果を得られるようにしましょう。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> _tbl <span class="hljs-keyword">AS</span> <span class="hljs-keyword">TABLE</span> tbl;</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">更新：すべてに1つ、すべてに1つ</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すぐに頭に浮かぶ最も簡単なオプションは、すべてを「1回の更新で」実行することです。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span><font></font>
+  tbl<font></font>
+<span class="hljs-keyword">SET</span>
+  v = v + <span class="hljs-number">1</span>
+<span class="hljs-keyword">WHERE</span>
+  k <span class="hljs-keyword">BETWEEN</span> <span class="hljs-string">'q'</span> <span class="hljs-keyword">AND</span> <span class="hljs-string">'z'</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/zs/0h/nb/zs0hnbsdmvjrctxn_wkia0wr6oy.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[explain.tensor.ruを参照してください]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+非常に「短い」行に対する一見シンプルな操作には、2.5秒以上かかりました。そして、式がより複雑である場合、行はより信頼性が高く、より多くのレコードがあり、さらにいくつかのトリガーが介入します-時間は数分ではなく数時間に増加する可能性があります。アクティブなOLTPロードがある場合、待機する準備ができており、システムの残りの部分がこのベースに関連付けられているとします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+問題は、UPDATEが特定のレコードに到達するとすぐに</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、実行が終了するまで</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">それを</font><b><font style="vertical-align: inherit;">ブロックすること</font></b><font style="vertical-align: inherit;">です。同じレコードと同時に並行して起動された「ポイント」UPDATEで作業したい場合でも</font><font style="vertical-align: inherit;">、更新リクエストの</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ブロック</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><b><font style="vertical-align: inherit;">待機し</font></b><font style="vertical-align: inherit;">て</font><b><font style="vertical-align: inherit;">「フック」し</font></b><font style="vertical-align: inherit;">、作業の最後までサグします。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/p7/gx/qu/p7gxqutnt9o8zuwiwjlbmrf4fk8.png"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+© </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wumo.com/wumo</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+最悪</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">なのは</font></a><font style="vertical-align: inherit;">、データベースへの接続が必要に応じて作成されるWebシステムの状況です。結局、このような「ぶら下がり」接続が蓄積し、データベースとクライアントの両方のリソースを消費します。機構。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">分割取引</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般に、すべてが1つの要求で行われる場合、すべてがあまり良くない。</font><font style="vertical-align: inherit;">はい、1つの大きなUPDATEをいくつかの小さなUPDATEに分割しても、すべて</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を1つのトランザクション</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">で機能させる場合でも、トランザクション全体が終了するまで可変レコードがロックされるため、ロックの問題は変わりません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、1つの大きなトランザクションをいくつかに分割する必要があります。</font><font style="vertical-align: inherit;">これを行うには、外部の手段を使用して、個別のトランザクションを生成するある種のスクリプトを作成するか、データベース自体が提供できる機能を使用できます。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CALLおよびトランザクション管理</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PostgreSQL 11以降で</font><font style="vertical-align: inherit;">は、手続き型コード内で</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">トランザクションを管理でき</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ます。</font></font><br>
+<blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">CALLコマンドによって呼び出されたプロシージャ、およびコードの匿名ブロック（DOコマンド内）では、COMMITおよびROLLBACKを実行してトランザクションを完了できます。</font><font style="vertical-align: inherit;">これらのコマンドによってトランザクションが完了すると、新しいトランザクションが自動的に開始されます。</font></font></blockquote><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">しかし、このバージョンは誰からも遠く、CALLでの作業には制限があります。</font><font style="vertical-align: inherit;">したがって、外部の手段なしで問題を解決し、現在のすべてのバージョンで機能し、サーバー自体に最小限の変更を加えても機能するようにします。コンパイルして再起動する必要はありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同じ理由で、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_backgroundを介して自律型トランザクションを</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">編成するオプションについては考慮しません</font><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h4><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ベースの「内部」で接続を管理する</font></font></h4><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQLはこれ</font><font style="vertical-align: inherit;">
+まで</font><font style="vertical-align: inherit;">、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">自律型トランザクション</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">エミュレートする</font></a><font style="vertical-align: inherit;">ためにさまざまな方法</font><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">使用しており、追加の手続き型言語または標準の</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dblinkモジュール</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を通じて、個別の追加の接続を生成していました</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">後者の利点は、デフォルトでほとんどのディストリビューションに含まれており、データベースでアクティブにするために必要なコマンドは1つだけであることです。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> EXTENSION dblink;</code></pre><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「...と、多くの、多く</font></font><s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">のp</font></font></s><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">嫌な子供たちがもたらしました」</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、dblinkバインディングを作成する前に、「通常の開発者」が更新する必要がある大きなデータセットを小さなデータセットに分割する方法を最初に理解しましょう。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ナイーブリミット...オフセット</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初のアイデアは、「ページ分割」検索を実行することです。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">新しいリクエストごとにOFFSETを増やすことにより、</font><i><font style="vertical-align: inherit;">「</font></i><i><font style="vertical-align: inherit;">毎回</font></i><i><b><font style="vertical-align: inherit;">次の1000レコードを</font></b></i><i><font style="vertical-align: inherit;">選択しましょう</font></i><i><font style="vertical-align: inherit;">」</font></i><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span><font></font>
+  tbl T<font></font>
+<span class="hljs-keyword">SET</span>
+  v = T.v + <span class="hljs-number">1</span>
+<span class="hljs-keyword">FROM</span><font></font>
+  (<font></font>
+    <span class="hljs-keyword">SELECT</span><font></font>
+      k<font></font>
+    , v<font></font>
+    <span class="hljs-keyword">FROM</span><font></font>
+      tbl<font></font>
+    <span class="hljs-keyword">WHERE</span>
+      k <span class="hljs-keyword">BETWEEN</span> <span class="hljs-string">'q'</span> <span class="hljs-keyword">AND</span> <span class="hljs-string">'z'</span>
+    <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span> <span class="hljs-comment">--      </span>
+      k, v <span class="hljs-comment">--     !</span>
+    <span class="hljs-keyword">LIMIT</span> $<span class="hljs-number">1</span> <span class="hljs-keyword">OFFSET</span> $<span class="hljs-number">2</span> * $<span class="hljs-number">1</span><font></font>
+  ) S<font></font>
+<span class="hljs-keyword">WHERE</span>
+  (T.k, T.v) = (S.k, S.v);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このソリューションのパフォーマンスをテストする前に、データセットを復元します。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">TRUNCATE</span> <span class="hljs-keyword">TABLE</span> tbl;
+<span class="hljs-keyword">INSERT</span> <span class="hljs-keyword">INTO</span> tbl <span class="hljs-keyword">TABLE</span> _tbl;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+上記の計画で見たように、約384Kのレコードを更新する必要があります。したがって、更新が最後の方でどのように実行されるかをすぐに見てみましょう</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-1000エントリの300番目の反復の領域で</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/j8/h3/ju/j8h3juddfyiwgyg6nxe4yjmp5w4.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[explain.tensor.ruを見てください]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ああ... </font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">レコード</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">の終わり近くで</font><b><font style="vertical-align: inherit;">1Kエントリの</font></b><font style="vertical-align: inherit;">サンプルを更新すると</font><b><font style="vertical-align: inherit;">、</font></b><font style="vertical-align: inherit;">ほぼ同じ時間がかかります、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">完全オリジナル版</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは私たちの選択ではありません。反復回数が少なく、オフセット値が小さい場合でも、なんとかして使用できます。</font><font style="vertical-align: inherit;">データベース</font><font style="vertical-align: inherit;">の</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LIMIT X OFFSET Y</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、「</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最初のX + Yレコードを減算/選択/形成し、最初のYをゴミ箱に捨てる</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">」</font><font style="vertical-align: inherit;">と同等</font><font style="vertical-align: inherit;">であるため、大きなY値の場合は悲劇的に見えます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際、この方法</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">はまったく適用できません</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">選択は更新された値に依存するだけでなく、同じキーを持つブロックがページ境界に到達した場合、レコードの一部をスキップして他の部分を2回更新するリスクもあります。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/v0/kh/mn/v0khmnh_afkafan4fvvf4sfgq34.png"><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この例では、「緑」レコードを2回更新し、「赤」を更新しました「一度きりではない。</font><font style="vertical-align: inherit;">ソートキーの値が同じであるため、そのようなブロック内のレコード自体の順序は固定されていません。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">悲しいORDER BY ... LIMIT</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+タスクを少し変更してみましょう。値v + 1を書き込む新しいフィールドを追加します。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">ALTER</span> <span class="hljs-keyword">TABLE</span> tbl <span class="hljs-keyword">ADD</span> <span class="hljs-keyword">COLUMN</span> x <span class="hljs-built_in">integer</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このデザインは、テーブル全体を書き直すことなく、ほぼ瞬時に機能することに注意してください。</font><font style="vertical-align: inherit;">ただし、DEFAULT値を追加する</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と、11番目のバージョン以降で</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">のみ</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">開始され</font></a><font style="vertical-align: inherit;">ます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+すでに苦い経験で教えられているので、初期化されていないエントリのみが残るインデックスをすぐに作成しましょう。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> CONCURRENTLY <span class="hljs-keyword">ON</span> tbl(k, v) <span class="hljs-keyword">WHERE</span> x <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+CONCURRENTLYインデックスは、テーブルの読み取り/書き込み作業をブロックしませんが、巨大なデータセットにさえゆっくりとロールします。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここでの考え方は、</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最初の1000レコードだけを</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">毎回このインデックスから選択しましょう</font><font style="vertical-align: inherit;">」</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">です。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span><font></font>
+  tbl T<font></font>
+<span class="hljs-keyword">SET</span>
+  x = T.v + <span class="hljs-number">1</span>
+<span class="hljs-keyword">FROM</span><font></font>
+  (<font></font>
+    <span class="hljs-keyword">SELECT</span><font></font>
+      k, v<font></font>
+    <span class="hljs-keyword">FROM</span><font></font>
+      tbl<font></font>
+    <span class="hljs-keyword">WHERE</span>
+      k <span class="hljs-keyword">BETWEEN</span> <span class="hljs-string">'q'</span> <span class="hljs-keyword">AND</span> <span class="hljs-string">'z'</span> <span class="hljs-keyword">AND</span>
+      x <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>
+    <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span><font></font>
+      k, v<font></font>
+    <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">1000</span> <span class="hljs-comment">--   OFFSET!</span><font></font>
+  ) S<font></font>
+<span class="hljs-keyword">WHERE</span>
+  (T.k, T.v) = (S.k, S.v) <span class="hljs-keyword">AND</span>
+  T.x <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>;</code></pre><br>
+<img src="https://habrastorage.org/webt/ne/dp/ck/nedpck-lvoeexx1ffpb63v8nd1w.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[explain.tensor.ruを見てください]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+すでにはるかに優れています-個々のトランザクションの期間は約6倍短くなりました。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+しかし、200回目の反復の計画がどのようになるかをもう一度見てみましょう。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">Update on tbl t (actual time=530.591..530.591 rows=0 loops=1)<font></font>
+  Buffers: shared hit=789337 read=1 dirtied=1</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+時間は再び悪化し（25％のみ）、バッファーの価値は高まりましたが、なぜですか？</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事実</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、PostgreSQLのMVCC</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">はインデックスに「死んだ魂」を残している-すでに更新されたレコードのバージョンであり、現在はインデックスに適していない。</font><font style="vertical-align: inherit;">つまり、200回目の反復で最初の1000レコードのみを取得し、を</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">スキャンし</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ますが、</font><font style="vertical-align: inherit;">後で変更したタプルの以前のバージョンの199Kは破棄します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+数百回ではなく数十万回の反復が必要な場合、クエリが実行されるたびに劣化が顕著になります。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">セグメントによる更新</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+実際、なぜこの「1000レコード」という値にそれほど執着しているのでしょうか。</font><font style="vertical-align: inherit;">結局のところ、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">正確に1000</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">または他の特定の数</font><b><font style="vertical-align: inherit;">を選択する理由</font></b><font style="vertical-align: inherit;">は</font><b><font style="vertical-align: inherit;">ありません</font></b><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">データセット全体を、必ずしも等しいわけではない、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ばらばらのセグメントに</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「カット」したいと思っただけ</font><b><font style="vertical-align: inherit;">な</font></b><font style="vertical-align: inherit;">ので、既存のインデックスをその目的に使用します。</font><b><font style="vertical-align: inherit;">インデックス付きのペア（k、v）は</font></b><font style="vertical-align: inherit;">、</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+このタスクに</font><font style="vertical-align: inherit;">最適です。</font><font style="vertical-align: inherit;">最後に処理されたペアに基づいて構築できるようにクエリを作成しましょう。</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">WITH</span> kv <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    k, v<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    tbl<font></font>
+  <span class="hljs-keyword">WHERE</span>
+    (k, v) &gt; ($<span class="hljs-number">1</span>, $<span class="hljs-number">2</span>) <span class="hljs-keyword">AND</span>
+    k <span class="hljs-keyword">BETWEEN</span> <span class="hljs-string">'q'</span> <span class="hljs-keyword">AND</span> <span class="hljs-string">'z'</span> <span class="hljs-keyword">AND</span>
+    x <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span><font></font>
+    k, v<font></font>
+  <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">1</span><font></font>
+)<font></font>
+, upd <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">UPDATE</span><font></font>
+    tbl T<font></font>
+  <span class="hljs-keyword">SET</span>
+    x = T.v + <span class="hljs-number">1</span>
+  <span class="hljs-keyword">WHERE</span>
+    (T.k, T.v) = (<span class="hljs-keyword">TABLE</span> kv) <span class="hljs-keyword">AND</span>
+    T.x <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>
+  <span class="hljs-keyword">RETURNING</span> k, v<font></font>
+)<font></font>
+<span class="hljs-keyword">TABLE</span> upd <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">1</span>;</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最初の反復では、クエリパラメータを</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「ゼロ」値（ ''、0）</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に設定するだけで十分です。</font><font style="vertical-align: inherit;">次の反復ごと</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に、前のクエリの結果</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を取得し</font><b><font style="vertical-align: inherit;">ます</font></b><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ok/ea/fg/okeafgsqia7iejthcmz2wuvsnm0.png"><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[explain.tensor.ruを参照]</font></font></a><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+トランザクション/ロック時間はミリ秒未満であり、反復回数による低下はなく、テーブル内のすべてのデータの完全な予備スキャンは必要ありません。</font><font style="vertical-align: inherit;">いいね！</font></font><br>
+<br>
+<div class="spoiler"><b class="spoiler_title"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">dblinkを使用した最終バージョンの配置</font></font></b><div class="spoiler_text"><pre><code class="sql hljs"><span class="hljs-keyword">DO</span> $$
+<span class="hljs-keyword">DECLARE</span>
+  k <span class="hljs-built_in">text</span> = <span class="hljs-string">''</span>;<font></font>
+  v integer = 0;<font></font>
+<span class="hljs-keyword">BEGIN</span>
+  PERFORM dblink_connect(<span class="hljs-string">'dbname='</span> || current_database() || <span class="hljs-string">' port='</span> || current_setting(<span class="hljs-string">'port'</span>));
+  <span class="hljs-comment">--  PREPARED STATEMENT,     </span><font></font>
+  PERFORM dblink($q$<font></font>
+<span class="hljs-keyword">PREPARE</span> _q(<span class="hljs-built_in">text</span>, <span class="hljs-built_in">integer</span>) <span class="hljs-keyword">AS</span>
+<span class="hljs-keyword">WITH</span> kv <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">SELECT</span><font></font>
+    k, v<font></font>
+  <span class="hljs-keyword">FROM</span><font></font>
+    tbl<font></font>
+  <span class="hljs-keyword">WHERE</span>
+    (k, v) &gt; ($<span class="hljs-number">1</span>, $<span class="hljs-number">2</span>) <span class="hljs-keyword">AND</span>
+    k <span class="hljs-keyword">BETWEEN</span> <span class="hljs-string">'q'</span> <span class="hljs-keyword">AND</span> <span class="hljs-string">'z'</span> <span class="hljs-keyword">AND</span>
+    x <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>
+  <span class="hljs-keyword">ORDER</span> <span class="hljs-keyword">BY</span><font></font>
+    k, v<font></font>
+  <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">1</span><font></font>
+)<font></font>
+, upd <span class="hljs-keyword">AS</span> (
+  <span class="hljs-keyword">UPDATE</span><font></font>
+    tbl T<font></font>
+  <span class="hljs-keyword">SET</span>
+    x = T.v + <span class="hljs-number">1</span>
+  <span class="hljs-keyword">WHERE</span>
+    (T.k, T.v) = (<span class="hljs-keyword">TABLE</span> kv) <span class="hljs-keyword">AND</span>
+    T.x <span class="hljs-keyword">IS</span> <span class="hljs-literal">NULL</span>
+  <span class="hljs-keyword">RETURNING</span> k, v<font></font>
+)<font></font>
+<span class="hljs-keyword">TABLE</span> upd <span class="hljs-keyword">LIMIT</span> <span class="hljs-number">1</span>;<font></font>
+  $q$);<font></font>
+  <span class="hljs-comment">-- ,   </span><font></font>
+  LOOP<font></font>
+    <span class="hljs-keyword">SELECT</span><font></font>
+      *<font></font>
+    <span class="hljs-keyword">INTO</span><font></font>
+      k, v<font></font>
+    <span class="hljs-keyword">FROM</span>
+      dblink($p$<span class="hljs-keyword">EXECUTE</span> _q(<span class="hljs-string">'$p$ || k || $p$'</span>,$p$ || v || $p$)$p$) T(k <span class="hljs-built_in">text</span>, v <span class="hljs-built_in">integer</span>);<font></font>
+    RAISE NOTICE '(k,v) = (''%'',%)', k, v;<font></font>
+    <span class="hljs-comment">--   ,    </span><font></font>
+    EXIT WHEN (k, v) IS NULL;<font></font>
+  <span class="hljs-keyword">END</span> <span class="hljs-keyword">LOOP</span>;<font></font>
+  PERFORM dblink_disconnect();<font></font>
+<span class="hljs-keyword">END</span>;<font></font>
+$$ LANGUAGE plpgsql;</code></pre><br>
+</div></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この方法のもう1つの利点は、いつでもこのスクリプトの実行を中断して、目的のポイントから再開できることです。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">UPDATEの複雑な計算</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+リンクされたテーブルから何かを計算する必要がある場合-割り当てられた値の計算が難しい状況については、個別に触れます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+コンピューティングに費やされる時間は、トランザクションの継続時間も増加させます。</font><font style="vertical-align: inherit;">したがって、最善のオプションは</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> UPDATEを超えて</font><b><font style="vertical-align: inherit;">これらの値</font></b><font style="vertical-align: inherit;">を</font><b><font style="vertical-align: inherit;">計算するプロセスを取ること</font></b><font style="vertical-align: inherit;">です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえば、新しいフィールドxに同じ値（k、v）を持つレコードの数を入力したいとします。</font><font style="vertical-align: inherit;">「一時」テーブルを作成します。その生成は追加のロックを課しません。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">TABLE</span> tmp <span class="hljs-keyword">AS</span>
+<span class="hljs-keyword">SELECT</span>
+  k, v, <span class="hljs-keyword">count</span>(*) x
+<span class="hljs-keyword">FROM</span><font></font>
+  tbl<font></font>
+<span class="hljs-keyword">GROUP</span> <span class="hljs-keyword">BY</span>
+  <span class="hljs-number">1</span>, <span class="hljs-number">2</span>;<font></font>
+<font></font>
+<span class="hljs-keyword">CREATE</span> <span class="hljs-keyword">INDEX</span> <span class="hljs-keyword">ON</span> tmp(k, v);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、上記のモデルに従ってこの表に従って反復し、ターゲットを更新できます。</font></font><br>
+<br>
+<pre><code class="sql hljs"><span class="hljs-keyword">UPDATE</span><font></font>
+  tbl T<font></font>
+<span class="hljs-keyword">SET</span><font></font>
+  x = S.x<font></font>
+<span class="hljs-keyword">FROM</span><font></font>
+  tmp S<font></font>
+<span class="hljs-keyword">WHERE</span>
+  (T.k, T.v) = (S.k, S.v) <span class="hljs-keyword">AND</span>
+  (S.k, S.v) = ($<span class="hljs-number">1</span>, $<span class="hljs-number">2</span>);</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ご覧のとおり、複雑な計算は必要ありません。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+後で補助テーブルを削除することを忘れないでください。</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja481596/index.html">Mikrotikログ分析のためのELK 7.5設定の解析</a></li>
+<li><a href="../ja481598/index.html">Avalonia UI動物園プラットフォームとの戦いへの小さな貢献</a></li>
+<li><a href="../ja481600/index.html">Bonsai Family Wiki Engine：2019の結果</a></li>
+<li><a href="../ja481604/index.html">過酷なチェリャビンスクの開発者がGoogle Playやソーシャルネットワーク向けのゲームを作る方法</a></li>
+<li><a href="../ja481606/index.html">C ++とCortex M4マイクロコントローラーを使用するObserverテンプレートを使用した静的サブスクリプション</a></li>
+<li><a href="../ja481616/index.html">測地線ドーム。デバイスと私の計算経験について</a></li>
+<li><a href="../ja481618/index.html">UnityのMVPまたは生活を簡素化する方法</a></li>
+<li><a href="../ja481620/index.html">ジュニパーSRXとCisco ASA：次のシリーズ</a></li>
+<li><a href="../ja481624/index.html">Reduxと組み合わせてFlutterでアプリケーションを作成します</a></li>
+<li><a href="../ja481626/index.html">iOSの複雑な表示コレクション：VKontakteフィードの例に関する問題と解決策</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

@@ -1,0 +1,714 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🔟 🕟 🍤 asyncioの内部 🗃️ 🥂 ❄️</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="この記事では、非同期コードの実行をどのように実装するかを理解するために、読者がasyncioの仕組みについて少し刺激的な旅をすることをお勧めします。私たちはコールバックをサドルし、いくつかの主要な抽象化を通じて一連のイベントを急いでcorutinに送り込みます。Pythonマップにまだこれらのアトラ...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>asyncioの内部</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/453348/"><p><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この記事では、</font><font style="vertical-align: inherit;">非同期コードの実行をどのように実装するかを理解するために</font><font style="vertical-align: inherit;">、読者が</font></font><em><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">asyncioの仕組み</font></font></strong></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">について</font><em><strong><font style="vertical-align: inherit;">少し</font></strong></em><font style="vertical-align: inherit;">刺激的な旅をすることをお</font><em><strong><font style="vertical-align: inherit;">勧め</font></strong></em><font style="vertical-align: inherit;">します</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">私たちはコールバックをサドルし、いくつかの主要な抽象化を通じて一連のイベントを急いでcorutinに送り込みます。</font><font style="vertical-align: inherit;">Pythonマップにまだこれらのアトラクションがない場合は、猫へようこそ。</font></font></p><a name="habracut"></a><br>
+<h2 id="dlya-zatravki--kratkaya-spravka-o-raskinuvsheysya-pered-nami-mestnosti"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">手始めに-私たちの前に広がった領域についての簡単なリファレンス</font></font></h2><br>
+<p><em><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">asyncio</font></font></strong></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は非同期I / Oライブラリーであり、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> pep3153</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に</font><font style="vertical-align: inherit;">よれば</font><font style="vertical-align: inherit;">、非同期フレームワークを作成するための標準化されたフレームワークを提供するために作成されました。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> pep3156は</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">また彼女に既存の非同期フレームワーク（ツイスト、トルネード、Gevent）に非常に簡単な統合を提供する必要性を帰し。私たちが今観察できるように、これらの目標を成功裏に達成された-新しいasyncioベースのフレームワークが登場：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=https://github.com/aio-libs/aio"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> aiohttpを</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、トルネードで</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> AsyncioMainLoop</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ツイストの中で、バージョン5.0からデフォルトイベントループである</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> asyncioreactor</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">バージョン16.5.0から入手可能であり、Geventのためのサードパーティのaiogeventライブラリがあります。</font></font></p><br>
+<p><em><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">asyncio</font></font></strong></em><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は、非同期コード実行を実装するために2つのアプローチを同時に使用するハイブリッドライブラリです。コールバックではクラシック、コルーチンでは比較的新しい（少なくともPythonでは）。</font><font style="vertical-align: inherit;">これは、サードパーティのフレームワークに存在する抽象化の類似物である3つの主要な抽象化に基づいています。</font></font></p><br>
+<ul>
+<li><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プラグ可能なイベントループ</font></font></strong><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+プラグインイベントループ。</font><font style="vertical-align: inherit;">プラグ可能とは、2行のコードで、同じインターフェイスを実装する別のコードに置き換えることができることを意味します。</font><font style="vertical-align: inherit;">現在、libuv（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">uvloop</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）の</font><font style="vertical-align: inherit;">上にcython実装があります。</font></font><del><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">そして、Rust（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">asyncio-tokio</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font></font></del><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></li>
+<li><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">将来</font></font></strong><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+、将来的に利用できるようになります操作の結果。</font><font style="vertical-align: inherit;">コルーチンでのコールバック実行の結果を受け取る必要があります。</font></font></li>
+<li><strong>Task</strong><br>
+   Future      .</li>
+</ul><br>
+<h2 id="poehali">!</h2><br>
+<p>  —   ,  ,   ,      .    ,      .</p><br>
+<pre><code class="python hljs"><span class="hljs-comment"># ~/inside_asyncio/base_loop.py</span><font></font>
+<font></font>
+<span class="hljs-keyword">import</span> collections
+<span class="hljs-keyword">import</span> random<font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Loop</span>:</span>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">__init__</span>(<span class="hljs-params">self</span>):</span>
+        <span class="hljs-comment">#    </span><font></font>
+        self.ready = collections.deque()<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">call_soon</span>(<span class="hljs-params">self, callback, *args</span>):</span>
+        <span class="hljs-comment">#         </span><font></font>
+        self.ready.append((callback, args))<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">run_until_complete</span>(<span class="hljs-params">self, callback, *args</span>):</span>
+        <span class="hljs-comment">#        </span><font></font>
+        self.call_soon(callback, *args)<font></font>
+        <span class="hljs-comment">#    -  </span>
+        <span class="hljs-comment">#      </span>
+        <span class="hljs-keyword">while</span> self.ready:<font></font>
+            ntodo = len(self.ready)<font></font>
+            <span class="hljs-comment">#      </span>
+            <span class="hljs-comment">#         </span>
+            <span class="hljs-keyword">for</span> _ <span class="hljs-keyword">in</span> range(ntodo):
+                <span class="hljs-comment">#      </span>
+                <span class="hljs-comment">#       </span><font></font>
+                callback, args = self.ready.popleft()<font></font>
+                callback(*args)<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">callback</span>(<span class="hljs-params">loop</span>):</span>
+    print(<span class="hljs-string">''</span>)<font></font>
+    loop.call_soon(<span class="hljs-keyword">print</span>, <span class="hljs-string">''</span>)<font></font>
+<font></font>
+loop = Loop()<font></font>
+loop.run_until_complete(callback, loop)</code></pre><br>
+<p>   ,      <strong>call_soon</strong>,           .</p><br>
+<h4 id="epizod-pro-plohie-kollbeki">   </h4><br>
+<p> ,      —      ,      ,   .   ,       <strong>maybe_print</strong>,       .</p><br>
+<pre><code class="python hljs"><span class="hljs-comment"># ~/inside_asyncio/base_loop.py</span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">maybe_print</span>(<span class="hljs-params">msg</span>):</span>
+    <span class="hljs-keyword">if</span> random.randint(<span class="hljs-number">0</span>, <span class="hljs-number">1</span>):
+        <span class="hljs-keyword">raise</span> Exception(msg)
+    <span class="hljs-keyword">else</span>:<font></font>
+        print(msg)<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">starting_point</span>(<span class="hljs-params">loop</span>):</span>  <span class="hljs-comment">#  </span>
+    print(<span class="hljs-string">''</span>)<font></font>
+    loop.call_soon(maybe_print, <span class="hljs-string">''</span>)<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">main</span>(<span class="hljs-params">loop</span>):</span><font></font>
+    loop.call_soon(starting_point, loop)<font></font>
+    loop.call_soon(starting_point, loop)<font></font>
+<font></font>
+loop = Loop()<font></font>
+loop.run_until_complete(main, loop)<font></font>
+</code></pre><br>
+<p>      . - ,   <strong>maybe_print</strong>    ,     <strong>starting_point</strong>,     ,   <strong>run_until_complete</strong>.     ,     <strong>starting_point</strong>,    ,  <strong>starting_point</strong>       . </p><br>
+<pre><code class="bash hljs">$: python3 base_loop.py <font></font>
+&gt;&gt;   <span class="hljs-comment">#   </span>
+&gt;&gt;     <span class="hljs-comment">#   </span>
+&gt;&gt;   <span class="hljs-comment">#   </span><font></font>
+&gt;&gt; Traceback (most recent call last):<font></font>
+&gt;&gt;   File <span class="hljs-string">"base_loop.py"</span>, line 42, <span class="hljs-keyword">in</span> &lt;module&gt;<font></font>
+&gt;&gt;     loop.run_until_complete(main, loop)<font></font>
+&gt;&gt;   File <span class="hljs-string">"base_loop.py"</span>, line 17, <span class="hljs-keyword">in</span> run_until_complete<font></font>
+&gt;&gt;     callback(*args)<font></font>
+&gt;&gt;   File <span class="hljs-string">"base_loop.py"</span>, line 29, <span class="hljs-keyword">in</span> maybe_print<font></font>
+&gt;&gt;     raise Exception(msg)<font></font>
+&gt;&gt; Exception:   <span class="hljs-comment">#    </span></code></pre><br>
+<p>         ,       . ,     .    ,      <strong>starting_point</strong>,  <strong>main</strong>   :</p><br>
+<pre><code class="python hljs"><span class="hljs-comment"># ~/inside_asyncio/base_loop.py</span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">main</span>(<span class="hljs-params">loop</span>):</span>
+    <span class="hljs-keyword">try</span>:<font></font>
+        loop.call_soon(starting_point, loop)<font></font>
+        loop.call_soon(starting_point, loop)<font></font>
+    <span class="hljs-keyword">except</span>:
+        <span class="hljs-keyword">pass</span><font></font>
+<font></font>
+Loop().run_until_complete(main, loop)</code></pre><br>
+<p>    .     <strong>main</strong>       ,     .</p><br>
+<pre><code class="python hljs"><span class="hljs-comment"># ~/inside_asyncio/base_loop.py</span><font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">main</span>(<span class="hljs-params">loop</span>):</span>
+    <span class="hljs-keyword">with</span> open(<span class="hljs-string">'file.txt'</span>, <span class="hljs-string">'rb'</span>) <span class="hljs-keyword">as</span> f:<font></font>
+        loop.call_soon(process_file, f)<font></font>
+<font></font>
+Loop().run_until_complete(main, loop)<font></font>
+<span class="hljs-comment">#       ,    =(</span></code></pre><br>
+<p>        .       asyncio     ,  e     .  ,   ,    —      .</p><br>
+<h4 id="iz-cikla-sobytiy-vo-vneshniy-mir-i-obratno">       </h4><br>
+<p>          . ,     ,       <strong>selectors</strong>.     ,    - ,   ,   .          .</p><br>
+<div class="spoiler"><b class="spoiler_title"> </b><div class="spoiler_text"><pre><code class="python hljs"><span class="hljs-comment"># ~/inside_asyncio/event_loop.py</span><font></font>
+<font></font>
+<span class="hljs-keyword">import</span> selectors
+<span class="hljs-keyword">import</span> socket
+<span class="hljs-keyword">import</span> collections
+<span class="hljs-keyword">from</span> future <span class="hljs-keyword">import</span> Future
+<span class="hljs-keyword">from</span> handle <span class="hljs-keyword">import</span> Handle
+<span class="hljs-keyword">from</span> task <span class="hljs-keyword">import</span> Task<font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">EventLoop</span>:</span>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">__init__</span>(<span class="hljs-params">self</span>):</span><font></font>
+        self.ready = collections.deque()<font></font>
+        <span class="hljs-comment">#  </span><font></font>
+        self.selector = selectors.DefaultSelector()<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">add_reader</span>(<span class="hljs-params">self, sock, callback</span>):</span>
+        <span class="hljs-comment">#      </span>
+        <span class="hljs-comment"># :</span>
+        <span class="hljs-comment"># ,</span>
+        <span class="hljs-comment">#        </span>
+        <span class="hljs-comment">#          </span><font></font>
+        self.selector.register(<font></font>
+            sock, socket.EVENT_READ, (self._accept_conn, sock, callback)<font></font>
+        )<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">_accept_conn</span>(<span class="hljs-params">self, sock, callback</span>):</span>
+        <span class="hljs-comment">#   </span><font></font>
+        conn, addr = sock.accept()<font></font>
+        conn.setblocking(<span class="hljs-literal">False</span>)
+        <span class="hljs-comment">#     </span><font></font>
+        self.selector.register(<font></font>
+            conn, socket.EVENT_READ, (callback, conn)<font></font>
+        )<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">run_until_complete</span>(<span class="hljs-params">self, callback, *args</span>):</span><font></font>
+        self.call_soon(callback, *args)<font></font>
+        <span class="hljs-comment">#           - </span>
+        <span class="hljs-keyword">while</span> self.ready <span class="hljs-keyword">or</span> self.selector.get_map():<font></font>
+            ntodo = len(self._ready)<font></font>
+            <span class="hljs-keyword">for</span> _ <span class="hljs-keyword">in</span> range(ntodo):<font></font>
+                callback, args = self.ready.popleft()<font></font>
+                callback(*args)<font></font>
+<font></font>
+            <span class="hljs-comment">#      </span>
+            <span class="hljs-keyword">for</span> key, events <span class="hljs-keyword">in</span> self.selector.select(timeout=<span class="hljs-number">0</span>):
+                <span class="hljs-comment">#         </span><font></font>
+                callback, *args = key.data<font></font>
+                <span class="hljs-comment">#      </span><font></font>
+                self.call_soon(callback, *args)<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">call_soon</span>(<span class="hljs-params">self, callback, *args</span>):</span><font></font>
+        self.ready.append((callback, args))<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">print_data</span>(<span class="hljs-params">conn</span>):</span>
+    print(conn.recv(<span class="hljs-number">1000</span>))<font></font>
+<font></font>
+<span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">main</span>(<span class="hljs-params">loop</span>):</span>
+    <span class="hljs-comment">#  </span><font></font>
+    sock = socket.socket()<font></font>
+    <span class="hljs-comment">#     8086 </span>
+    sock.bind((<span class="hljs-string">'localhost'</span>, <span class="hljs-number">8086</span>))<font></font>
+    sock.listen(<span class="hljs-number">100</span>)<font></font>
+    sock.setblocking(<span class="hljs-literal">False</span>)
+    <span class="hljs-comment">#     </span><font></font>
+    loop.add_reader(sock, print_data)<font></font>
+<font></font>
+loop = EventLoop()<font></font>
+<span class="hljs-comment">#   </span>
+loop.run_until_complete(main, loop)</code></pre></div></div><br>
+<p>          ,     .      ,   .         netcat,      ,     .</p><br>
+<pre><code class="bash hljs">$: nc localhost 8086         $: python3 event_loop.py
+<span class="hljs-string">"Hi there!"</span>                  b<span class="hljs-string">'"Hi there!"\n'</span>
+<span class="hljs-string">"Hello!"</span>                     b<span class="hljs-string">'"Hello!"\n'</span>
+<span class="hljs-string">"Answer me, please!"</span>         b<span class="hljs-string">'"Answer me, please!"\n'</span></code></pre><br>
+<p>   ,  asyncio —  ,      .         : <strong>Task</strong>  <strong>Future</strong>.      ,  , ,    ,  .</p><br>
+<h4 id="future">Future</h4><br>
+<p>    Future.    ,             . </p><br>
+<div class="spoiler"><b class="spoiler_title">Future</b><div class="spoiler_text"><pre><code class="python hljs"><span class="hljs-comment"># ~/inside_asyncio/future.py</span><font></font>
+<font></font>
+<span class="hljs-keyword">import</span> sys
+<span class="hljs-keyword">from</span> asyncio <span class="hljs-keyword">import</span> events, CancelledError<font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Future</span>:</span>
+    <span class="hljs-comment">#       </span>
+    _state = <span class="hljs-string">'PENDING'</span>  <span class="hljs-comment"># FINISHED, CANCELLED </span>
+    <span class="hljs-comment">#          Future</span>
+    <span class="hljs-comment">#         </span>
+    _source_traceback = <span class="hljs-literal">None</span>
+    <span class="hljs-comment">#           </span><font></font>
+    _callbacks = []<font></font>
+    <span class="hljs-comment">#          </span>
+    _exception = <span class="hljs-literal">None</span>
+    <span class="hljs-comment">#          </span>
+    _loop = <span class="hljs-literal">None</span>
+    <span class="hljs-comment">#    </span>
+    _result = <span class="hljs-literal">None</span><font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">__init__</span>(<span class="hljs-params">self, loop</span>):</span><font></font>
+        self._loop = loop<font></font>
+        self._source_traceback = events.extract_stack(sys._getframe(<span class="hljs-number">1</span>))<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">add_done_callback</span>(<span class="hljs-params">self, callback</span>):</span>
+        <span class="hljs-comment">#       </span><font></font>
+        self._callbacks.append(callback)<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">_schedule_callbacks</span>(<span class="hljs-params">self</span>):</span>
+        <span class="hljs-comment">#        </span>
+        <span class="hljs-keyword">for</span> callback <span class="hljs-keyword">in</span> self._callbacks:<font></font>
+            self._loop.call_soon(callback, self)<font></font>
+        self._callbacks[:] = []<font></font>
+<font></font>
+<span class="hljs-comment">#            Future</span>
+<span class="hljs-comment">#    -    </span>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">set_exception</span>(<span class="hljs-params">self, exception</span>):</span>
+        <span class="hljs-comment">#      </span><font></font>
+        self._exception = exception<font></font>
+        <span class="hljs-comment">#  </span>
+        self._state = <span class="hljs-string">'FINISHED'</span>
+        <span class="hljs-comment">#     </span><font></font>
+        self._schedule_callbacks()<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">set_result</span>(<span class="hljs-params">self, result</span>):</span>
+        <span class="hljs-comment">#        </span><font></font>
+        self._result = result<font></font>
+        self._state = <span class="hljs-string">'FINISHED'</span><font></font>
+        self._schedule_callbacks()<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">cancel</span>(<span class="hljs-params">self</span>):</span>
+        <span class="hljs-comment">#      </span>
+        self._state = <span class="hljs-string">'CANCELLED'</span><font></font>
+        self._schedule_callbacks()<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">result</span>(<span class="hljs-params">self</span>):</span>
+        <span class="hljs-comment">#    </span>
+        <span class="hljs-comment">#        </span>
+        <span class="hljs-keyword">if</span> self._state == <span class="hljs-string">'CANCELLED'</span>:
+            <span class="hljs-keyword">raise</span> CancelledError
+        <span class="hljs-comment">#        </span>
+        <span class="hljs-keyword">if</span> self._exception <span class="hljs-keyword">is</span> <span class="hljs-keyword">not</span> <span class="hljs-literal">None</span>:
+            <span class="hljs-keyword">raise</span> self._exception
+        <span class="hljs-comment">#   </span>
+        <span class="hljs-keyword">return</span> self._result<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">__await__</span>(<span class="hljs-params">self</span>):</span>
+        <span class="hljs-comment">#  ,    await</span>
+        <span class="hljs-comment">#       </span>
+        <span class="hljs-keyword">if</span> self._state == <span class="hljs-string">'PENDING'</span>:
+            <span class="hljs-keyword">yield</span> self
+        <span class="hljs-comment">#    </span>
+        <span class="hljs-keyword">return</span> self.result()
+</code></pre></div></div><br>
+<h4 id="task">Task</h4><br>
+<p>    <strong>Future</strong>.         .</p><br>
+<div class="spoiler"><b class="spoiler_title">Task</b><div class="spoiler_text"><pre><code class="python hljs"><span class="hljs-comment"># ~/inside_asyncio/task.py</span><font></font>
+<font></font>
+<span class="hljs-keyword">from</span> asyncio <span class="hljs-keyword">import</span> futures
+<span class="hljs-keyword">from</span> future <span class="hljs-keyword">import</span> Future<font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">Task</span>(<span class="hljs-params">Future</span>):</span>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">__init__</span>(<span class="hljs-params">self, coro, *, loop=None</span>):</span><font></font>
+        super().__init__(loop=loop)<font></font>
+        <span class="hljs-comment">#   </span><font></font>
+        self._coro = coro<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">_step</span>(<span class="hljs-params">self, exc=None</span>):</span>
+        <span class="hljs-comment">#    ,    </span>
+        <span class="hljs-keyword">try</span>:
+            <span class="hljs-keyword">if</span> exc <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span>:
+                <span class="hljs-comment">#        None </span>
+                <span class="hljs-comment">#       </span>
+                result = self._coro.send(<span class="hljs-literal">None</span>)
+            <span class="hljs-keyword">else</span>:
+                <span class="hljs-comment">#       </span><font></font>
+                self._coro.throw(exc)<font></font>
+        <span class="hljs-keyword">except</span> StopIteration:<font></font>
+            result = <span class="hljs-literal">None</span>
+        <span class="hljs-keyword">except</span> Exception <span class="hljs-keyword">as</span> exc:<font></font>
+            self.set_exception(exc)<font></font>
+        <span class="hljs-keyword">else</span>:
+            <span class="hljs-comment">#   Future     </span>
+            <span class="hljs-comment"># wakeup     </span>
+            <span class="hljs-keyword">if</span> isinstance(result, Future):<font></font>
+                result.add_done_callback(self._wakeup)<font></font>
+            <span class="hljs-comment">#     step    </span>
+            <span class="hljs-keyword">elif</span> result <span class="hljs-keyword">is</span> <span class="hljs-literal">None</span>:<font></font>
+                self._loop.call_soon(self._step)<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">_wakeup</span>(<span class="hljs-params">self, future</span>):</span>
+        <span class="hljs-comment">#     Future       Task</span>
+        <span class="hljs-comment">#  </span>
+        <span class="hljs-keyword">try</span>:<font></font>
+            future.result()<font></font>
+        <span class="hljs-keyword">except</span> Exception <span class="hljs-keyword">as</span> exc:<font></font>
+            self._step(exc)<font></font>
+        <span class="hljs-comment">#        Future</span>
+        <span class="hljs-keyword">else</span>:<font></font>
+            self._step()</code></pre></div></div><br>
+<h4 id="cikl-sobytiy-umeyuschiy-rabotat-s-future"> ,    Future</h4><br>
+<div class="spoiler"><b class="spoiler_title">EventLoop with Futures</b><div class="spoiler_text"><pre><code class="python hljs"><span class="hljs-comment"># ~/inside_asyncio/future_event_loop.py</span><font></font>
+<font></font>
+<span class="hljs-keyword">import</span> selectors
+<span class="hljs-keyword">from</span> selectors <span class="hljs-keyword">import</span> EVENT_READ, EVENT_WRITE
+<span class="hljs-keyword">import</span> socket
+<span class="hljs-keyword">import</span> collections
+<span class="hljs-keyword">from</span> future <span class="hljs-keyword">import</span> Future
+<span class="hljs-keyword">from</span> task <span class="hljs-keyword">import</span> Task<font></font>
+<font></font>
+<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">EventLoop</span>:</span>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">__init__</span>(<span class="hljs-params">self</span>):</span><font></font>
+        self._ready = collections.deque()<font></font>
+        self.selector = selectors.DefaultSelector()<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">run_until_complete</span>(<span class="hljs-params">self, callback, *args</span>):</span><font></font>
+        self.call_soon(callback, *args)<font></font>
+        <span class="hljs-keyword">while</span> self._ready <span class="hljs-keyword">or</span> self.selector.get_map():<font></font>
+            ntodo = len(self._ready)<font></font>
+            <span class="hljs-keyword">for</span> _ <span class="hljs-keyword">in</span> range(ntodo):<font></font>
+                callback, args = self._ready.popleft()<font></font>
+                callback(*args)<font></font>
+<font></font>
+            <span class="hljs-keyword">for</span> key, events <span class="hljs-keyword">in</span> self.selector.select(timeout=<span class="hljs-number">0</span>):<font></font>
+                callback, *args = key.data<font></font>
+                self.call_soon(callback, *args)<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">call_soon</span>(<span class="hljs-params">self, callback, *args</span>):</span><font></font>
+        self._ready.append((callback, args))<font></font>
+<font></font>
+<span class="hljs-comment">#      Future</span>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">sock_accept</span>(<span class="hljs-params">self, sock, fut=None</span>):</span>
+        <span class="hljs-comment">#      </span>
+        <span class="hljs-comment">#  Future    </span>
+        fut = fut <span class="hljs-keyword">if</span> fut <span class="hljs-keyword">else</span> Future(loop=self)
+        <span class="hljs-keyword">try</span>:
+            <span class="hljs-comment">#    </span><font></font>
+            conn, address = sock.accept()<font></font>
+            conn.setblocking(<span class="hljs-literal">False</span>)
+        <span class="hljs-keyword">except</span> (BlockingIOError, InterruptedError):
+            <span class="hljs-comment">#    </span>
+            <span class="hljs-comment">#     </span>
+            <span class="hljs-comment">#   Future   </span><font></font>
+            self.selector.register(<font></font>
+                sock, EVENT_READ, (self.sock_accept, sock, fut)<font></font>
+            )<font></font>
+        <span class="hljs-keyword">except</span> Exception <span class="hljs-keyword">as</span> exc: <font></font>
+            fut.set_exception(exc)<font></font>
+            self.selector.unregister(sock)<font></font>
+        <span class="hljs-keyword">else</span>:
+            <span class="hljs-comment">#   </span>
+            <span class="hljs-comment">#   Future   </span><font></font>
+            fut.set_result((conn, address))<font></font>
+            self.selector.unregister(sock)<font></font>
+        <span class="hljs-keyword">return</span> fut<font></font>
+<font></font>
+    <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">sock_recv</span>(<span class="hljs-params">self, sock, n, fut=None</span>):</span>
+        <span class="hljs-comment">#      </span>
+        <span class="hljs-comment">#      ,</span>
+        <span class="hljs-comment">#     ,     </span>
+        fut = fut <span class="hljs-keyword">if</span> fut <span class="hljs-keyword">else</span> Future(loop=self)
+        <span class="hljs-keyword">try</span>:<font></font>
+            data = sock.recv(n)<font></font>
+        <span class="hljs-keyword">except</span> (BlockingIOError, InterruptedError):<font></font>
+            self.selector.register(<font></font>
+                sock, EVENT_READ, (self.sock_recv, sock, n, fut)<font></font>
+            )<font></font>
+        <span class="hljs-keyword">except</span> Exception <span class="hljs-keyword">as</span> exc:<font></font>
+            fut.set_exception(exc)<font></font>
+            self.selector.unregister(sock)<font></font>
+        <span class="hljs-keyword">else</span>:<font></font>
+            fut.set_result(data)<font></font>
+            self.selector.unregister(sock)<font></font>
+        <span class="hljs-keyword">return</span> fut<font></font>
+<font></font>
+<span class="hljs-keyword">async</span> <span class="hljs-function"><span class="hljs-keyword">def</span> <span class="hljs-title">main</span>(<span class="hljs-params">loop</span>):</span><font></font>
+    sock = socket.socket()<font></font>
+    sock.bind((<span class="hljs-string">'localhost'</span>, <span class="hljs-number">8080</span>))<font></font>
+    sock.listen(<span class="hljs-number">100</span>)<font></font>
+    sock.setblocking(<span class="hljs-literal">False</span>)
+    <span class="hljs-comment">#   </span>
+    conn, addr = <span class="hljs-keyword">await</span> loop.sock_accept(sock)
+    <span class="hljs-comment">#    </span>
+    result = <span class="hljs-keyword">await</span> loop.sock_recv(conn, <span class="hljs-number">1000</span>)<font></font>
+    print(result)<font></font>
+<font></font>
+loop = EventLoop()<font></font>
+<span class="hljs-comment">#    Task </span><font></font>
+task = Task(coro=main(loop), loop=loop)<font></font>
+<span class="hljs-comment">#        </span>
+loop.run_until_complete(task._step)</code></pre></div></div><br>
+<h4 id="dvinemsya-dalshe"> </h4><br>
+<p>   ,   <strong>main</strong>  :</p><br>
+<div class="spoiler"><b class="spoiler_title"></b><div class="spoiler_text"><pre><code class="plaintext hljs">__________________________________________________________________<font></font>
+class EventLoop:<font></font>
+    def run_until_complete(self, callback, *args):<font></font>
+        # task._step   <font></font>
+        self.call_soon(callback, *args)<font></font>
+        while self._ready or self.selector.get_map():<font></font>
+            ntodo = len(self._ready)<font></font>
+            for _ in range(ntodo):<font></font>
+                callback, args = self._ready.popleft()<font></font>
+                #    <font></font>
+                callback(*args)  # task._step()<font></font>
+___________________________________________________________________<font></font>
+clsss Task:<font></font>
+    def _step(self, exc=None):<font></font>
+        try:<font></font>
+            if exc is None:<font></font>
+                #  None  <font></font>
+                result = self._coro.send(None)<font></font>
+            else:<font></font>
+___________________________________________________________________<font></font>
+async def main(loop):<font></font>
+    #     <font></font>
+    #  <font></font>
+    sock = socket.socket()<font></font>
+    sock.bind(('localhost', 8080))<font></font>
+    sock.listen(100)<font></font>
+    sock.setblocking(False)<font></font>
+    #        <font></font>
+    conn, addr = await loop.sock_accept(sock)<font></font>
+    result = await loop.sock_recv(conn, 1000)<font></font>
+    print(result)<font></font>
+___________________________________________________________________<font></font>
+class EventLoop:<font></font>
+    def sock_accept(self, sock, fut=None):<font></font>
+        #   Future<font></font>
+        fut = fut if fut else Future(loop=self)<font></font>
+        try:<font></font>
+            #    <font></font>
+            conn, address = sock.accept()<font></font>
+            conn.setblocking(False)<font></font>
+        except (BlockingIOError, InterruptedError):<font></font>
+            #    <font></font>
+            #     <font></font>
+            #   Future   <font></font>
+            self.selector.register(<font></font>
+                sock, EVENT_READ, (self.sock_accept, sock, fut)<font></font>
+            )<font></font>
+        except Exception as exc: <font></font>
+        --------------------------------------------<font></font>
+            self.selector.unregister(sock)<font></font>
+        #  Future  <font></font>
+        return fut<font></font>
+___________________________________________________________________<font></font>
+async def main(loop):<font></font>
+    sock = socket.socket()<font></font>
+    sock.bind(('localhost', 8080))<font></font>
+    sock.listen(100)<font></font>
+    sock.setblocking(False)<font></font>
+    #   await   __await__  Future<font></font>
+    conn, addr = await loop.sock_accept(sock)<font></font>
+    result = await loop.sock_recv(conn, 1000)<font></font>
+    print(result)<font></font>
+___________________________________________________________________<font></font>
+class Future:<font></font>
+    def __await__(self):<font></font>
+        #   Future        <font></font>
+        if self._state == 'PENDING':<font></font>
+            yield self<font></font>
+        return self.result()<font></font>
+___________________________________________________________________<font></font>
+class Task(Future):<font></font>
+    def _step(self, exc=None):<font></font>
+        try:<font></font>
+            if exc is None:<font></font>
+                #           None<font></font>
+                result = self._coro.send(None)  # result = fut<font></font>
+            --------------------------------<font></font>
+        else:<font></font>
+            #  Future     <font></font>
+            # wakeup     <font></font>
+            if isinstance(result, Future):<font></font>
+                result.add_done_callback(self._wakeup)<font></font>
+            elif result is None:<font></font>
+                self._loop.call_soon(self._step)<font></font>
+<font></font>
+#      -    Task  Future<font></font>
+#   <font></font>
+#              <font></font>
+___________________________________________________________________<font></font>
+class EventLoop:<font></font>
+    def run_until_complete(self, callback, *args):<font></font>
+        self.call_soon(callback, *args)<font></font>
+        while self._ready or self.selector.get_map():<font></font>
+            ntodo = len(self._ready)<font></font>
+            for _ in range(ntodo):<font></font>
+                callback, args = self._ready.popleft()<font></font>
+                callback(*args)<font></font>
+<font></font>
+            for key, events in self.selector.select(timeout=0):<font></font>
+                #   <font></font>
+                callback, *args = key.data<font></font>
+                self.call_soon(callback, *args)  # loop.sock_accept(sock, fut)<font></font>
+___________________________________________________________________<font></font>
+class EventLoop:<font></font>
+    def sock_accept(self, sock, fut=None):<font></font>
+        fut = fut if fut else Future(loop=self)<font></font>
+        try:<font></font>
+            #   <font></font>
+            conn, address = sock.accept()<font></font>
+            conn.setblocking(False)<font></font>
+        except (BlockingIOError, InterruptedError):<font></font>
+        --------------------------------<font></font>
+        else:<font></font>
+            #   Future<font></font>
+            fut.set_result((conn, address))<font></font>
+            self.selector.unregister(sock)<font></font>
+        return fut<font></font>
+___________________________________________________________________<font></font>
+class Future:<font></font>
+    def set_result(self, result):<font></font>
+        #  <font></font>
+        self._result = result<font></font>
+        #  <font></font>
+        self._state = 'FINISHED'<font></font>
+        #     <font></font>
+        self._schedule_callbacks()<font></font>
+<font></font>
+    def _schedule_callbacks(self):<font></font>
+        for callback in self._callbacks:<font></font>
+            #         task.wakeup<font></font>
+            self._loop.call_soon(callback, self)  # (task.wakeup, fut)<font></font>
+        self._callbacks[:] = []<font></font>
+___________________________________________________________________<font></font>
+class EventLoop:<font></font>
+    def run_until_complete(self, callback, *args):<font></font>
+        self.call_soon(callback, *args)<font></font>
+        while self._ready or self.selector.get_map():<font></font>
+            ntodo = len(self._ready)<font></font>
+            for _ in range(ntodo):<font></font>
+                callback, args = self._ready.popleft()<font></font>
+                #      <font></font>
+                #    task.wakeup <font></font>
+                callback(*args)  # task.wakeup(fut)<font></font>
+___________________________________________________________________<font></font>
+class Task(Future):<font></font>
+    def _wakeup(self, future):<font></font>
+        try:<font></font>
+            future.result()<font></font>
+        except Exception as exc:<font></font>
+            self._step(exc)<font></font>
+        else:<font></font>
+            #   Future      task._step<font></font>
+            self._step()<font></font>
+<font></font>
+    def _step(self, exc=None):<font></font>
+        try:<font></font>
+            if exc is None:<font></font>
+                #       None<font></font>
+                result = self._coro.send(None)<font></font>
+            else:<font></font>
+___________________________________________________________________<font></font>
+async def main(loop):<font></font>
+    sock = socket.socket()<font></font>
+    sock.bind(('localhost', 8080))<font></font>
+    sock.listen(100)<font></font>
+    sock.setblocking(False)<font></font>
+    #   await   __awai__  <font></font>
+    conn, addr = await loop.sock_accept(sock)<font></font>
+    result = await loop.sock_recv(conn, 1000)<font></font>
+    print(result)<font></font>
+___________________________________________________________________<font></font>
+class Future:<font></font>
+    def __await__(self):<font></font>
+        if self._state == 'PENDING':<font></font>
+            yield self<font></font>
+        #   Future   <font></font>
+        return self.result()<font></font>
+___________________________________________________________________<font></font>
+async def main(loop):<font></font>
+    sock = socket.socket()<font></font>
+    sock.bind(('localhost', 8080))<font></font>
+    sock.listen(100)<font></font>
+    sock.setblocking(False)<font></font>
+    #    Future    conn  addr<font></font>
+    conn, addr = await loop.sock_accept(sock)<font></font>
+    result = await loop.sock_recv(conn, 1000)<font></font>
+    print(result)</code></pre></div></div><br>
+<p>    asyncio  .</p><br>
+<h4 id="itogi"></h4><br>
+<p>  asyncio   .      ,           .      ,    .  , asyncio     :           <strong>async</strong>/<strong>await</strong>.          2003 ,     <strong>yield</strong>.</p><br>
+<p>    asyncio           (Twisted, Tornado, Gevent).       :      , ,      . - ,          ,          ,       . </p><br>
+<p>  .       ,            API?<br>
+    StreamWriter</p><br>
+<p><img src="https://habrastorage.org/webt/td/ou/jb/tdoujbeh0soadfwdveuowwbvvny.png"></p><br>
+<p>    <strong>asyncio.open_connection</strong>   <strong>async</strong>/<strong>await</strong> API  API  .      .  <strong>write</strong>  <strong>writelines</strong> ,     ,    ,           .  <strong>drain</strong>   ,    ,          .</p><br>
+<p>   <strong>drain</strong>   <strong>write</strong>,        . ,    ,     . :     «»,  ,   API      , ,   . :   «»,               .</p><br>
+<p> ,    ,    ,     .</p><br>
+<p> ,        ,     <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="> </a>  <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=">  Antida software</a>.</p><br>
+<p>P.S.         <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" class="user_link">eirnym</a>, <a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">クルブ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、 </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u=" class="user_link"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ラスウェット</font></font></a></p></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja453336/index.html">CNC燃焼機選択ガイド</a></li>
+<li><a href="../ja453338/index.html">Rust 1.35.0リリース：機能特性の実装とその他のイノベーション</a></li>
+<li><a href="../ja453340/index.html">Perl 5.30がリリースされました</a></li>
+<li><a href="../ja453342/index.html">私たちが自分自身を破壊した遠隔地の従業員に関する神話</a></li>
+<li><a href="../ja453346/index.html">ストレージおよびデータ保護テクノロジー-VMware EMPOWER 2019の3日目</a></li>
+<li><a href="../ja453350/index.html">RIT ++ 2019のメインホールの公開放送</a></li>
+<li><a href="../ja453352/index.html">ドローンがガーナで重要な薬を届ける方法</a></li>
+<li><a href="../ja453354/index.html">eo-learnを使用した土地被覆の分類。パート3</a></li>
+<li><a href="../ja453356/index.html">大規模金融機関の集積に関する現在の傾向と推奨事項</a></li>
+<li><a href="../ja453358/index.html">どのようにしてインポート置換を行ったのですか？その結果、無料の（まあ、ほぼ）地理情報システムを作成しました</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

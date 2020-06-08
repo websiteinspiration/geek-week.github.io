@@ -1,0 +1,286 @@
+<!doctype html>
+<html class="no-js" lang="ja">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👩🏿‍🤝‍👩🏻 🤘🏾 🎠 Kubernetesのヒントとコツ：NGINXとPHP-FPMの優雅なシャットダウンランタイム機能 🖼️ 👦🏽 🤵</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="KubernetesにCI / CDを実装するための一般的な条件：アプリケーションは、停止する前に新しいクライアント要求の受け入れを停止できなければならず、最も重要なのは、既存の要求を正常に完了できることです。
+ 
+ 
+ 
+ この条件に準拠することで、展開中のダウンタイムをゼロにすることができます。...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>Kubernetesのヒントとコツ：NGINXとPHP-FPMの優雅なシャットダウンランタイム機能</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/flant/blog/489994/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">KubernetesにCI / CDを実装するための一般的な条件：アプリケーションは、停止する前に新しいクライアント要求の受け入れを停止できなければならず、最も重要なのは、既存の要求を正常に完了できることです。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ka/ry/ef/karyefzfd99wtpxne9r_o73wies.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この条件に準拠することで、展開中のダウンタイムをゼロにすることができます。</font><font style="vertical-align: inherit;">ただし、非常に人気のあるバンドル（NGINXやPHP-FPMなど）を使用している場合でも、問題が発生し、展開のたびにエラーが急増する可能性があります...</font></font><a name="habracut"></a><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">理論。</font><font style="vertical-align: inherit;">ポッドのしくみ</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ポッドのライフサイクルについては、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">この記事</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">をすでに詳しく公開しています</font><font style="vertical-align: inherit;">。このトピックのコンテキストでは、次のことに関心があります。ポッドが</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">終了</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">状態になると</font><font style="vertical-align: inherit;">、新しいリクエストがポッドに送信されなくなります（ポッド</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">は</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">サービスのエンドポイントのリストから</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">削除さ</font></a><font style="vertical-align: inherit;">れます）。したがって、展開中のダウンタイムを回避するには、アプリケーションが正しく停止するという問題を解決するだけで十分です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+猶予期間はデフォルトで</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">30秒である</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ことも覚えておく必要があります</font><font style="vertical-align: inherit;">。この後、ポッドは終了し、アプリケーションはこの期間より前にすべてのリクエストを処理する必要があります。</font></font><i><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">：5-10秒を超えて実行される要求はすでに問題があり、正常なシャットダウンはもはや彼を助けません...</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+ポッドが作業を終了したときに何が起こるかをよりよく理解するには、次のスキームを検討することで十分です：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/zx/pt/ou/zxptou-qe7zxqgab6pszsdo5vlk.png"><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">A1、B1-変更の取得</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+A2の</font><font style="vertical-align: inherit;">状態</font><font style="vertical-align: inherit;">：SIGTERMの送信B2- </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+エンドポイントからのポッドの削除</font><font style="vertical-align: inherit;">B3- </font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+変更の取得（エンドポイントリストが変更されました）</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+B4-iptablesルールの更新</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+注：エンドポイントポッドの削除とSIGTERMの送信は順次ではなく並行して行われます。また、Ingressが更新されたエンドポイントのリストをすぐに受信しないため、クライアントからの新しいリクエストはポッドに送信され、ポッドの終了時に500エラーが発生します。</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（この問題に関するより詳細な資料を</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">翻訳しました</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">この問題は、次の方法で解決する必要があります。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> Connection：close応答のヘッダーを送信します（HTTPアプリケーションに関する場合）。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> コードを変更する方法がない場合、記事では、猶予期間が終了するまでリクエストを処理できるソリューションについて説明します。</font></font></li>
+</ul><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">理論。</font><font style="vertical-align: inherit;">NGINXとPHP-FPMがプロセスを終了する方法</font></font></h2><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nginx</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+NGINXから始めましょう。すべてが多かれ少なかれ明らかであるためです。</font><font style="vertical-align: inherit;">理論に没頭すると、NGINXには1つのマスタープロセスと複数の「ワーカー」があり、これらはクライアント要求を処理する子プロセスです。</font><font style="vertical-align: inherit;">便利な機能が提供されています：コマンドを使用して</font></font><code>nginx -s &lt;SIGNAL&gt;</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、高速シャットダウンモードまたはグレースフルシャットダウンのいずれかでプロセス</font><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">終了します。</font><font style="vertical-align: inherit;">明らかに、私たちは正確に後者のオプションに関心があります。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+その後、すべてが簡単です</font><font style="vertical-align: inherit;">。正常なシャットダウンに関する信号を送信する</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">コマンド</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">preStopフック</font></a><font style="vertical-align: inherit;">に追加する必要があります</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">これはデプロイメントのコンテナーブロックで行うことができます。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">       lifecycle:<font></font>
+          preStop:<font></font>
+            exec:<font></font>
+              command:<font></font>
+              - /usr/sbin/nginx<font></font>
+              - -s<font></font>
+              - quit</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これで、ポッドがNGINXコンテナーログで作業を完了すると、次のようになります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">2018/01/25 13:58:31 [notice] 1#1: signal 3 (SIGQUIT) received, shutting down<font></font>
+2018/01/25 13:58:31 [notice] 11#11: gracefully shutting down</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、それは私たちが必要とすることを意味します：NGINXはクエリの完了を待ってから、プロセスを強制終了します。</font><font style="vertical-align: inherit;">ただし、一般的な問題については、後で説明します。これは、コマンドがあったとしても、</font></font><code>nginx -s quit</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">プロセス</font><font style="vertical-align: inherit;">が</font><font style="vertical-align: inherit;">正しく完了</font><font style="vertical-align: inherit;">し</font><font style="vertical-align: inherit;">ないためです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+そして、この段階でNGINXは完成しました。少なくともログから、すべてが正常に機能していることが理解できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PHP-FPMはどうですか？</font><font style="vertical-align: inherit;">正常なシャットダウンはどのように処理されますか？</font><font style="vertical-align: inherit;">それを正しくしましょう。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PHP-FPM</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PHP-FPMの場合、情報は少し少なくなります。</font><font style="vertical-align: inherit;">PHP-FPMの</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">公式マニュアル</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">に</font><font style="vertical-align: inherit;">注目</font><font style="vertical-align: inherit;">すると、次のPOSIXシグナルが受信されたことがわかります。</font></font><br>
+<br>
+<ol>
+<li> <code>SIGINT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font></font><code>SIGTERM</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-高速シャットダウン。</font></font></li>
+<li> <code>SIGQUIT</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -正常なシャットダウン（必要なもの）。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この問題の残りの信号は必要ないため、分析は省略されます。</font><font style="vertical-align: inherit;">プロセスを正しく完了するには、次のpreStopフックを記述する必要があります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">        lifecycle:<font></font>
+          preStop:<font></font>
+            exec:<font></font>
+              command:<font></font>
+              - /bin/kill<font></font>
+              - -SIGQUIT<font></font>
+              - "1"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一見すると、これは両方のコンテナで正常なシャットダウンを実行するために必要なすべてです。</font><font style="vertical-align: inherit;">ただし、タスクは見かけよりも複雑です。</font><font style="vertical-align: inherit;">次に、正常なシャットダウンが機能せず、デプロイメント中にプロジェクトに短期的にアクセスできなくなる2つのケースを調べました。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">練習。</font><font style="vertical-align: inherit;">正常なシャットダウンで起こりうる問題</font></font></h2><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Nginx</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+まず、覚えておくと便利です。コマンドの実行に加えて、</font></font><code>nginx -s quit</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">注意が必要な別のステップがあります。いずれにしても、SIGQUITシグナルではなくNGINXがSIGTERMを送信すると、要求が正しく完了しなかったため、問題が発生しました。同様のケースは、例えば、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ここで</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">見つけることができ</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。残念ながら、この動作の特定の理由を確立できませんでした。NGINXバージョンの疑いがありましたが、確認されませんでした。症状は、NGINXコンテナのログに</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「open socket＃10 left left in connection 5」</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">というメッセージが表示され</font><font style="vertical-align: inherit;">、その後ポッドが停止したことです。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+たとえば、必要なIngressへの回答によって、このような問題を観察できます。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/um/sz/ip/umszip1dlpudotn2dstg17qfnzs.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">展開時のステータスコードインジケーター</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この場合、Ingress自体から503エラーコードのみが返されます。NGINXコンテナはもう利用できないため、NGINXコンテナにアクセスできません。</font><font style="vertical-align: inherit;">NGINXでコンテナのログを見ると、ログには次のものが含まれています。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">[alert] 13939#0: *154 open socket #3 left in connection 16<font></font>
+[alert] 13939#0: *168 open socket #6 left in connection 13</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+停止信号を変更すると、コンテナは正しく停止し始めます。これは、503エラーが発生しなくなったことで確認できます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+同様の問題が発生した場合は、コンテナーで使用されている停止信号と、preStopフックが正確にどのように見えるかを理解することは理にかなっています。</font><font style="vertical-align: inherit;">その理由がこれにあるのかもしれません。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PHP-FPM ...など</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+PHP-FPMの問題は簡単に説明されています。展開やその他の操作中に502エラーが発生するため、子プロセスの完了を待たずに終了します。 2005年以降、</font><font style="vertical-align: inherit;">この問題を説明する</font><font style="vertical-align: inherit;">複数のエラーメッセージがbugs.php.net（たとえば、</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ここ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ここ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）に</font><font style="vertical-align: inherit;">あり</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;">ます</font></a><font style="vertical-align: inherit;">。しかし、おそらくログには何も表示されません。PHP-FPMは、エラーやサードパーティの通知なしにプロセスの完了を通知します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+問題自体は、程度の差はあるものの、アプリケーション自体に依存している可能性があり、たとえば監視に現れない可能性があることを明確にする価値があります。それでも遭遇する場合は、簡単な回避策が思い浮かびます：preStopフックを</font></font><code>sleep(30)</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。これにより、以前のすべてのリクエストを完了できるようになり（ポッドは</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">既に</font></font></i><font style="vertical-align: inherit;"></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">終了中の</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">状態である</font><font style="vertical-align: inherit;">ため、新しいリクエストは受け付けません</font><font style="vertical-align: inherit;">）、30秒後にポッド自体がシグナルで終了します</font></font><code>SIGTERM</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+これは、ことが判明し</font></font><code>lifecycle</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">た容器のためにそれは次のようになります。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">    lifecycle:<font></font>
+      preStop:<font></font>
+        exec:<font></font>
+          command:<font></font>
+          - /bin/sleep<font></font>
+          - "30"</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、30秒の表示</font><font style="vertical-align: inherit;">があるため、各ポッドが</font><i><font style="vertical-align: inherit;">少なくとも</font></i><font style="vertical-align: inherit;"> 30秒間</font><font style="vertical-align: inherit;">終了するため、展開時間</font></font><code>sleep</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">が</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大幅に</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">増加し</font><font style="vertical-align: inherit;">ます。これは悪いことです。これで何ができますか？</font><font style="vertical-align: inherit;">
+アプリケーションの直接実行の責任者に話を移しましょう。私たちの場合、これは</font><b><font style="vertical-align: inherit;">PHP-FPM</font></b><font style="vertical-align: inherit;">であり</font><b><font style="vertical-align: inherit;">、デフォルトではその子プロセスの実行を監視しません</font></b><font style="vertical-align: inherit;">。マスタープロセスはすぐに終了します。この動作は</font><font style="vertical-align: inherit;">、子プロセスによるマスターからのシグナルを待機する時間制限を指定</font><font style="vertical-align: inherit;">するディレクティブ</font><font style="vertical-align: inherit;">を</font><font style="vertical-align: inherit;">使用して変更でき</font><font style="vertical-align: inherit;">ます。値を20秒に設定すると、コンテナーで実行されているほとんどの要求がカバーされ、完了後にマスタープロセスが停止します。</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><code>process_control_timeout</code><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この知識があれば、最後の問題に戻ります。すでに述べたように、Kubernetesはモノリシックプラットフォームではありません。さまざまなコンポーネント間の相互作用には時間がかかります。これは、Ingressやその他の関連コンポーネントの動作を検討する場合に特に当てはまります。展開時のそのような遅延が原因で、500エラーの急増が発生しやすいためです。たとえば、要求を上流に送信する段階でエラーが発生する可能性がありますが、コンポーネント間の相互作用の「タイムラグ」はかなり短く、1秒未満です。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、</font><font style="vertical-align: inherit;">前述のディレクティブ</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">と組み合わせ</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">て</font></font><code>process_control_timeout</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、次の構文を使用できます</font></font><code>lifecycle</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<pre><code class="plaintext hljs">lifecycle:<font></font>
+  preStop:<font></font>
+    exec:<font></font>
+      command: ["/bin/bash","-c","/bin/sleep 1; kill -QUIT 1"]</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この場合、チームによる遅延を補正し、</font></font><code>sleep</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">展開時間を大幅に延長しません。30秒と1秒の間に顕著な違いはありますか？..基本的に</font></font><code>process_control_timeout</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、</font><font style="vertical-align: inherit;">それは「メインジョブ」を引き受けますが、</font></font><code>lifecycle</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">遅延の場合の「セーフティネット」としてのみ使用されます。</font></font><br>
+ <br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+一般的に言えば、</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">説明されている動作と対応する回避策は、PHP-FPMだけに関係します</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">他の言語/フレームワークを使用する場合、同様の状況が何らかの形で発生する可能性があります。</font><font style="vertical-align: inherit;">他の方法（たとえば、アプリケーションが終了信号を正しく処理するようにコードを書き直す）で正常なシャットダウンを修正できない場合は、上記の方法を使用できます。</font><font style="vertical-align: inherit;">最も美しくはないかもしれませんが、動作します。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">練習。</font><font style="vertical-align: inherit;">ポッドのパフォーマンスを確認するための負荷テスト</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+この手順により、ユーザーがサイトにアクセスしたときに実際の戦闘状況に近づくため、負荷テストはコンテナーの動作を確認する1つの方法です。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Yandex.Tank</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">を使用して上記の推奨事項をテストできます</font><font style="vertical-align: inherit;">。これはすべてのニーズを完全にカバーします。以下は、GrafanaとYandex.Tankのグラフのおかげで、明確にテストするためのヒントとコツです-私たちの経験からの例。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ここで最も重要なことは</font><b><font style="vertical-align: inherit;">、段階的な変化をチェックする</font></b><font style="vertical-align: inherit;">ことです</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。新しい修正を追加した後、テストを実行して、前回の起動と比較して結果が変化したかどうかを確認します。そうしないと、効果のないソリューションを特定することが難しくなり、将来的には害を及ぼすことしかできなくなります（たとえば、展開時間を増やすなど）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+別の警告-終了中のコンテナのログを確認してください。正常なシャットダウン情報が記録されていますか？他のリソース（たとえば、隣接するPHP-FPMコンテナー）にアクセスするときに、ログにエラーがありますか？アプリケーション自体のエラー（上記のNGINXの場合など）？この記事の紹介情報が、コンテナの終了時にコンテナに何が起こるかを理解するのに役立つことを願っています。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+したがって、最初のテスト実行は</font></font><code>lifecycle</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">、アプリケーションサーバー用の追加のディレクティブ</font><font style="vertical-align: inherit;">なし</font><font style="vertical-align: inherit;">で</font><font style="vertical-align: inherit;">行われ</font><font style="vertical-align: inherit;">ました（</font></font><code>process_control_timeout</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PHP-FPM）。このテストの目的は、エラーのおおよその数（およびエラーが存在するかどうか）を識別することでした。また、追加情報から、各ハースの平均展開時間は、完全に準備が整った状態になるまで約5〜10秒であったことがわかるはずです。結果は次のとおりです</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ce/yw/ap/ceywapg8q2kpztr-zdslhjy8brm.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+。Yandex.Tank情報パネルに502エラーのスプラッシュが表示されます。これは、展開時に発生し、平均で最大5秒間続きました。おそらくこれにより、古いポッドへの既存のリクエストが終了したときに終了しました。その後、503エラーが表示されました。これは、停止されたNGINXコンテナーの結果であり、バックエンドのために切断されました（そのため、Ingressが接続できなかったため）。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+方法を見てみましょう</font></font><code>process_control_timeout</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PHP-FPMでは、子プロセスの完了を待つのに役立ちます。</font><font style="vertical-align: inherit;">このようなエラーを修正します。</font><font style="vertical-align: inherit;">このディレクティブを使用して繰り返し展開：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/t5/8g/0c/t58g0cs5b6umhjkmvlhjktbkio0.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+500の展開中にエラーは発生しません！</font><font style="vertical-align: inherit;">デプロイは成功し、正常なシャットダウンが機能します。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、Ingressコンテナの場合は、タイムラグが原因で発生する可能性のあるエラーのごく一部を思い出してください。</font><font style="vertical-align: inherit;">それらを回避するには、構築を追加し</font></font><code>sleep</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">て展開を繰り返す必要があります。</font><font style="vertical-align: inherit;">ただし、この特定のケースでは、変更は表示されませんでした（再びエラーはありません）。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">結論</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+プロセスを正しく完了するために、アプリケーションから次の動作が期待されます。</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 数秒待ってから、新しい接続の受け入れを停止します。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> すべての要求が完了するのを待ち、要求を実行しないすべてのキープアライブ接続を閉じます。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> プロセスを完了します。</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+ただし、すべてのアプリケーションがこの方法で機能できるわけではありません。</font><font style="vertical-align: inherit;">Kubernetesの現実の問題に対する1つの解決策は次のとおりです。</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 数秒待機する事前停止フックを追加する</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 関連するパラメーターについて、バックエンドの構成ファイルを調べます。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+NGINXの例では、最初に完了のために信号を正しく処理する必要があるアプリケーションでもこれができない場合があるため、アプリケーションのデプロイメント中に500エラーをチェックすることが重要です。また、個別のポッドやコンテナに集中するのではなく、インフラストラクチャ全体を全体的に見ることで、問題をより広く見ることができます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Yandex.Tankは、任意の監視システムと組み合わせてテストツールとして使用できます（この場合、バックエンドがPrometheusの形式のGrafanaからのデータがテストのために取得されました）。正常なシャットダウンの問題は、ベンチマークが生成する可能性のある大きな負荷の下で明らかに見られます。監視は、テスト中またはテスト後に状況をより詳細に分析するのに役立ちます。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+記事へのフィードバックへの対応：問題と解決策がNGINX Ingressに関連してここで説明されていることは言及する価値があります。</font><font style="vertical-align: inherit;">その他の場合については、おそらく次のサイクルの資料で検討する他の解決策があります。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PS</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+K8sヒント＆トリックサイクルのその他：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">NGINX Ingressのパーソナライズされたエラーページ</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ノードの割り当てとWebアプリケーションの負荷について</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ”;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">" </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">開発サイトへのアクセス</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ";</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">「</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=ja&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">大規模なデータベースのブートストラップを高速化します。</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">」</font></font></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../ja489984/index.html">udalenkaに関するAMA：質問-私たちは答えます</a></li>
+<li><a href="../ja489986/index.html">Power Stage Designerユーティリティ-Power Electronics Developer Tool</a></li>
+<li><a href="../ja489988/index.html">「手を上げて！」：Playme TIO Sダッシュカメラのモノレビュー</a></li>
+<li><a href="../ja489990/index.html">Service Deskはどのようにしてサービス会社を救いましたか、またはビジネスが成長したらどうなりますか？</a></li>
+<li><a href="../ja489992/index.html">Kubernetesクラスターでのポッドのシャットダウンを修正</a></li>
+<li><a href="../ja489998/index.html">11. Fortinet Getting Started v6.0。ライセンシング</a></li>
+<li><a href="../ja490002/index.html">KotlinとMicronautでGraphQLをグラフ化し、複数のマイクロサービスのAPIへの単一のアクセスポイントを作成する方法</a></li>
+<li><a href="../ja490006/index.html">技術仕様の教育プログラム</a></li>
+<li><a href="../ja490010/index.html">音楽の正しさをチェックするための型システムの検査</a></li>
+<li><a href="../ja490012/index.html">ストレージのアラートとエラー、それらに対処する方法？</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
