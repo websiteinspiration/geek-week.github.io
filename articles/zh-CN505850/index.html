@@ -1,0 +1,333 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤳🏽 👄 💕 产品代码中的C ++基于概念的多态性：LLVM中的PassManager 🤲 👹 👨‍👦‍👦</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="今天，我们将讨论由C ++社区中的著名人物Sean Parent（Adobe）引入的一个有趣的成语。他经常发表演讲，并发表一系列“更好的代码”文章。Photoshop使用的他的想法之一是基于概念的多态性。这是当我们不是通过显式继承而是通过使用包括通用编程的技术来实现多态时，因此我们得到了一些其他好处...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>产品代码中的C ++基于概念的多态性：LLVM中的PassManager</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/samsung/blog/505850/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">今天，我们将讨论由C ++社区中的著名人物Sean Parent（Adobe）引入的一个有趣的成语。</font><font style="vertical-align: inherit;">他经常发表演讲，并发表一系列“更好的代码”文章。</font><font style="vertical-align: inherit;">Photoshop使用的他的想法之一是基于概念的多态性。</font><font style="vertical-align: inherit;">这是当我们不是通过显式继承而是通过使用包括通用编程的技术来实现多态时，因此我们得到了一些其他好处。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+文章的结构安排如下：</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">什么是基于概念的多态性，为什么需要它？</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">关于LLVM及其设备的一些知识</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LLVM PassManager中基于概念的多态性示例</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">该方法的优点</font></font><br>
+</li>
+</ol><br>
+<br>
+<img src="https://habrastorage.org/webt/hg/ru/az/hgruazi6vbztkex50vkgdcfgknw.png"><br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">说明“继承是邪恶的”论题的图片。</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">资源</font></font></a></i><br>
+<a name="habracut"></a><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">什么是基于概念的多态性，为什么需要它？</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在C ++中，使用虚拟函数和继承来实现动态多态，而使用模式来实现静态多态。</font><font style="vertical-align: inherit;">在这里，我们将这两种方法结合起来并加以利用。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+显式使用继承通常会导致过多的代码连接性并违反接口分离（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ISP</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">的原理</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">如何在没有这些缺点的情况下实现动态多态？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+肖恩·潘特（Sean Parent）提出了一个称为“基于概念的多态性”的习惯用法，其中继承是隐式的，对用户是隐藏的。</font><font style="vertical-align: inherit;">您可以从他的报告《</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">继承是邪恶的基础类》中</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">进一步了解这一点</font><font style="vertical-align: inherit;">-在其中他以Photoshop和动作历史为例展示了整个想法-您将学习“历史画笔”的实际工作方式。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">关于LLVM及其设备的一些知识</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我想通过LLVM的例子来展示这种习语的优势。</font><font style="vertical-align: inherit;">谁不知道，LLVM是用于开发编译器的基础结构。</font><font style="vertical-align: inherit;">下面是一个非常高级的LLVM体系结构，该体系结构仅涵盖本文稍后使用的那些实体。</font><font style="vertical-align: inherit;">有关更多信息，请参见官方</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">文档</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/eu/zw/wa/euzwwalazlbmv9kqy8mzbrv95hw.png"><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这是LLVM的体系结构，并且原则上是任何现代编译器的体系结构，</font></font></i><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+主要部分如下：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">前端获取程序的源代码，并将其转换为中间表示（IR）。</font><font style="vertical-align: inherit;">这简化了其余编译器的工作，因此它不处理复杂的C ++代码。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">中端-一组优化，分析和转换。</font><font style="vertical-align: inherit;">以其最一般的形式，它是一组通行证（Passes）。</font><font style="vertical-align: inherit;">所有通行证均由称为PassManager的特殊组件注册和启动。</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">后端直接生成目标代码。</font></font><br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+编译器以几种基本实体的形式呈现程序。</font><font style="vertical-align: inherit;">这是一个模块（有条件的.cpp文件），一个函数，一个包含一组指令的基本单元。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/ig/vi/0i/igvi0icjbjtgmhbfvdwvvtbyy0c.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+LLVM现在有两个版本的PassManager：&nbsp;</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LegacyPassManager，它使用经典的基于运行时继承的多态性。</font><font style="vertical-align: inherit;">继承层次结构包括在模块，函数，循环等上运行的传递。&nbsp;</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PassManager-一种新版本，仅基于基于概念的多态性，建议取代LegacyPassManager。</font><font style="vertical-align: inherit;">两种版本并行存在并独立开发。</font></font><br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+本文的想法是演示以两种不同方式实现的实际产品代码的概念，并展示后一种方法的优势。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">LLVM PassManager中基于概念的多态性示例</font></font></h1><br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">按照旧版实施</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，如何在LegacyPassManager中经典地安排一切。</font><font style="vertical-align: inherit;">假设我们有一个PassManager类，还有一个Pass类-一个pass。</font><font style="vertical-align: inherit;">我们具有这样的层次结构：ModulePass，我们的类继承自该模块，例如，Constant Propagation。</font><font style="vertical-align: inherit;">有一个runOnModule方法，这里是虚拟的。</font><font style="vertical-align: inherit;">因此，我们具有通常的运行时多态性：</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-comment">/// ModulePass class - This class is used to implement unstructured</span>
+<span class="hljs-comment">/// interprocedural optimizations and analyses. ModulePasses may do anything</span>
+<span class="hljs-comment">/// they want to the program.</span>
+<span class="hljs-comment">///</span>
+<span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">ModulePass</span> :</span> <span class="hljs-keyword">public</span> Pass {<font></font>
+...<font></font>
+<span class="hljs-comment">/// runOnModule - Virtual method overriden by subclasses to process the module</span>
+<span class="hljs-comment">/// being operated on.</span>
+<span class="hljs-function"><span class="hljs-keyword">virtual</span> <span class="hljs-keyword">bool</span> <span class="hljs-title">runOnModule</span><span class="hljs-params">(Module &amp;M)</span> </span>= <span class="hljs-number">0</span>;<font></font>
+};<font></font>
+<font></font>
+...<font></font>
+<font></font>
+<span class="hljs-comment">/// IPCP - The interprocedural constant propagation pass</span>
+<span class="hljs-comment">///</span>
+<span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">IPCP</span> :</span> <span class="hljs-keyword">public</span> ModulePass {<font></font>
+...<font></font>
+<span class="hljs-function"><span class="hljs-keyword">bool</span> <span class="hljs-title">runOnModule</span><span class="hljs-params">(Module &amp;M)</span> <span class="hljs-keyword">override</span></span>;<font></font>
+};</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们看一下代码，这是什么问题？我们看到在此层次结构中，开始段落的方法因应执行的内容而异（在函数上-runOnFunction，模块-runOnModule，循环-runOnLoop等）。反过来，这使得不可能以单一方式（实际上应用多态）来处理与不同IR实体一起使用的通行证集合。显然，正确的做法似乎是：您需要一个虚拟运行方法，该方法将在继承人中重新定义。但随后出现一个问题：后继类中的run方法将具有不同的签名，因为参数始终以其类型（函数，模块等）传递。因此，您必须为Module，Function等创建一个虚拟基类，在运行时传递一个指向该类的指针，并在方法内部进行向下转换，取决于此指针上位于哪种对象。奇怪的事情开始了：当出现一个新的从属实体时，我们现在每次都不得不重写高级代码，这与所有设计原则相矛盾。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以为每种情况手动编写适配器类。</font><font style="vertical-align: inherit;">但这是一个漫长而无趣的想法，实际上是一个奇怪的想法，即只为了方便服务于组件而编写包装类。</font><font style="vertical-align: inherit;">最好使用模板自动生成此代码。</font><font style="vertical-align: inherit;">这正是正在讨论的方法中要解决的问题。</font><font style="vertical-align: inherit;">另外，正如您稍后将看到的，我们将得到一些更有用的结果。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如新版本中所建议</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在新的PassManager中会发生以下情况。</font><font style="vertical-align: inherit;">多态对象的概念概括如下。</font><font style="vertical-align: inherit;">我们说如果一个对象实现某种方法，那么我们将介绍一组我们希望是多态的方法，并且我们说实现该方法的所有类都是多态的，也就是说，我们可以在可互换的上下文中使用它们。这是PassManager。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+考虑LLVM中的PassManager类。</font><font style="vertical-align: inherit;">这是一个简化的版本，完整版本可以在llvm / include / llvm / IR / PassManager.h中找到。</font><font style="vertical-align: inherit;">IR模板参数直接专门用于传递我们的实体（运行功能）。</font><font style="vertical-align: inherit;">它可以是模块，功能或周期。</font><font style="vertical-align: inherit;">我们看一下代码，进一步的解释将是：</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">template</span> &lt;<span class="hljs-keyword">typename</span> IR, <span class="hljs-keyword">typename</span>... ArgTs&gt; <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">PassManager</span> {</span>
+<span class="hljs-keyword">public</span>:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">run</span><span class="hljs-params">(IR&amp; ir, ArgTs... args)</span> </span>{
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">for</span> (<span class="hljs-keyword">auto</span>&amp; Pass : Passes) {<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Pass-&gt;run(graph, args...);<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<font></font>
+<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">template</span> &lt;<span class="hljs-keyword">typename</span> PassT&gt;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">addPass</span><span class="hljs-params">(PassT Pass)</span> </span>{<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Passes.emplace_back(<span class="hljs-keyword">new</span> detail::PassModel&lt;IR, PassT, ArgTs...&gt;(<span class="hljs-built_in">std</span>::move(Pass)));<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<font></font>
+<font></font>
+<span class="hljs-keyword">private</span>:
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-built_in">std</span>::<span class="hljs-built_in">vector</span>&lt;<span class="hljs-built_in">std</span>::<span class="hljs-built_in">unique_ptr</span>&lt;detail::PassConcept&lt;IR, ArgTs...&gt;&gt;&gt; Passes;<font></font>
+<font></font>
+};</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们看一下以下基本实体：</font></font><br>
+<br>
+<ul>
+<li> run     ,        run<br>
+</li>
+<li> addPass     (      )    PassT<br>
+</li>
+<li> Passes — ,      .         ,       ,        type erasure,     <br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+那么这应该是哪种类型？</font><font style="vertical-align: inherit;">Passes向量中存储了什么？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+首先，让我们看看PassModel和PassConcept是什么。</font><font style="vertical-align: inherit;">这些是PassManager内部的帮助程序类。</font><font style="vertical-align: inherit;">它们都在detail名称空间中。</font><font style="vertical-align: inherit;">首先，让我们看看PassConcept类的外观。</font><font style="vertical-align: inherit;">它再次包含相同的run方法，这里是纯虚拟方法。&nbsp;</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">namespace</span> detail {<font></font>
+<font></font>
+<span class="hljs-keyword">template</span> &lt;<span class="hljs-keyword">typename</span> IR, <span class="hljs-keyword">typename</span>... ArgTs&gt; <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">PassConcept</span> {</span>
+<span class="hljs-keyword">public</span>:<font></font>
+&nbsp;<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-keyword">virtual</span> ~PassConcept() = <span class="hljs-keyword">default</span>;<font></font>
+<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-function"><span class="hljs-keyword">virtual</span> <span class="hljs-keyword">void</span> <span class="hljs-title">run</span><span class="hljs-params">(IR&amp; ir, ArgTs... args)</span> </span>= <span class="hljs-number">0</span>;<font></font>
+<font></font>
+};</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+第二类PassModel也是样板。</font><font style="vertical-align: inherit;">它是从PassConcept继承的。&nbsp;</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-keyword">template</span> &lt;<span class="hljs-keyword">typename</span> IR, <span class="hljs-keyword">typename</span> PassT, <span class="hljs-keyword">typename</span>... ArgTs&gt; <span class="hljs-class"><span class="hljs-keyword">class</span> <span class="hljs-title">PassModel</span> <span class="hljs-title">final</span> :</span> <span class="hljs-keyword">public</span> PassConcept&lt;IR, ArgTs...&gt; {
+<span class="hljs-keyword">public</span>:<font></font>
+<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-function"><span class="hljs-keyword">explicit</span> <span class="hljs-title">PassModel</span><span class="hljs-params">(PassT Pass)</span> : <span class="hljs-title">pass_</span><span class="hljs-params">(<span class="hljs-built_in">std</span>::move(pass))</span> </span>{}<font></font>
+<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="hljs-function"><span class="hljs-keyword">void</span> <span class="hljs-title">run</span><span class="hljs-params">(IR&amp; ir, ArgTs... args)</span> <span class="hljs-keyword">final</span> </span>{<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;pass_.run(ir, args...);<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;}<font></font>
+<font></font>
+<span class="hljs-keyword">private</span>:<font></font>
+<font></font>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;PassT pass_;<font></font>
+<font></font>
+};<font></font>
+<font></font>
+} <span class="hljs-comment">// end namespace detail</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+它包含的内容：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PassT类型的专用pass_字段</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">接受PassT类型的对象作为输入的构造函数。</font><font style="vertical-align: inherit;">它没有任何吸引人的地方，它仅使用移动的语义来初始化pass_</font></font><br>
+</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">run方法，仅在通过时调用run方法。</font><font style="vertical-align: inherit;">分别传递可能存在的所有参数。</font></font><br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们现在回想起我们从哪里开始。反过来，PassManager存储所有这些段落。 In从PassConcept类型元素传递。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+所以，大局。由PassManager创建。使用AddPass，它可以记录我们要在模块，函数，循环等上进行的传递。例如，内联，恒定传播，循环展开等。它们本身不是从任何人继承的，它们应该只具有run方法。只是整个概念提供了这一点。怎么样？&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+假设我们有内联优化。我们将一个Inline类型的对象添加到addPass。因此，在通行证中，向量中，我们已将该内联以PassConcept的形式放置。我们应该怎么做？内联不是从PassConcept类继承的。我们如何将元素放入向量中？由于没有继承，我们无法将其强制转换为基本类型（此处是转换），在这里就完成了这样的技巧。我们有此PassConcept帮助器类，用于定义接口。他说，他的所有后代都必须实现run方法。我们有PassModel，而后者又是样板。因此，当我们放置Inline时，将使用此Inline类型实例化此PassModel，此对象将在此类内进行编译。 PassModel本身重新定义了运行，该运行本身已经为此段调用了运行，即从Inline类运行。所有这些都在编译时解决：如果Inline没有定义run方法，我们将遇到编译时错误。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，这种多态性是在没有继承的情况下实现的。可能会出现问题：它为什么不继承，因为在这里，PassModel是从PassConcept继承的？答：有继承，但是继承是内部的，不会伸出来，用户对此一无所知。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我们从概念上讲。在这里，我们有一个用户，他想覆盖某种方法。同时，他不想被继承，以免对自己产生更多依赖。怎么做？我们内部通过PassConcept，PassModel通过继承使运行时多态性，但用户对此一无所知：这些都是这两个类的内部，它们都在其命名空间中定义。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+再一次，这是如何实现的？</font><font style="vertical-align: inherit;">就编译器而言，我有一个类，可以称之为内联。</font><font style="vertical-align: inherit;">我们分别向向量添加Inline，以创建PassModel对象。</font><font style="vertical-align: inherit;">它具有一个接受此模板参数对象的构造函数。</font><font style="vertical-align: inherit;">因此，当我们在PassManager中调用run方法时，它将遍历所有段落，在这种情况下，我们只有一遍，它具有Inline类型。</font><font style="vertical-align: inherit;">它调用PassConcept的runC方法。</font><font style="vertical-align: inherit;">PassModel内部的同一运行方法，由Inline类型实例化。</font><font style="vertical-align: inherit;">并且此方法已经在已注册的通道上调用了run方法，在这种情况下，该方法是Inline，因此将调用Inline上的run。</font></font><br>
+<br>
+<h1><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">该方法的优点</font></font></h1><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是我们在不显式使用继承的情况下执行不同行为的方式。现在，我们没有LegacyPassManager中以前的显式依赖项。&nbsp; </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事实证明这是一件不寻常的递归事情。我们可以对覆盖run方法的任何对象使用多态。由于run方法会覆盖PassManager本身，因此它可以进行注册，即将其嵌入Passs传递向量中并再次调用。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事实证明，我们可以混合所有内容。旧版PassManager（旧版）具有明显的分隔。有模块优化，是在模块上完成的。函数上发生了优化。在这里，一切都顺利进行。我们制作了PassManager，使用“模块”类型实例化它，将Inline放入其中，还有其他一些模块化优化。然后第二个PassManager，我们使用“函数”类型实例化它，对函数进行优化。然后，在通过模块实例化的PassManager中，可以通过此Passes向量放置另一个由函数实例化的PassManager。&nbsp;</font></font><br>
+<br>
+<pre><code class="cpp hljs">PassManager&lt;Module&gt; MPM;
+<span class="hljs-comment">// ... register passes on module</span><font></font>
+MPM.addPass(GlobalDCEPass())<font></font>
+MPM.addPass(PGOInstrumentationGen());<font></font>
+<span class="hljs-comment">//... register passes on function</span><font></font>
+PassManager&lt;Function&gt; FPM;&nbsp;<font></font>
+FPM.addPass(CallSiteSplittingPass());<font></font>
+<span class="hljs-comment">//... register all registered passes on function in module pass manager MPM.addPass(createModuleToFunctionPassAdaptor(std::move(FPM)));</span></code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有时间跟随吗？我们有两个PassManager。一个带有IR模块类型，另一个带有IR功能类型。假设在带有模块的那个中，我们已经放置了一些通过次数。现在，我们想将它们与在函数上执行的传递混合在一起。我们在做什么？我们将addPass称为PassPass并将PassManager传递为Pass，它以IR类型“ Function”实例化（在实际代码中，不是PassManager本身放置在其中，而是将其包装的特殊类，但是在概念级别上并不重要）。&nbsp;</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+因此，我们可以混合使用不同的优化级别-多亏了PassManager的嵌套，交替执行对模块，函数，周期等的传递。</font><font style="vertical-align: inherit;">在旧版PassManager中，这更加复杂，对于具有虚拟函数runOnModule的模块，有一个单独的类；对于具有虚拟方法runOnFunction的函数，有一个单独的类，等等。</font><font style="vertical-align: inherit;">这两个类都是从Pass的祖先继承而来的，但是它们彼此独立并且具有不同的接口，这使得使用LegacyPassManager不方便地在不同的IR实体（模块，函数，循环）上调用pass。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+其他阅读材料：</font></font><br>
+&nbsp;<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">面向研究生的LLVM-LLVM</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的简单介绍</font></font><br>
+</li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">钱德勒·卡鲁特</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">（</font></a><font style="vertical-align: inherit;"> Chandler Carrut）关于LLVM通过的安排的</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">演讲</font></a></font><br>
+</li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有关实现细节PassManager的</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">演示</font></a><font style="vertical-align: inherit;"> Chandler Carruth</font></font><br>
+</li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">邮件列表中的</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">一个线程</font></a><font style="vertical-align: inherit;">，讨论LegacyPassManager和PassManager之间的区别</font></font><br>
+</li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+作者：</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/73/et/tp/73ettpg9jylifuwfvohspok-nv4.png" align="left"><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Roman Rusyaev，</font><font style="vertical-align: inherit;">
+俄罗斯三星研发研究院</font><font style="vertical-align: inherit;">
+AI编译器</font></font><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+专家工程师</font><font style="vertical-align: inherit;">，</font><font style="vertical-align: inherit;">
+很快，Roman将在An ++ Polukhin的C ++ Russia 2020 Moscow会议上发表演讲：他们将谈论现在和将来的复制淘汰：</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">链接至报告</font></a><font style="vertical-align: inherit;"> Tatyana Volkova，</font><font style="vertical-align: inherit;">
+首席专家</font><font style="vertical-align: inherit;">
+业务</font><font style="vertical-align: inherit;">
+俄罗斯三星研发机构</font><font style="vertical-align: inherit;">开发团队</font></font><br><font style="vertical-align: inherit;"></font><br><font style="vertical-align: inherit;"></font><br>
+<br><font style="vertical-align: inherit;"></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"></font></a><br>
+<br clear="all">
+<img src="https://habrastorage.org/webt/ay/fa/a2/ayfaa2i4aukgor-uh5ija7gstie.png" align="left"><font style="vertical-align: inherit;"></font><br><font style="vertical-align: inherit;"></font><br><font style="vertical-align: inherit;"></font><br><font style="vertical-align: inherit;"></font></i><br>
+<br clear="all"></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN505824/index.html">指南：您自己的L2TP VPN</a></li>
+<li><a href="../zh-CN505826/index.html">如何获得100％甚至更多的视力</a></li>
+<li><a href="../zh-CN505834/index.html">中位数样本。置信区间和比较</a></li>
+<li><a href="../zh-CN505838/index.html">适用于数千种应用的FPGA技术</a></li>
+<li><a href="../zh-CN505846/index.html">从COVID-19开发疫苗时，真正的数学问题是什么？</a></li>
+<li><a href="../zh-CN505856/index.html">从暴力破解到隐私尝试-SaaS提供商面临的挑战</a></li>
+<li><a href="../zh-CN505860/index.html">Spring Boot，Hibernate和Kotlin为初学者逐步提供</a></li>
+<li><a href="../zh-CN505870/index.html">如何在日本，韩国和中国推广手机游戏和应用程序</a></li>
+<li><a href="../zh-CN505872/index.html">无人驾驶车辆的历史</a></li>
+<li><a href="../zh-CN505880/index.html">如何在Tarantool中编写索引</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>

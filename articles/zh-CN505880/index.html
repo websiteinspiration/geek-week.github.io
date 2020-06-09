@@ -1,0 +1,412 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🚧 🚡 👩🏻‍🚒 如何在Tarantool中编写索引 👩🏼‍💻 🔫 👨🏾‍🤝‍👨🏽</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="Tarantool是应用程序服务器和数据库。服务器部分是用C编写的，并且为用户提供了使用它的Lua接口。另外，Tarantool是一个开源产品，这意味着源代码是公共领域的，您可以自由地开发和分发基于Tarantool的软件。
+ 
+ 但是今天的故事将有所不同：关于实验，关于尝试编写自己的搜索数据结构（...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>如何在Tarantool中编写索引</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/505880/"><img src="https://habrastorage.org/webt/_w/oc/me/_wocmecfrb1lnc7gdoodtf3j3y4.png"><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tarantool是应用程序服务器和数据库。</font><font style="vertical-align: inherit;">服务器部分是用C编写的，并且为用户提供了使用它的Lua接口。</font><font style="vertical-align: inherit;">另外，Tarantool是一个开源产品，这意味着源代码是公共领域的，您可以自由地开发和分发基于Tarantool的软件。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是今天的故事将有所不同：关于实验，关于尝试编写自己的搜索数据结构（Z阶曲线）并将其集成到现有的Tarantool生态系统中。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我是Tarantool解决方案团队的开发人员，我没有直接参与Tarantool的开发，但是是活跃用户。</font><font style="vertical-align: inherit;">因此，对我来说，该实验是为了了解Tarantool如何在较低的水平上工作。</font></font><br>
+<a name="habracut"></a><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">什么是Tarantool，它在哪里存储数据？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+什么是Tarantool？在数据库世界中，它被定位为内存技术。 memtx引擎允许您在满足ACID的所有原理的同时将所有数据存储在RAM中。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在Tar​​antool中，关系表的一个类似物是空间，该空间用于存储元组（tuple）。与关系表不同，空间中的元组通常可以具有任意长度。要存储它们，必须创建搜索数据结构，并且搜索键是主键，始终是唯一的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您还可以构建其他结构-二级索引仅存储指向元组的指针。</font><font style="vertical-align: inherit;">次要索引可能不是唯一的，但是，这只是用户可见的外部行为。</font><font style="vertical-align: inherit;">主索引字段隐式添加到任何非唯一索引。</font><font style="vertical-align: inherit;">这样可以确保在索引内对元组进行排序的稳定性。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Tarantool支持不同类型的索引：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">首先，在</font></font><strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">B树中</font></font></strong><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">（如果绝对精确，则在B + *-树中）。</font><font style="vertical-align: inherit;">关于B树[ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">B-Tree</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ] </font><font style="vertical-align: inherit;">的结构已有很多文献报道</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我只注意到数据以排序形式存储，此外，您还可以按索引键的前缀进行搜索。</font></font></li>
+<li>   <strong>hash-</strong>. ,      .    .    B-,      ,  .    .</li>
+<li><strong>R-Tree</strong>.      .    «» , ,  .       — .     ,       .        .   ,      ,    .</li>
+<li><strong>Bitset</strong>. ,     .   ,            ,   .</li>
+</ul><br>
+<h3> Z-,   </h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+编写索引的想法从何而来？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当我遇到亚马逊文章[ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1，2</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ]时，谈到了Z阶曲线或Morton曲线等结构。这是在平面结构（Z阶曲线）中放置“多维”数据的方法，然后将其放入B树中。这种方法应有助于避免连续数据扫描。通常，有关具有特定特征集的任何对象的信息都可以视为多维数据。例如身高，体重，脚长等。人。大多数数据库为此目的使用R-Tree。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+有关Z阶曲线的结构的一些知识。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/363/a10/2c9/363a102c99adb088e19052945e6298fb.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Z阶曲线（也称为莫顿曲线）是通过在空间中交织点的坐标位而获得的。</font><font style="vertical-align: inherit;">这样获得的Z地址具有局部性。</font><font style="vertical-align: inherit;">在平面空间上显示时，多维空间中位于附近的点仍将位于附近。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+原理上类似的混合如下所示：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/6eb/04c/f2b/6eb04cf2b6ac3f0b26613a774c8f479d.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+怎么运行的？</font><font style="vertical-align: inherit;">我们借助于对角线上的两个点（显示在直线上的两个点）来限制空间中的某个区域（一个超立方体（二维空间中将有一个矩形））。</font><font style="vertical-align: inherit;">我们得到了一个不愉快的副作用：有些要点超出了边界框：</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/991/fd9/889/991fd9889fa6f3b4b30fd7adecfcd436.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+也就是说，我们不能仅仅沿着这条曲线进行迭代。但是，有了特殊的算法，我们可以在出国旅行时跳一下，回到搜索区域。一旦我们越过曲线的极限点（我们称其为upper_bound），搜索就结束了。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+当使用B树时，我们将有一组间隔，并且此查询将导致对B树的顺序扫描，这将花费大量时间处理大型数据集。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+其他出版物对此曲线引起了我的兴趣。例如，如何将其集成到</font><font style="vertical-align: inherit;">专有数据库</font><font style="vertical-align: inherit;">TransBase [ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">3</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ]中。而且，不幸的是，我没有找到此结构的任何开源实现。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+底层的B树曲线比R树有几个优点。</font><font style="vertical-align: inherit;">例如，更好的占用率和紧凑性。</font><font style="vertical-align: inherit;">缺点：大多数使用的算法受处理器限制。</font><font style="vertical-align: inherit;">为了进行比较，我决定使用Tarantool：我对读取/插入速度以及内存消耗感兴趣。</font><font style="vertical-align: inherit;">不用说，在Habré上已经提出了类似的话题，但是对于小尺寸（2-3）以及与PostgreSQL磁盘数据库[ </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">ZcurvePostgres</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ]有关。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">嵌入Tarantool需要什么？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我找到了针对2-3维的此结构的简单实现，但是我想将性能与现有的R-Tree索引进行比较，因此我不想将自己局限于小尺寸。我选择了与R-Tree相同的维度-20。为此，我需要一个支持某些原始操作的位图：提取/修改位，移位，或/与逻辑操作。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于原型，我采用了发现的开源实现，但是很快得出结论，我不需要通用位图：密钥长度始终为64的倍数，因此可以大大简化某些操作。我根据自己的情况编写了自己的实现。另外，我没有使用系统函数来分配内存，而是开始使用在Tarantool [</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">4</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ]。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+索引的核心可能是一组用于处理Z曲线的算法。</font><font style="vertical-align: inherit;">即，计算Z地址（使用特殊的查找表），检查Z地址是否属于搜索区域，并从指定点开始检测搜索区域中的第一个匹配项。</font><font style="vertical-align: inherit;">如果您在网上搜索得很好，那么您会找到描述这些算法的科学出版物，因此我要做的就是实现它们，对其进行调试，并在可能的情况下对其进行优化。</font><font style="vertical-align: inherit;">应当将Z地址存储在用于TREE索引的已实现B树中。</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数据处理如何组织？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在最一般的情况下，元组就会出现。这是消息包格式的数据数组。在理想情况下，我们只需要隔离索引字段，混合它们的位，然后将地址与指向B树内元组的指针一起插入即可。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+但是，如果我们仅使用无符号类型，那么所有的事情将是如此简单，此时数字的排序位表示形式将与自然表示形式中的排序后的数字相对应。有符号整数有自己的表示规则，浮点数也有自己的表示规则。这必须导致一个共同的分母。由于我们将Z地址与数据本身分开存储，因此我们可以对键进行任何转换，主要是保持排序顺序。这可以使用简单的按位操作来完成。例如，对于有符号整数，您可以简单地将高字节反转。对于其他类型，有相似的转换，尽管稍微复杂一些。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+所有数字类型都可以容纳8个字节，因此键的大小将为N * 8个字节，其中N是我们空间的尺寸。字符串怎么办？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+使用字符串时，一种相当常见的情况是前缀搜索。而且很有可能获得支持。字符串的前8个字节很可能用作键。如果字符串较短，则可以用零填充。字符串支持对我们的索引施加了基本限制：我们失去了唯一性。即使第九个字节中的行不同，从系统的角度来看，它们仍然是相同的。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+让我们看一下代码。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+索引API由一组特定的方法组成。我们不会单独考虑每个对象，我们只会介绍最基本的对象，即搜索和插入操作。</font></font><br>
+<br>
+<code>get</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-通过全键搜索项目。仅适用于唯一索引。我们的索引不能唯一，因此该函数将被返回错误“不支持的索引功能”的特殊通用版本替换。</font></font><br>
+<br>
+<code>replace</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-插入一个项目。让我们更详细地考虑。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">static</span> <span class="hljs-keyword">int</span>
+<span class="hljs-title">memtx_zcurve_index_replace</span><span class="hljs-params">(struct index *base, struct tuple *old_tuple,
+        struct tuple *new_tuple, <span class="hljs-keyword">enum</span> dup_replace_mode mode,
+        struct tuple **result)</span>
+</span>{<font></font>
+    (<span class="hljs-keyword">void</span>)mode;
+    <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">memtx_zcurve_index</span> *<span class="hljs-title">index</span> = (<span class="hljs-title">struct</span> <span class="hljs-title">memtx_zcurve_index</span> *)<span class="hljs-title">base</span>;</span>
+    <span class="hljs-keyword">if</span> (new_tuple) {
+        <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">memtx_zcurve_data</span> <span class="hljs-title">new_data</span>;</span><font></font>
+        new_data.tuple = new_tuple;<font></font>
+        new_data.z_address = extract_zaddress(new_tuple,<font></font>
+                &amp;index-&gt;bit_array_pool, index);<font></font>
+        <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">memtx_zcurve_data</span> <span class="hljs-title">dup_data</span>;</span>
+        dup_data.tuple = <span class="hljs-literal">NULL</span>;<font></font>
+        dup_data.z_address = <span class="hljs-literal">NULL</span>;<font></font>
+<font></font>
+        <span class="hljs-keyword">int</span> tree_res = memtx_zcurve_insert(&amp;index-&gt;tree, new_data,<font></font>
+                &amp;dup_data);<font></font>
+        <span class="hljs-keyword">if</span> (tree_res) {<font></font>
+            diag_set(OutOfMemory, MEMTX_EXTENT_SIZE,<font></font>
+                     <span class="hljs-string">"memtx_zcurve_index"</span>, <span class="hljs-string">"replace"</span>);
+            <span class="hljs-keyword">return</span> <span class="hljs-number">-1</span>;<font></font>
+        }<font></font>
+<font></font>
+        <span class="hljs-keyword">if</span> (dup_data.tuple != <span class="hljs-literal">NULL</span>) {<font></font>
+            *result = dup_data.tuple;<font></font>
+            z_value_free(&amp;index-&gt;bit_array_pool, dup_data.z_address);<font></font>
+            <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;<font></font>
+        }<font></font>
+    }<font></font>
+    <span class="hljs-keyword">if</span> (old_tuple) {
+        <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">memtx_zcurve_data</span> <span class="hljs-title">old_data</span>, <span class="hljs-title">deleted_value</span>;</span><font></font>
+        old_data.tuple = old_tuple;<font></font>
+        old_data.z_address = extract_zaddress(old_tuple,<font></font>
+                &amp;index-&gt;bit_array_pool, index);<font></font>
+        memtx_zcurve_delete_value(&amp;index-&gt;tree, old_data, &amp;deleted_value);<font></font>
+        z_value_free(&amp;index-&gt;bit_array_pool, old_data.z_address);<font></font>
+        z_value_free(&amp;index-&gt;bit_array_pool, deleted_value.z_address);<font></font>
+    }<font></font>
+    *result = old_tuple;<font></font>
+    <span class="hljs-keyword">return</span> <span class="hljs-number">0</span>;<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您要注意什么？</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在指数方面，没有交易</font></font><code>update</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，</font></font><code>delete</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，</font></font><code>insert</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><code>replace</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">它们的所有逻辑都在此方法中执行，该方法接收旧的和新的元组，以及</font></font><code>mode</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">有关索引是否唯一的信息。</font><font style="vertical-align: inherit;">我们的索引不能唯一，因此不需要其他检查，您可以立即插入一个元组。</font></font><br>
+<br>
+<code>memtx_zcurve_insert</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">和</font></font><code>memtx_zcurve_delete_value</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">- B树的方法，这已经在Tarantool实施，在常规树索引被使用。</font><font style="vertical-align: inherit;">我们不会单独介绍它们。</font><font style="vertical-align: inherit;">与普通的TREE不同，我们不仅存储元组，而且存储z地址-索引部分的混合位。</font><font style="vertical-align: inherit;">该功能对此负责</font></font><code>extract_zadress</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<code>create_iterator</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-在Lua中，对于</font></font><code>select</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">'a和</font></font><code>pairs</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">'和。</font></font><br>
+<br>
+<pre><code class="cpp hljs"><span class="hljs-function"><span class="hljs-keyword">static</span> struct iterator *
+<span class="hljs-title">memtx_zcurve_index_create_iterator</span><span class="hljs-params">(struct index *base, <span class="hljs-keyword">enum</span> iterator_type type,
+                                   <span class="hljs-keyword">const</span> <span class="hljs-keyword">char</span> *key, <span class="hljs-keyword">uint32_t</span> part_count)</span>
+</span>{
+    <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">memtx_zcurve_index</span> *<span class="hljs-title">index</span> = (<span class="hljs-title">struct</span> <span class="hljs-title">memtx_zcurve_index</span> *)<span class="hljs-title">base</span>;</span>
+    <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">memtx_engine</span> *<span class="hljs-title">memtx</span> = (<span class="hljs-title">struct</span> <span class="hljs-title">memtx_engine</span> *)<span class="hljs-title">base</span>-&gt;<span class="hljs-title">engine</span>;</span><font></font>
+<font></font>
+    assert(part_count == <span class="hljs-number">0</span> || key != <span class="hljs-literal">NULL</span>);
+    <span class="hljs-keyword">if</span> (type != ITER_EQ &amp;&amp; type != ITER_ALL &amp;&amp; type != ITER_GE) {<font></font>
+        diag_set(UnsupportedIndexFeature, base-&gt;def,<font></font>
+                 <span class="hljs-string">"requested iterator type"</span>);
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">NULL</span>;<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-keyword">uint8_t</span> index_dim = base-&gt;def-&gt;key_def-&gt;part_count;
+    <span class="hljs-keyword">if</span> (part_count == <span class="hljs-number">0</span>) {
+        <span class="hljs-comment">/*
+         * If no key is specified, downgrade equality
+         * iterators to a full range.
+         */</span><font></font>
+        type = ITER_GE;<font></font>
+        key = <span class="hljs-literal">NULL</span>;<font></font>
+    } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (index_dim * <span class="hljs-number">2</span> == part_count<font></font>
+               &amp;&amp; type != ITER_ALL) {<font></font>
+        <span class="hljs-comment">/*
+         * If part_count is twice greater than key_def.part_count
+         * set iterator to range query
+         */</span><font></font>
+        type = ITER_GE;<font></font>
+    }<font></font>
+<font></font>
+    <span class="hljs-class"><span class="hljs-keyword">struct</span> <span class="hljs-title">tree_iterator</span> *<span class="hljs-title">it</span> = <span class="hljs-title">mempool_alloc</span>(&amp;<span class="hljs-title">memtx</span>-&gt;<span class="hljs-title">zcurve_iterator_pool</span>);</span>
+    <span class="hljs-keyword">if</span> (it == <span class="hljs-literal">NULL</span>) {<font></font>
+        diag_set(OutOfMemory, <span class="hljs-keyword">sizeof</span>(struct tree_iterator),
+                 <span class="hljs-string">"memtx_zcurve_index"</span>, <span class="hljs-string">"iterator"</span>);
+        <span class="hljs-keyword">return</span> <span class="hljs-literal">NULL</span>;<font></font>
+    }<font></font>
+<font></font>
+    iterator_create(&amp;it-&gt;base, base);<font></font>
+    it-&gt;pool = &amp;memtx-&gt;zcurve_iterator_pool;<font></font>
+    it-&gt;base.next = tree_iterator_start;<font></font>
+    it-&gt;base.<span class="hljs-built_in">free</span> = tree_iterator_free;<font></font>
+    it-&gt;type = type;<font></font>
+<font></font>
+    <span class="hljs-keyword">if</span> (part_count == <span class="hljs-number">0</span> || type == ITER_ALL) {<font></font>
+        it-&gt;lower_bound = zeros(&amp;index-&gt;bit_array_pool, index_dim);<font></font>
+        it-&gt;upper_bound = ones(&amp;index-&gt;bit_array_pool, index_dim);<font></font>
+    } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (type == ITER_EQ) {<font></font>
+        it-&gt;lower_bound = mp_decode_key(&amp;index-&gt;bit_array_pool,<font></font>
+                key, index_dim, index);<font></font>
+        it-&gt;upper_bound = <span class="hljs-literal">NULL</span>;<font></font>
+    } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (base-&gt;def-&gt;key_def-&gt;part_count == part_count) {<font></font>
+        it-&gt;lower_bound = mp_decode_key(&amp;index-&gt;bit_array_pool,<font></font>
+                key, index_dim, index);<font></font>
+        it-&gt;upper_bound = ones(&amp;index-&gt;bit_array_pool, index_dim);<font></font>
+    } <span class="hljs-keyword">else</span> <span class="hljs-keyword">if</span> (base-&gt;def-&gt;key_def-&gt;part_count * <span class="hljs-number">2</span> == part_count) {<font></font>
+        it-&gt;lower_bound  = z_value_create(&amp;index-&gt;bit_array_pool, index_dim);<font></font>
+        it-&gt;upper_bound  = z_value_create(&amp;index-&gt;bit_array_pool, index_dim);<font></font>
+        mp_decode_part(key, part_count, index, it-&gt;lower_bound, it-&gt;upper_bound);<font></font>
+    } <span class="hljs-keyword">else</span> {<font></font>
+        unreachable();<font></font>
+    }<font></font>
+    it-&gt;tree_iterator = memtx_zcurve_invalid_iterator();<font></font>
+    it-&gt;current.tuple = <span class="hljs-literal">NULL</span>;<font></font>
+    it-&gt;current.z_address = <span class="hljs-literal">NULL</span>;
+    <span class="hljs-keyword">return</span> (struct iterator *)it;<font></font>
+}</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+根据传输的密钥，我们计算请求的下限和上限。</font><font style="vertical-align: inherit;">但是，到目前为止，此迭代器并未指向任何内容。</font><font style="vertical-align: inherit;">总共有几种类型的迭代器。</font><font style="vertical-align: inherit;">在我们的例子中，这就是全部-获取所有元素；</font><font style="vertical-align: inherit;">EQ-z地址与发送的地址相匹配的接收元素；</font><font style="vertical-align: inherit;">GE是超立方体中元素的选择。</font></font><br>
+<br>
+<code>destroy</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">-删除索引。</font><font style="vertical-align: inherit;">对于二级索引，它只是释放分配给搜索结构的内存。</font><font style="vertical-align: inherit;">如果索引是主索引，则从物理上删除存储的元组。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+所有代码都可以在以下</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">网址</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">获得：</font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">https</font></a><font style="vertical-align: inherit;"> : </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;">//github.com/olegrok/tarantool/tree/z-order-curve-index</font></a></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> 
+让我们看看发生了什么并进行总结。</font></font><br>
+<br>
+<pre><code class="lua hljs">space = box.schema.space.<span class="hljs-built_in">create</span>(<span class="hljs-string">'myspace'</span>, { engine = <span class="hljs-string">'memtx'</span> })<font></font>
+pk = space:create_index(<span class="hljs-string">'primary'</span>, { <span class="hljs-built_in">type</span> = <span class="hljs-string">'tree'</span>, parts = {{<span class="hljs-number">1</span>, <span class="hljs-string">'unsigned'</span>}}, unique = <span class="hljs-literal">true</span>})<font></font>
+sk = space:create_index(<span class="hljs-string">'secondary'</span>, { <span class="hljs-built_in">type</span> = <span class="hljs-string">'zcurve'</span>, parts = {{<span class="hljs-number">2</span>, <span class="hljs-string">'unsigned'</span>}, {<span class="hljs-number">3</span>, <span class="hljs-string">'unsigned'</span>}}})
+<span class="hljs-keyword">for</span> i=<span class="hljs-number">0</span>,<span class="hljs-number">5</span> <span class="hljs-keyword">do</span> <span class="hljs-keyword">for</span> j=<span class="hljs-number">0</span>,<span class="hljs-number">5</span> <span class="hljs-keyword">do</span> space:<span class="hljs-built_in">insert</span>{i * <span class="hljs-number">6</span> + j, i, j} <span class="hljs-keyword">end</span> <span class="hljs-keyword">end</span>
+<span class="hljs-comment">-- returns all tuples</span>
+pk:<span class="hljs-built_in">select</span>{}
+<span class="hljs-comment">-- (2 &lt;= x &lt;= 3) and (3 &lt;= y &lt;= 5)</span>
+sk:<span class="hljs-built_in">select</span>{<span class="hljs-number">2</span>, <span class="hljs-number">3</span>, <span class="hljs-number">3</span>, <span class="hljs-number">5</span>}
+<span class="hljs-comment">---</span>
+- — [<span class="hljs-number">15</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>]<font></font>
+  - [<span class="hljs-number">21</span>, <span class="hljs-number">3</span>, <span class="hljs-number">3</span>]<font></font>
+  - [<span class="hljs-number">16</span>, <span class="hljs-number">2</span>, <span class="hljs-number">4</span>]<font></font>
+  - [<span class="hljs-number">22</span>, <span class="hljs-number">3</span>, <span class="hljs-number">4</span>]<font></font>
+  - [<span class="hljs-number">17</span>, <span class="hljs-number">2</span>, <span class="hljs-number">5</span>]<font></font>
+  - [<span class="hljs-number">23</span>, <span class="hljs-number">3</span>, <span class="hljs-number">5</span>]<font></font>
+…<font></font>
+<span class="hljs-comment">-- (x == 2) and (y == 3)</span>
+sk:<span class="hljs-built_in">select</span>{<span class="hljs-number">2</span>, <span class="hljs-number">3</span>}
+<span class="hljs-comment">---</span>
+- — [<span class="hljs-number">15</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>]
+<span class="hljs-comment">-- (2 &lt;= x &lt;= 3)</span>
+sk:<span class="hljs-built_in">select</span>({<span class="hljs-number">2</span>, <span class="hljs-number">3</span>, box.NULL, box.NULL})
+<span class="hljs-comment">---</span>
+- — [<span class="hljs-number">12</span>, <span class="hljs-number">2</span>, <span class="hljs-number">0</span>]<font></font>
+  - [<span class="hljs-number">18</span>, <span class="hljs-number">3</span>, <span class="hljs-number">0</span>]<font></font>
+  - [<span class="hljs-number">13</span>, <span class="hljs-number">2</span>, <span class="hljs-number">1</span>]<font></font>
+  - [<span class="hljs-number">19</span>, <span class="hljs-number">3</span>, <span class="hljs-number">1</span>]<font></font>
+  - [<span class="hljs-number">14</span>, <span class="hljs-number">2</span>, <span class="hljs-number">2</span>]<font></font>
+  - [<span class="hljs-number">20</span>, <span class="hljs-number">3</span>, <span class="hljs-number">2</span>]<font></font>
+  - [<span class="hljs-number">15</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>]<font></font>
+  - [<span class="hljs-number">21</span>, <span class="hljs-number">3</span>, <span class="hljs-number">3</span>]<font></font>
+  - [<span class="hljs-number">16</span>, <span class="hljs-number">2</span>, <span class="hljs-number">4</span>]<font></font>
+  - [<span class="hljs-number">22</span>, <span class="hljs-number">3</span>, <span class="hljs-number">4</span>]<font></font>
+  - [<span class="hljs-number">17</span>, <span class="hljs-number">2</span>, <span class="hljs-number">5</span>]<font></font>
+  - [<span class="hljs-number">23</span>, <span class="hljs-number">3</span>, <span class="hljs-number">5</span>]<font></font>
+...<font></font>
+<span class="hljs-comment">-- (x &gt;= 2) and (y &gt;= 3)</span>
+sk:<span class="hljs-built_in">select</span>({<span class="hljs-number">2</span>, box.NULL, <span class="hljs-number">3</span>, box.NULL})
+<span class="hljs-comment">---</span>
+- — [<span class="hljs-number">15</span>, <span class="hljs-number">2</span>, <span class="hljs-number">3</span>]<font></font>
+  - [<span class="hljs-number">21</span>, <span class="hljs-number">3</span>, <span class="hljs-number">3</span>]<font></font>
+  - [<span class="hljs-number">27</span>, <span class="hljs-number">4</span>, <span class="hljs-number">3</span>]<font></font>
+  - [<span class="hljs-number">33</span>, <span class="hljs-number">5</span>, <span class="hljs-number">3</span>]<font></font>
+  - [<span class="hljs-number">16</span>, <span class="hljs-number">2</span>, <span class="hljs-number">4</span>]<font></font>
+  - [<span class="hljs-number">22</span>, <span class="hljs-number">3</span>, <span class="hljs-number">4</span>]<font></font>
+  - [<span class="hljs-number">17</span>, <span class="hljs-number">2</span>, <span class="hljs-number">5</span>]<font></font>
+  - [<span class="hljs-number">23</span>, <span class="hljs-number">3</span>, <span class="hljs-number">5</span>]<font></font>
+  - [<span class="hljs-number">28</span>, <span class="hljs-number">4</span>, <span class="hljs-number">4</span>]<font></font>
+  - [<span class="hljs-number">34</span>, <span class="hljs-number">5</span>, <span class="hljs-number">4</span>]<font></font>
+  - [<span class="hljs-number">29</span>, <span class="hljs-number">4</span>, <span class="hljs-number">5</span>]<font></font>
+  - [<span class="hljs-number">35</span>, <span class="hljs-number">5</span>, <span class="hljs-number">5</span>]<font></font>
+...</code></pre><br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">性能如何？</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+事实证明，一切都没有我描述的那么乐观。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从某个点开始，就数据访问速度而言，Z阶曲线开始显着下垂。 perf top表明，大多数时间都花在检查该点是否属于搜索区域以及计算下一个需要跳转的点上。两种操作的线性复杂度取决于密钥的长度-随着尺寸的增加，长度也会增加。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/70e/338/fd1/70e338fd15af8701c3a5696ebfb3ea2a.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+从令人愉快的角度来看，内存消耗比R-Tree少2-3倍，并且插入速度稍快。</font><font style="vertical-align: inherit;">这不是特别相关，因为在关闭WAL的情况下进行了测量。</font><font style="vertical-align: inherit;">首先，在生产环境中，如果发生故障，禁用的WAL可能导致数据丢失。</font><font style="vertical-align: inherit;">其次，尽管事实上写入WAL使用批处理方法，但它仍在写入磁盘，这比使用RAM的速度慢数千倍。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/9ee/e73/e29/9eee73e29d809963c069a9f7414f524a.png"></div><br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/2c0/8b9/159/2c08b91598dbefe2855ede4d05a593ca.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+与B树进行比较也很有趣。</font><font style="vertical-align: inherit;">在这里，正如预期的那样，曲线将比完整扫描和检查每个点是否属于给定区域快。</font><font style="vertical-align: inherit;">即使检查比Z阶曲线更轻巧，所有检查都归结为按位比较。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+图表上的数字与R树的顺序不同-测试已稍作修改。</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/140/ae5/44d/140ae544d6ba527bffe6bc4d814f609d.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于测试，我生成了一组点，并使用Z曲线和常规扫描比较了查询的持续时间。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">总结一下</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在内存世界中，这种结构已证明不是最佳方法，但是它仍然具有优势：</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">占用更少的空间。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">与R-Tree（仅与Tarantool相关）不同，已输入。</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">如果只有B树并且您需要进行多维查询（与Tarantool不相关），则值得仔细研究。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+这是一个有趣的实验。</font><font style="vertical-align: inherit;">我提出的解决方案不太可能成为Tarantool的一部分。</font><font style="vertical-align: inherit;">但是，不要害怕尝试。</font><font style="vertical-align: inherit;">而且，如果您有任何建议和解决方案，请不要害怕与他人分享。</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">资料来源</font></font></h2><br>
+<a name="B-Tree"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[B树]：</font></font><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQL中的索引-4 / Postgres Professional的博客/ Habr </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">B树/ Habr </font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">B树数据结构/ OTUS博客。</font><font style="vertical-align: inherit;">在线教育/极客杂志</font></font></a><br>
+<br>
+<a name="ZcurvePostgres"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[ZcurvePostgres]：</font></font><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">关于Z-order和R-tree /极客杂志</font></font></a><br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Z-order与R-tree，续/极客杂志</font></font></a><br>
+<br>
+<a name="1"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[1] </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Amazon DynamoDB中多面查询的Z顺序索引：第1部分| </font><font style="vertical-align: inherit;">AWS数据库博客</font></font></a><br>
+<br>
+<a name="1"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[2] </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Amazon DynamoDB中多面查询的Z顺序索引：第2部分| </font><font style="vertical-align: inherit;">AWS数据库博客</font></font></a><br>
+<br>
+<a name="3"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[3] </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">将UB-Tree集成到数据库系统内核中</font></font></a><br>
+<br>
+<a name="4"></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">[4] </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https://github.com/tarantool/small</font></font></a></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN505850/index.html">产品代码中的C ++基于概念的多态性：LLVM中的PassManager</a></li>
+<li><a href="../zh-CN505856/index.html">从暴力破解到隐私尝试-SaaS提供商面临的挑战</a></li>
+<li><a href="../zh-CN505860/index.html">Spring Boot，Hibernate和Kotlin为初学者逐步提供</a></li>
+<li><a href="../zh-CN505870/index.html">如何在日本，韩国和中国推广手机游戏和应用程序</a></li>
+<li><a href="../zh-CN505872/index.html">无人驾驶车辆的历史</a></li>
+<li><a href="../zh-CN505884/index.html">鱼叉式网络钓鱼：体验创建有条件的恶意可执行文件来仿冒电子邮件的经验</a></li>
+<li><a href="../zh-CN505888/index.html">在没有YouTube API的情况下解析YouTube（包括上传的数据）</a></li>
+<li><a href="../zh-CN505896/index.html">安全周24：Zoom and Brave浏览器隐私</a></li>
+<li><a href="../zh-CN505898/index.html">克劳德·香农（Claude Shannon）：各行各业的杰克，小丑，信息论之父</a></li>
+<li><a href="../zh-CN505900/index.html">个人成瘾：全尺寸40毫米，不带线，持续72小时，需支付8000卢布</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
