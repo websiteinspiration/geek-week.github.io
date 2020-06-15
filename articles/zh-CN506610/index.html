@@ -1,0 +1,353 @@
+<!doctype html>
+<html class="no-js" lang="zh-CN">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>🤹🏼 🕢 🏥 WAL-G：PostgreSQL数据库备份和恢复 👐🏽 👨🏿‍🚒 😲</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="众所周知，在SQL转储中备份（使用pg_dump或pg_dumpall）不是一个好主意。要备份PostgreSQL，最好使用pg_basebackup命令，该命令可以生成WAL日志的二进制副本。但是，当您开始研究创建备份和还原的整个过程时，您将了解到，您至少需要编写两个三轮车，以便所有这些都能起作用...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>WAL-G：PostgreSQL数据库备份和恢复</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/post/506610/"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">众所周知，在SQL转储中备份（使用</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_dump</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">或</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_dumpall</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）不是一个好主意。要备份PostgreSQL，最好使用</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_basebackup</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">命令</font><font style="vertical-align: inherit;">，该</font><font style="vertical-align: inherit;">命令</font><font style="vertical-align: inherit;">可以生成WAL日志的二进制副本。但是，当您开始研究创建备份和还原的整个过程时，您将了解到，您至少需要编写两个三轮车，以便所有这些都能起作用，并且不会使您从上至下感到痛苦。为了减轻痛苦，开发了WAL-G。</font></font><br>
+<br>
+<a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WAL-G</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">是用Go语言编写的工具，用于备份和还原PostgreSQL数据库（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">最近更新是MySQL / MariaDB，MongoDB和FoundationDB</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）</font><font style="vertical-align: inherit;">它支持使用Amazon S3存储（以及类似的产品，例如Yandex Object Storage）以及Google Cloud Storage，Azure存储，Swift对象存储以及仅与文件系统一起使用。</font><font style="vertical-align: inherit;">整个设置简化为简单的步骤，但是由于有关它的文章分散在Internet上，因此没有完整的操作方法手册，其中包括往返的所有步骤（哈布雷（Habré）上有几篇文章，但很多要点都在那里）。</font></font><br>
+<br>
+<img src="https://habrastorage.org/webt/9i/pq/ut/9ipqut4x24_-0192l8skbzkri6o.jpeg" alt="PostgreSQL备份"><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+撰写本文主要是为了使您的知识系统化。</font><font style="vertical-align: inherit;">我不是DBA，可以在某个地方用非利士发展语言表示，因此欢迎进行任何更正！</font></font><br>
+<br>
+<i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">另外，我注意到以下所有内容均与Ubuntu 18.04上的PostgreSQL 12.3相关且已验证，所有命令必须以特权用户身份执行。</font></font></i><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">安装</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在撰写本文时，WAL-G的稳定版本为</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">v0.2.15（2020年3月）</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">我们将使用它（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">但是，如果您想自己从master分支进行组装，那么github存储库将提供有关此操作的所有说明</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font><font style="vertical-align: inherit;">要下载并安装，您需要执行以下操作：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span>
+curl -L <span class="hljs-string">"https://github.com/wal-g/wal-g/releases/download/v0.2.15/wal-g.linux-amd64.tar.gz"</span> -o <span class="hljs-string">"wal-g.linux-amd64.tar.gz"</span><font></font>
+tar -xzf wal-g.linux-amd64.tar.gz<font></font>
+mv wal-g /usr/<span class="hljs-built_in">local</span>/bin/
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+之后，您必须先配置WAL-G，然后配置PostgreSQL本身。</font></font><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WAL-G设定</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+作为备份存储的示例，将使用Amazon S3（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">因为它离我的服务器更近并且使用非常便宜</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）。</font><font style="vertical-align: inherit;">要使用它，您需要一个“ s3存储桶”和访问键。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+以前有关WAL-G的所有文章都使用环境变量进行配置，但是从此发行版开始，这些设置可以位于</font><font style="vertical-align: inherit;">postgres用户主目录</font><font style="vertical-align: inherit;">中的</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">.walg.json文件</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">中。</font><font style="vertical-align: inherit;">要创建它，请执行以下bash脚本：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span><font></font>
+cat &gt; /var/lib/postgresql/.walg.json &lt;&lt; EOF<font></font>
+{<font></font>
+    <span class="hljs-string">"WALG_S3_PREFIX"</span>: <span class="hljs-string">"s3://your_bucket/path"</span>,
+    <span class="hljs-string">"AWS_ACCESS_KEY_ID"</span>: <span class="hljs-string">"key_id"</span>,
+    <span class="hljs-string">"AWS_SECRET_ACCESS_KEY"</span>: <span class="hljs-string">"secret_key"</span>,
+    <span class="hljs-string">"WALG_COMPRESSION_METHOD"</span>: <span class="hljs-string">"brotli"</span>,
+    <span class="hljs-string">"WALG_DELTA_MAX_STEPS"</span>: <span class="hljs-string">"5"</span>,
+    <span class="hljs-string">"PGDATA"</span>: <span class="hljs-string">"/var/lib/postgresql/12/main"</span>,
+    <span class="hljs-string">"PGHOST"</span>: <span class="hljs-string">"/var/run/postgresql/.s.PGSQL.5432"</span><font></font>
+}<font></font>
+EOF<font></font>
+<span class="hljs-comment">#    :</span><font></font>
+chown postgres: /var/lib/postgresql/.walg.json<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我将在所有方面进行一些解释：</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WALG_S3_PREFIX-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">将要倒入备份的S3-bucket的路径（可以在根目录中也可以在文件夹中）；</font></font></li>
+<li><b>AWS_ACCESS_KEY_ID</b> –    S3 (<i>      –     ReadOnly Policy!        </i>);<br>
+</li>
+<li><b>AWS_SECRET_ACCESS_KEY</b> –     S3;</li>
+<li><b>WALG_COMPRESSION_METHOD</b> –  ,   Brotli (          /);</li>
+<li><b>WALG_DELTA_MAX_STEPS</b> –  «»     (      ,      ,      );</li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PGD​​ATA</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> -路径与数据库中的数据的目录（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您可以通过运行找出</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_lsclusters</font></font></b></i><font style="vertical-align: inherit;"><i><font style="vertical-align: inherit;">命令</font></i><font style="vertical-align: inherit;">）;</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PGHOST-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">与数据库的连接，使用本地备份，最好通过unix-socket进行连接，如本例所示。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+其他参数可以在文档中找到：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">//github.com/wal-g/wal-g/blob/v0.2.15/PostgreSQL.md#configuration</font></a><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">PostgreSQL设置</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了使数据库内的归档程序将WAL日志上传到云中并从中恢复（如果需要），您需要在配置文件</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">/etc/postgresql/12/main/postgresql.conf中</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">设置几个参数</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">刚开始时，</font></font><u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">您需要确保</font></font></u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">以下设置均未设置为其他任何值，以便在重新启动配置时DBMS不会掉线。</font><font style="vertical-align: inherit;">您可以使用以下命令添加这些参数：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span>
+<span class="hljs-built_in">echo</span> <span class="hljs-string">"wal_level=replica"</span> &gt;&gt; /etc/postgresql/12/main/postgresql.conf
+<span class="hljs-built_in">echo</span> <span class="hljs-string">"archive_mode=on"</span> &gt;&gt; /etc/postgresql/12/main/postgresql.conf
+<span class="hljs-built_in">echo</span> <span class="hljs-string">"archive_command='/usr/local/bin/wal-g wal-push \"%p\" &gt;&gt; /var/log/postgresql/archive_command.log 2&gt;&amp;1' "</span> &gt;&gt; /etc/postgresql/12/main/postgresql.conf
+<span class="hljs-built_in">echo</span> “archive_timeout=60” &gt;&gt; /etc/postgresql/12/main/postgresql.conf
+<span class="hljs-built_in">echo</span> <span class="hljs-string">"restore_command='/usr/local/bin/wal-g wal-fetch \"%f\" \"%p\" &gt;&gt; /var/log/postgresql/restore_command.log 2&gt;&amp;1' "</span> &gt;&gt; /etc/postgresql/12/main/postgresql.conf<font></font>
+<font></font>
+<span class="hljs-comment">#     SIGHUP    </span><font></font>
+killall -s HUP postgres<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+设置参数说明：</font></font><br>
+<br>
+<ul>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">wal_level-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">向WAL杂志写多少信息，“副本”-编写所有内容；</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">archive_mode-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">使用</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">archive_command</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">参数中的命令启用WAL日志的下载</font><font style="vertical-align: inherit;">；</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">archive_command-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用于归档完整的WAL日志的命令；</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">archive_timeout-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">仅在日志归档完成后才进行归档，但是如果您的服务器稍稍更改/向数据库中添加数据，则在此处设置以秒为单位的限制是有意义的，此后将强制执行归档命令（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">我每秒都要对数据库进行大量写入，因此我拒绝在Production中设置此参数</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）；</font></font></li>
+<li><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">restore_command-</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">用于从备份还原WAL日志的命令，如果“完全备份”（基本备份）中缺少最后的数据库更改，则将使用该命令。</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+您可以在官方文档的翻译中阅读有关所有这些参数的更多信息：</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">https</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> : </font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;">//postgrespro.ru/docs/postgresql/12/runtime-config-wal</font></a><font style="vertical-align: inherit;">。</font></font><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">设置备份时间表</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+不管喜欢与否，但是cron是最方便的启动方法。</font><font style="vertical-align: inherit;">这就是我们将配置用于创建备份的内容。</font><font style="vertical-align: inherit;">让我们从创建完整备份的命令开始：在wal-g中，这是运行</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">backup-push</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">的参数</font><font style="vertical-align: inherit;">。</font><font style="vertical-align: inherit;">但是首先，最好由postgres用户手动执行此命令，以确保一切正常（并且没有访问错误）：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span>
+su - postgres -c <span class="hljs-string">'/usr/local/bin/wal-g backup-push /var/lib/postgresql/12/main'</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+开始参数指示数据目录的路径-我提醒您可以通过运行</font></font><b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">pg_lsclusters</font></font></b><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">来识别它</font><font style="vertical-align: inherit;">。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+如果一切顺利，并且数据已上传到S3存储库，则可以在crontab中配置定期启动：</font></font><br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span>
+<span class="hljs-built_in">echo</span> <span class="hljs-string">"15 4 * * *    /usr/local/bin/wal-g backup-push /var/lib/postgresql/12/main &gt;&gt; /var/log/postgresql/walg_backup.log 2&gt;&amp;1"</span> &gt;&gt; /var/spool/cron/crontabs/postgres
+<span class="hljs-comment">#       </span><font></font>
+chown postgres: /var/spool/cron/crontabs/postgres<font></font>
+chmod 600 /var/spool/cron/crontabs/postgres<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在此示例中，备份过程每天早上4:15开始。</font></font><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">删除旧备份</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+最有可能的是，您不需要存储中生代绝对的所有备份，因此定期“清理”您的存储（“完整备份”和WAL日志）将很有用。</font><font style="vertical-align: inherit;">我们还将通过cron任务完成所有操作：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span>
+<span class="hljs-built_in">echo</span> <span class="hljs-string">"30 6 * * *    /usr/local/bin/wal-g delete before FIND_FULL <span class="hljs-subst">$(date -d '-10 days' '+%FT%TZ')</span> --confirm &gt;&gt; /var/log/postgresql/walg_delete.log 2&gt;&amp;1"</span> &gt;&gt; /var/spool/cron/crontabs/postgres
+<span class="hljs-comment">#          (        )</span><font></font>
+chown postgres: /var/spool/cron/crontabs/postgres<font></font>
+chmod 600 /var/spool/cron/crontabs/postgres<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Cron每天早上6:30执行此任务，删除除过去10天的副本外的所有内容（完整备份，增量和WAL），但将在</font><font style="vertical-align: inherit;">指定日期</font></font><u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">之前</font></font></u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">至少保留一个备份</font><u><font style="vertical-align: inherit;">，</font></u><font style="vertical-align: inherit;">以便</font></font><u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">该</font></font></u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">日期</font><u><font style="vertical-align: inherit;">之后的</font></u><font style="vertical-align: inherit;">任何</font><font style="vertical-align: inherit;">时间落入PITR 。</font></font><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从备份还原</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+保证基础健康的前提是定期恢复并验证内部数据的完整性已不是什么秘密。如何使用WAL-G恢复-我将在本节中介绍，稍后我们将讨论检查。</font></font><br>
+<br>
+<u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">另外，值得注意的是</font></font></u><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，要在测试环境（不是生产环境）上进行恢复-您需要在S3中使用只读帐户，以免意外覆盖备份。对于WAL-G，您需要在组策略中为S3用户设置以下权限（</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">效果：允许</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）：</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">s3：GetObject</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">s3：ListBucket</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">s3：GetBucketLocation</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。并且，当然，不要忘记</font><i><font style="vertical-align: inherit;">事先</font></i><font style="vertical-align: inherit;">在</font><i><font style="vertical-align: inherit;">postgresql.conf</font></i><font style="vertical-align: inherit;">设置文件</font><i><font style="vertical-align: inherit;">中</font></i><font style="vertical-align: inherit;">设置</font></font><i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">archive_mode = off</font></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">。</font></font><i><font style="vertical-align: inherit;"></font></i><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">这样您的测试基础就不想安静地备份。</font><b><font style="vertical-align: inherit;">删除所有PostgreSQL数据</font></b><font style="vertical-align: inherit;">（包括用户）后，</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+只需轻轻移动手指即可进行恢复</font><font style="vertical-align: inherit;">，因此在运行以下命令时请格外小心。</font></font><b><font style="vertical-align: inherit;"></font></b><font style="vertical-align: inherit;"></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span>
+<span class="hljs-comment">#     (, pgbouncer),    ,       </span><font></font>
+service pgbouncer stop<font></font>
+<span class="hljs-comment">#   ,     (, monit),        (   pgsql12)</span><font></font>
+monit stop pgsql12<font></font>
+<span class="hljs-comment">#    </span><font></font>
+service monit stop<font></font>
+<span class="hljs-comment">#    </span><font></font>
+service postgresql stop<font></font>
+<span class="hljs-comment">#       (!!!);     ,      </span><font></font>
+rm -rf /var/lib/postgresql/12/main<font></font>
+<span class="hljs-comment">#      </span>
+su - postgres -c <span class="hljs-string">'/usr/local/bin/wal-g backup-fetch /var/lib/postgresql/12/main LATEST'</span>
+<span class="hljs-comment">#      -   (. https://postgrespro.ru/docs/postgresql/12/runtime-config-wal#RUNTIME-CONFIG-WAL-ARCHIVE-RECOVERY ),        postgres</span>
+su - postgres -c <span class="hljs-string">'touch /var/lib/postgresql/12/main/recovery.signal'</span>
+<span class="hljs-comment">#   ,     </span><font></font>
+service postgresql start<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+对于那些想检查恢复过程的用户-下面准备了一小部分bash-magic，以便在恢复问题中-脚本崩溃时返回非零退出代码。</font><font style="vertical-align: inherit;">在此示例中，以5秒的超时时间（仅恢复10分钟）完成了120次检查，以发现信号文件是否已删除（这意味着恢复成功）：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span><font></font>
+CHECK_RECOVERY_SIGNAL_ITER=0<font></font>
+<span class="hljs-keyword">while</span> [ <span class="hljs-variable">${CHECK_RECOVERY_SIGNAL_ITER}</span> -le 120 ]
+<span class="hljs-keyword">do</span>
+    <span class="hljs-keyword">if</span> [ ! -f <span class="hljs-string">"/var/lib/postgresql/12/main/recovery.signal"</span> ]
+    <span class="hljs-keyword">then</span>
+        <span class="hljs-built_in">echo</span> <span class="hljs-string">"recovery.signal removed"</span>
+        <span class="hljs-built_in">break</span>
+    <span class="hljs-keyword">fi</span><font></font>
+    sleep 5<font></font>
+    ((CHECK_RECOVERY_SIGNAL_ITER+1))<font></font>
+<span class="hljs-keyword">done</span><font></font>
+<font></font>
+<span class="hljs-comment">#        ,    </span>
+<span class="hljs-keyword">if</span> [ -f <span class="hljs-string">"/var/lib/postgresql/12/main/recovery.signal"</span> ]
+<span class="hljs-keyword">then</span>
+    <span class="hljs-built_in">echo</span> <span class="hljs-string">"recovery.signal still exists!"</span>
+    <span class="hljs-built_in">exit</span> 17
+<span class="hljs-keyword">fi</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+成功恢复后，请不要忘记重新启动所有进程（pgbouncer / monit等）。</font></font><br>
+<br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">恢复后的数据验证</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+确保在恢复后检查数据库的完整性，以免出现备份损坏/弯曲的情况。</font><font style="vertical-align: inherit;">最好对创建的每个存档都执行此操作，但是在何处以及如何进行取决于您的想象力（您可以每小时增加一台服务器，也可以在CI中运行测试）。</font><font style="vertical-align: inherit;">但是至少-您需要检查数据库中的数据和索引。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+要检查数据，足以在转储中运行它们，但是最好在创建数据库时启用校验和（</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">数据校验和</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">）：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span>
+<span class="hljs-keyword">if</span> ! su - postgres -c <span class="hljs-string">'pg_dumpall &gt; /dev/null'</span>
+<span class="hljs-keyword">then</span>
+    <span class="hljs-built_in">echo</span> <span class="hljs-string">'pg_dumpall failed'</span>
+    <span class="hljs-built_in">exit</span> 125
+<span class="hljs-keyword">fi</span>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+为了检查索引-有</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">一个amcheck模块</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">，我们将从</font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">WAL-G测试中</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">获取sql查询，</font><font style="vertical-align: inherit;">并围绕以下内容构建一些逻辑：</font></font><br>
+<br>
+<pre><code class="bash hljs"><span class="hljs-meta">#!/bin/bash
+</span>
+<span class="hljs-comment">#  sql-       </span><font></font>
+cat &gt; /tmp/amcheck.sql &lt;&lt; EOF<font></font>
+CREATE EXTENSION IF NOT EXISTS amcheck;<font></font>
+SELECT bt_index_check(c.oid), c.relname, c.relpages<font></font>
+FROM pg_index i<font></font>
+JOIN pg_opclass op ON i.indclass[0] = op.oid<font></font>
+JOIN pg_am am ON op.opcmethod = am.oid<font></font>
+JOIN pg_class c ON i.indexrelid = c.oid<font></font>
+JOIN pg_namespace n ON c.relnamespace = n.oid<font></font>
+WHERE am.amname = <span class="hljs-string">'btree'</span>
+AND c.relpersistence != <span class="hljs-string">'t'</span><font></font>
+AND i.indisready AND i.indisvalid;<font></font>
+EOF<font></font>
+chown postgres: /tmp/amcheck.sql<font></font>
+<font></font>
+<span class="hljs-comment">#          </span>
+<span class="hljs-comment"># (       – )</span><font></font>
+cat &gt; /tmp/run_amcheck.sh &lt;&lt; EOF<font></font>
+<span class="hljs-keyword">for</span> DBNAME <span class="hljs-keyword">in</span> \$(su - postgres -c <span class="hljs-string">'psql -q -A -t -c "SELECT datname FROM pg_database WHERE datistemplate = false;" '</span>)
+<span class="hljs-keyword">do</span>
+    <span class="hljs-built_in">echo</span> <span class="hljs-string">"Database: \${DBNAME}"</span>
+    su - postgres -c <span class="hljs-string">"psql -f /tmp/amcheck.sql -v 'ON_ERROR_STOP=1' \${DBNAME}"</span> &amp;&amp; EXIT_STATUS=\$? || EXIT_STATUS=\$?
+    <span class="hljs-keyword">if</span> [ <span class="hljs-string">"\${EXIT_STATUS}"</span> -ne 0 ]
+    <span class="hljs-keyword">then</span>
+        <span class="hljs-built_in">echo</span> <span class="hljs-string">"amcheck failed on DB: \${DBNAME}"</span>
+        <span class="hljs-built_in">exit</span> 125
+    <span class="hljs-keyword">fi</span>
+<span class="hljs-keyword">done</span><font></font>
+EOF<font></font>
+chmod +x /tmp/run_amcheck.sh<font></font>
+<font></font>
+<span class="hljs-comment">#  </span><font></font>
+/tmp/run_amcheck.sh &gt; /tmp/amcheck.log<font></font>
+<font></font>
+<span class="hljs-comment">#         exit code  grep’ </span>
+<span class="hljs-keyword">if</span> grep <span class="hljs-string">'amcheck failed'</span> <span class="hljs-string">"/tmp/amcheck.log"</span>
+<span class="hljs-keyword">then</span>
+    <span class="hljs-built_in">echo</span> <span class="hljs-string">'amcheck failed: '</span><font></font>
+    cat /tmp/amcheck.log<font></font>
+    <span class="hljs-built_in">exit</span> 125
+<span class="hljs-keyword">fi</span>
+</code></pre><br>
+<h2><font color="#3AC1EF"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">总结</font></font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+我感谢Andrei Borodin在编写该出版物方面的帮助，并特别感谢他为WAL-G的发展做出的贡献！</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+在这个音符上结束了。</font><font style="vertical-align: inherit;">我希望我能够传达设置的简易性以及在贵公司中使用此工具的巨大潜力。</font><font style="vertical-align: inherit;">我听说过很多有关WAL-G的信息，但是我没有足够的时间坐下来解决问题。</font><font style="vertical-align: inherit;">当我在家里介绍它之后，这篇文章浮出水面。</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+另外，值得注意的是，WAL-G也可以与以下DBMS一起使用：</font></font><br>
+<br>
+<ul>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MySQL / MariaDB</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">MongoDB</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=zh-CN&amp;u=" rel="nofollow"><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">FoundationDB</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> ;</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">从提交的角度来看-预计还会有更多！</font></font></li>
+</ul></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../zh-CN506594/index.html">Redis最佳做法，第3部分</a></li>
+<li><a href="../zh-CN506598/index.html">微软：Rust是安全系统编程行业中的“最佳机会”</a></li>
+<li><a href="../zh-CN506600/index.html">在项目管理方面进行站点开发的合同（理论+样本）</a></li>
+<li><a href="../zh-CN506604/index.html">并发和效率：Python与FSM</a></li>
+<li><a href="../zh-CN506606/index.html">PIXI.js答题器的创建</a></li>
+<li><a href="../zh-CN506612/index.html">如何提高大规模在线课程的完整性</a></li>
+<li><a href="../zh-CN506620/index.html">创造性思维：这是什么，如何衡量和增加您的潜力</a></li>
+<li><a href="../zh-CN506624/index.html">FOSS新闻第20号-2020年6月8日至14日免费和开源新闻回顾</a></li>
+<li><a href="../zh-CN506626/index.html">Kamailio SBC或不是SBC？</a></li>
+<li><a href="../zh-CN506628/index.html">＃348移动开发人员的有趣材料摘要（6月8日至14日）</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
