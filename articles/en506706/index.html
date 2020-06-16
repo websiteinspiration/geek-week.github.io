@@ -1,0 +1,260 @@
+<!doctype html>
+<html class="no-js" lang="en">
+
+<head>
+  <!-- Global site tag (gtag.js) - Google Analytics -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=UA-134228602-13"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+
+    gtag('config', 'UA-134228602-13');
+  </script>
+
+  <meta charset="utf-8">
+  <meta http-equiv="x-ua-compatible" content="ie=edge">
+  <title>👨🏾‍🤝‍👨🏽 🤘🏾 🌛 The performance of modern Java when working with large amounts of data, part 1 ✂️ 🛀🏼 😏</title>
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+  <meta name="description" content="The Java runtime has evolved faster in recent years than before. After 15 years, we finally got the default garbage collector - G1. Two more are under...">
+  <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+
+  <link rel="stylesheet" href="../../css/main.css">
+
+  <link href="https://fonts.googleapis.com/css?family=Quicksand&display=swap" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
+  <script>window.jQuery || document.write('<script src="../../js/vendors/jquery-3.3.1.min.js"><\/script>')</script>
+
+  <script>document.write('<script src="//pagea' + 'd2.googles' + 'yndication.com/pagea' + 'd/js/a' + 'dsby' + 'google.js"><\/script>')</script>
+  <script>
+        var superSpecialObject = {};
+        superSpecialObject['google_a' + 'd_client'] = 'ca-p' + 'ub-6974184241884155';
+        superSpecialObject['enable_page_level_a' + 'ds'] = true;
+       (window['a' + 'dsbygoogle'] = window['a' + 'dsbygoogle'] || []).push(superSpecialObject);
+  </script>
+</head>
+
+<body>
+  <!--[if lte IE 9]>
+    <p class="browserupgrade">You are using an <strong>outdated</strong> browser. Please <a href="https://browsehappy.com/">upgrade your browser</a> to improve your experience and security.</p>
+  <![endif]-->
+  <header class="page-header js-page-header">
+    <a class="page-header-logo-container" href="https://geek-week.github.io/index.html"></a>
+    <div class="page-header-text">Get best of the week</div>
+  </header>
+  <section class="page js-page"><h1>The performance of modern Java when working with large amounts of data, part 1</h1><div class="post__body post__body_full">
+      <div class="post__text post__text-html post__text_v1" id="post-content-body" data-io-article-url="https://habr.com/ru/company/mailru/blog/506706/"><div style="text-align:center;"><img src="https://habrastorage.org/webt/gy/8p/zf/gy8pzf7gjtwr9pvv1zb7rgmmjiy.jpeg"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The Java runtime has evolved faster in recent years than before. </font><font style="vertical-align: inherit;">After 15 years, we finally got the default garbage collector - G1. </font><font style="vertical-align: inherit;">Two more are under development and are available as experimental functions - Oracle ZGC and OpenJDK Shenandoah. </font><font style="vertical-align: inherit;">We decided to test all these new tools and find out what works best with the workloads typical of the Hazelcast Jet distributed open source streaming engine.</font></font><br>
+<a name="habracut"></a><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Jet is used to solve all sorts of tasks, with different latency and bandwidth requirements. </font><font style="vertical-align: inherit;">Tasks fall into three important categories:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unlimited low latency streaming. </font><font style="vertical-align: inherit;">Example: identifying trends in data from sensors of 10,000 devices that take information at a frequency of 100 Hz, and sending corrections within 10-20 ms.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Unlimited streaming processing with high bandwidth. </font><font style="vertical-align: inherit;">Example: tracking GPS coordinates of millions of users with calculating their velocity vectors.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Classic batch processing of big data. </font><font style="vertical-align: inherit;">The criterion is the time spent on processing, which means that high throughput is required. </font><font style="vertical-align: inherit;">Example: analysis of stock trading data collected per day to update the level of risk for a given portfolio of assets.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+First we can observe the following:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">In the first scenario, the delay requirements fall into the danger zone of the garbage collector pauses: 100 ms. </font><font style="vertical-align: inherit;">This is considered an excellent result for garbage collection in the most difficult cases, and in many situations it can become a stumbling block.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The second and third scenarios are identical in garbage collection requirements. </font><font style="vertical-align: inherit;">The delay requirements are less stringent, but a big load on tenured generations.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The second scenario is more difficult because of the delay requirements, even if not as stringent as in the first scenario.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We tried the following combinations:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JDK 8 with default Parallel assembler and optional ConcurrentMarkSweep and G1.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JDK 11 with default collector G1 and optional Parallel.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">JDK 14 with default collector G1 and experimental ZGC and Shenandoah.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We came to the following conclusions:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">With modern versions of JDK, the G1 builder works great. </font><font style="vertical-align: inherit;">It easily handles dozens of gigabytes of heap (we tried 60 GB), with a maximum pause of 200 ms. </font><font style="vertical-align: inherit;">Under extreme load G1 does not go into nightmare critical modes. </font><font style="vertical-align: inherit;">Instead, the duration of pauses for complete garbage collection increases to seconds. </font><font style="vertical-align: inherit;">The weak point of the collector is the upper boundary of pauses in favorable conditions of low load. </font><font style="vertical-align: inherit;">We managed to lower it to 20-25 ms.</font></font></li>
+<li>JDK 8 —   .    Parallel       .  G1    ,    ,       ,     .       12    20   Parallel     G1. ConcurrentMarkSweep       G1,           .</li>
+<li>  ZGC    ,   G1,        ,  G1       10 . </li>
+<li>Shenandoah        220    .</li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Neither ZGC nor Shenandoah behaved in critical modes as steadily as G1. </font><font style="vertical-align: inherit;">Their work was unreliable, in the low-latency mode, very long pauses unexpectedly occurred, and even OOME.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This article describes the results of our tests in two streaming processing scenarios. </font><font style="vertical-align: inherit;">In the second part we will talk about the results of batch processing.</font></font><br>
+<br>
+<h2><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Stream Processing Benchmark</font></font></h2><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+For the streaming benchmark, we took </font></font><a href="https://translate.googleusercontent.com/translate_c?depth=1&amp;pto=aue&amp;rurl=translate.google.com&amp;sl=ru&amp;sp=nmt4&amp;tl=en&amp;u="><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">this</font></font></a><font style="vertical-align: inherit;"><font style="vertical-align: inherit;"> code and changed it a little between tests. </font><font style="vertical-align: inherit;">Here is the main part, the Jet pipeline:</font></font><br>
+<br>
+<pre><code class="java hljs">StreamStage&lt;Long&gt; source = p.readFrom(longSource(ITEMS_PER_SECOND))<font></font>
+                            .withNativeTimestamps(<span class="hljs-number">0</span>)<font></font>
+                            .rebalance(); <span class="hljs-comment">// Introduced in Jet 4.2</span><font></font>
+source.groupingKey(n -&gt; n % NUM_KEYS)<font></font>
+      .window(sliding(SECONDS.toMillis(WIN_SIZE_SECONDS), SLIDING_STEP_MILLIS))<font></font>
+      .aggregate(counting())<font></font>
+      .filter(kwr -&gt; kwr.getKey() % DIAGNOSTIC_KEYSET_DOWNSAMPLING_FACTOR == <span class="hljs-number">0</span>)<font></font>
+      .window(tumbling(SLIDING_STEP_MILLIS))<font></font>
+      .aggregate(counting())<font></font>
+      .writeTo(Sinks.logger(wr -&gt; String.format(<span class="hljs-string">"time %,d: latency %,d ms, cca. %,d keys"</span>,<font></font>
+              simpleTime(wr.end()),<font></font>
+              NANOSECONDS.toMillis(System.nanoTime()) - wr.end(),<font></font>
+              wr.result() * DIAGNOSTIC_KEYSET_DOWNSAMPLING_FACTOR)));<font></font>
+</code></pre><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+This pipeline reflects usage scenarios with an unlimited flow of events. The engine should aggregate data using the "sliding window" method. Such aggregation is needed, for example, to obtain the time derivative of a changing value, to clear data from high-frequency noise (smoothing), or to measure the frequency of occurrence of an event (events per second). The engine can first divide the stream into categories (say, all individual IoT devices or smartphones) into sub-streams. And then independently track the aggregated value for each subflow. In Hazelcast Jet, a sliding window moves in discrete steps, the size of which you specify. For example, with a step of 1 second, you get a complete set of results every second. And with a step of 1 minute, the results will include everything that happened in the last minute.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Some notes. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The code is completely self-contained. External data sources are not used. We use a stub source to emulate a stream of events at the right frequency. Events occur at regular intervals. The source does not generate events whose timestamps are related to the future, but it generates them as quickly as possible. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If the pipeline lags, then the events are “buffered” without saving. In this case, the pipeline should catch up, as soon as possible receiving data. Since our source is not parallelized, its bandwidth limit reached about 2.2 million events per second. We emulated 1 million events / s, leaving a margin for catching up to 1.2 million events / s.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The conveyor measures its delay by comparing the timestamp of the result of the sliding window with the current time. Two stages of aggregation with intermediate filtration were used. The result of one sliding window contains many elements, one for each substream, and we are interested in the delay for the last of the elements. Therefore, first we filter out most of the result, leaving every ten thousandth element. And then we direct the reduced flow to the second stage, with a “flipping” window without a key. At this stage, we note the size of the result and measure the delay. Aggregation without using a key is not parallelized, so we have one measurement point. The filtration stage is parallelized and is data-local, so the influence of the additional aggregation stage is very small (much lower than 1 ms).</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We used a simple aggregate function: counting. In fact, a metric of the frequency of events in the stream was obtained. It has a minimal structure (one type number </font></font><code>long</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">), garbage is not generated. For any amount of heap usage (in gigabytes), such a small key structure implies the worst case scenario for the garbage collector: a very large number of objects. The load on the collector does not grow with the size of the heap, but with the number of objects. We also tested the option of calculating the same aggregate function, but with a different implementation that generates garbage.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We drove most of the stream benchmarks on one node, because we were interested in the impact of memory management on pipeline performance. </font><font style="vertical-align: inherit;">And network latency only adds noise to the data. </font><font style="vertical-align: inherit;">To test the hypothesis that cluster performance will not affect our findings, we repeated some key tests on a three-node Amazon EC2 cluster. </font><font style="vertical-align: inherit;">More on this will be described near the end of the second article. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We removed the Parallel collector from the streaming load results because the delay peaks it creates are unacceptable in most real-world scenarios.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scenario 1: low latency, medium structure</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Script Parameters:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">OpenJDK 14</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The JVM heap size is 4 GB.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">For G1, given </font></font><code>-XX:MaxGCPauseMillis=5</code></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">1 million events / s.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">50,000 individual keys.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">30 second sliding window after 0.1 seconds.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this scenario, less than 1 GB of heap is used. </font><font style="vertical-align: inherit;">The load on the collector is small, it has enough time for background competitive garbage collection. </font><font style="vertical-align: inherit;">Here are the maximum delays in the operation of the pipeline with three assemblers tested:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/053/d40/26c/053d4026c6d3eb747e3e78bbdcd46ecd.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+These values ​​include fixed intervals of approximately 3 ms for transmission of window results. </font><font style="vertical-align: inherit;">The graph speaks for itself: the default collector G1 does an excellent job, but if you need a delay even lower, you can use the experimental ZGC. </font><font style="vertical-align: inherit;">We could not lower the delay peaks below 10 ms. </font><font style="vertical-align: inherit;">But in the case of ZGC and Shenandoah, they do not arise due to pauses in garbage collection, but because of short periods of increased volume of background work of collectors. </font><font style="vertical-align: inherit;">Occasionally, Shenandoah service processes raised the delay above 200 ms.</font></font><br>
+<br>
+<h3><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Scenario two: larger structure, less stringent latency requirements</font></font></h3><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We assume that for reasons beyond our control (for example, due to the cellular network), the delay may increase to seconds. </font><font style="vertical-align: inherit;">This mitigates the requirements for the stream processing pipeline. </font><font style="vertical-align: inherit;">On the other hand, we may encounter much larger data, the size of millions or tens of millions of keys. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+In this scenario, we can prepare the equipment for heavy use, taking into account the fact that the garbage collector will operate in a large heap, rather than distributing data across multiple nodes of the cluster. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We ran many tests in different combinations to find out how combinations of factors affect the performance of the runtime. </font><font style="vertical-align: inherit;">It turned out that this depends on two parameters:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">The number of records stored in aggregates.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Bandwidth requirement for make-up.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The first parameter describes the number of objects in the tenured generation. When aggregating using the sliding window method, we hold objects for a long time (throughout the window) and then release them. This directly contradicts the generational garbage hypothesis (Generational Garbage Hypothesis), which claims that objects either die young or live forever. In this mode, the maximum load on the garbage collector is created. And since the intensity of its work grows with the number of living objects, productivity greatly depends on this parameter. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The second parameter relates to how much resources the application can allocate to the garbage collector. To make it clearer, let's build some diagrams. When aggregating using the sliding window method, the conveyor goes through three stages:</font></font><br>
+<br>
+<ol>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Real-time event processing as they occur.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Passing the results of a sliding window.</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">Catching up the events received during the second stage.</font></font></li>
+</ol><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+All three stages can be visualized as follows:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/99c/d77/894/99cd778940f1596c2dd5e1dbf0933fd4.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+If the transfer of window results takes longer, we find ourselves in this situation:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/b22/694/760/b226947608cfb3373742d02e6dc7774f.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now the conveyor barely has time, and all any time delays like pauses for garbage collection will increase the delay, and it will recover very slowly. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let's change the graph and show only the average rate of absorption of events after passing the results of the window:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/d78/cd9/ccb/d78cd9ccbf09b96c23705ae8bb0d6e38.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Let us call the height of the yellow rectangle “imposition requirement”: this is the requirement for the source capacity. If it exceeds the actual throughput of the conveyor, then it cannot cope with the load. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Here's what it will look like if transferring window results takes too much time:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/5b9/0ea/594/5b90ea59490f05c628401475c9849e21.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The area of ​​the red and yellow rectangles is fixed and corresponds to the amount of data that must pass through the pipeline. In fact, red “squeezes” yellow. But the height of the yellow rectangle is limited, in our case the ceiling is 2.2 million events / s. And when the height exceeds the limit, we get a conveyor that cannot cope with the load and an unlimitedly growing delay. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We derived formulas for predicting the size of rectangles for a given combination of event frequency, window size, slip step, and key set size. So we can for any case determine the requirement for imposition.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Now we have two more or less independent parameters derived from many other parameters that describe each individual combination. </font><font style="vertical-align: inherit;">You can build a two-dimensional graph, circles on which indicate the banished benchmarks. </font><font style="vertical-align: inherit;">Color the circles according to the success or failure of the combination. </font><font style="vertical-align: inherit;">For example, for a bunch of JDK 14 with G1 running on a laptop, we get the following graph:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/ab2/9e6/416/ab29e641669a2666c59d506e59fce458.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We have identified three categories:</font></font><br>
+<br>
+<ul>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“Yes” - the conveyor is coping,</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“No” - the pipeline cannot cope due to lack of bandwidth,</font></font></li>
+<li><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">“Garbage collector” - the conveyor does not cope due to frequent long pauses in assembly.</font></font></li>
+</ul><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+Please note that lack of bandwidth may also occur due to competitive garbage collection and frequent short assembly pauses. In general, the difference between the last two categories is small. </font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+You can see the border separating the bottom left of the graph. It contains points of successfully passed benchmarks. We plotted the same graph for other combinations of the JDK and the garbage collector, identified the boundaries of the zones and got the following result:</font></font><br>
+<br>
+<div style="text-align:center;"><img src="https://habrastorage.org/getpro/habr/post_images/251/d12/394/251d123945208cbed4806928946c4241.png"></div><br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+We had a MacBook Pro 2018 with a 6-core Intel Core i7 and 16GB DDR4 RAM. For the JVM has been configured </font></font><code>-Xmx10g</code><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">. However, we believe that a similar picture will be observed on many other configurations. The graph shows the superiority of G1 over other collectors, the weakness of G1 when used with JDK 8, and the weakness of experimental collectors with low latency under this kind of load.</font></font><br>
+<br><font style="vertical-align: inherit;"><font style="vertical-align: inherit;">
+The basic delay - the duration of the transmission of window results - fluctuated around 500 ms. </font><font style="vertical-align: inherit;">However, bursts often occurred due to the main pauses for garbage collection (which were unreasonably long in the case of G1), up to 10 s in borderline situations (when the conveyor barely cope with work) and decreases to 1-2 s. </font><font style="vertical-align: inherit;">We also noticed the effect of JIT compilation in borderline situations: the pipeline starts to work with an ever-increasing delay, and after about two minutes the performance improves and the delay returns to normal values.</font></font></div>
+      
+    </div>
+<section class="more-articles-navigation-panel js-more-articles-navigation-panel">
+<h4>More articles:</h4>
+<nav class="list-of-articles-container js-list-of-articles-container"><ul class="list-of-pages js-list-of-pages">
+<li><a href="../en506696/index.html">Managing PostgreSQL at Gitlab.com. Jose Cores Finotto</a></li>
+<li><a href="../en506698/index.html">Requiem for "Sea Launch"</a></li>
+<li><a href="../en506700/index.html">We configure GitHub Actions for Android with the subsequent deployment in PlayMarket</a></li>
+<li><a href="../en506702/index.html">The most reliable HDDs according to Backblaze Q1 2020</a></li>
+<li><a href="../en506704/index.html">Why write in PHP in 2020? Holivarim is an interactive podcast on Youtube this Thursday</a></li>
+<li><a href="../en506708/index.html">VPN / Mikrotik two-factor authentication - simple and scalable</a></li>
+<li><a href="../en506710/index.html">Manage multiple address books in the Zimbra Collaboration Suite Open-Source Edition</a></li>
+<li><a href="../en506716/index.html">Multithreaded Linear List: Element Existence Problem, Productivity Improvement, and STL Relation</a></li>
+<li><a href="../en506726/index.html">Experience in using Rutoken technology for registration and authorization of users in the system (part 2)</a></li>
+<li><a href="../en506730/index.html">Snort or Suricata. Part 1: choose a free IDS / IPS to protect the corporate network</a></li>
+</ul></nav>
+</section><br />
+<a href="../../allArticles.html"><strong>All Articles</strong></a>
+<script src="../../js/main.js"></script>
+
+<!-- Yandex.Metrika counter -->
+<script type="text/javascript" >
+  (function (d, w, c) {
+      (w[c] = w[c] || []).push(function() {
+          try {
+              w.yaCounter63335242 = new Ya.Metrika({
+                  id:63335242,
+                  clickmap:true,
+                  trackLinks:true,
+                  accurateTrackBounce:true,
+                  webvisor:true
+              });
+          } catch(e) { }
+      });
+
+      var n = d.getElementsByTagName("script")[0],
+          s = d.createElement("script"),
+          f = function () { n.parentNode.insertBefore(s, n); };
+      s.type = "text/javascript";
+      s.async = true;
+      s.src = "https://mc.yandex.ru/metrika/watch.js";
+
+      if (w.opera == "[object Opera]") {
+          d.addEventListener("DOMContentLoaded", f, false);
+      } else { f(); }
+  })(document, window, "yandex_metrika_callbacks");
+</script>
+<noscript><div><img src="https://mc.yandex.ru/watch/63335242" style="position:absolute; left:-9999px;" alt="" /></div></noscript>
+
+<!-- Google Analytics -->
+  <script>
+    window.ga = function () { ga.q.push(arguments) }; ga.q = []; ga.l = +new Date;
+    ga('create', 'UA-134228602-13', 'auto'); ga('send', 'pageview')
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js" async defer></script>
+
+</section>
+
+<footer class="page-footer">
+  <div class="page-footer-legal-info-container page-footer-element">
+    <p>
+      Geek Week | <span class="page-footer-legal-info-year js-page-footer-legal-info-year">2020</span>
+    </p>
+  </div>
+  <div class="page-footer-counters-container page-footer-element">
+    <a class="page-footer-counter-clustrmap" href='#'  title='Visit tracker'><img src='https://clustrmaps.com/map_v2.png?cl=698e5a&w=271&t=t&d=i62cJ2037o_BACd40gCrIso3niu0Sjx2sDFYJkeYdRk&co=3a3a3a&ct=ffffff'/></a>
+  </div>
+</footer>
+  
+</body>
+
+</html>
